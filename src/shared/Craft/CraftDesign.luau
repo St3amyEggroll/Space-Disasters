@@ -4,15 +4,19 @@
 	Craft design data: blocks on an integer grid, the 24 axis-aligned orientations, geometry helpers, validation,
 	versioned JSON for persistence, and a compact buffer for the network.
 
-	Grid convention: (gx, gy, gz) is the MINIMUM corner of the block's oriented bounding box, in integer studs,
-	design-local. For a hangar design, design-local = the plot's build grid (origin = plot buildOrigin).
-	A block's design-local CFrame is CFrame.new(center) * rotationCFrame(rot), where center = min + orientedSize / 2.
+	Grid convention: (gx, gy, gz) is the MINIMUM corner of the block's oriented bounding box, in integer BLOCK
+	units (CHANGED Phase 1 rework: one block = GameConfig.GRID_SIZE studs), design-local. For a plot design,
+	design-local = the plot's build grid (origin = plot buildOrigin). A block's design-local CFrame (in STUDS) is
+	CFrame.new(center * GRID) * rotationCFrame(rot), where center = min + orientedSize / 2 (blocks).
+	`color` is an optional paint index (Config/Paint); nil = the part's default colours.
 
 	Orientation index rot (0..23) = upIndex * 4 + yawIndex:
 	  the part's local +Y points along UP_DIRECTIONS[upIndex + 1], then the part is yawed yawIndex * 90 degrees
 	  about its own up axis. rot 0 is the identity.
 ]]
 
+local GameConfig = require(script.Parent.Parent.Config.GameConfig)
+local Paint = require(script.Parent.Parent.Config.Paint)
 local Parts = require(script.Parent.Parent.Config.Parts)
 local Json = require(script.Parent.Parent.Util.Json)
 
@@ -22,7 +26,8 @@ local Json = require(script.Parent.Parent.Util.Json)
 local JSON_VERSION = 1
 local BUFFER_VERSION = 1
 local MAX_NAME_LENGTH = 40
-local BLOCK_BYTES = 11 -- u16 id, u8 type, i16 gx, i16 gy, i16 gz, u8 rot, u8 stage
+local BLOCK_BYTES = 12 -- u16 id, u8 type, i16 gx, i16 gy, i16 gz, u8 rot, u8 stage, u8 color
+local NO_COLOR = 0
 local NO_STAGE = 255
 local COORD_LIMIT = 32767 -- i16
 --============================================================================
@@ -35,6 +40,7 @@ export type Block = {
 	gz: number,
 	rot: number, -- 0..23
 	stageOverride: number?,
+	color: number?, -- paint index (Config/Paint), nil = default colours
 }
 
 export type Design = {
@@ -46,6 +52,7 @@ export type Design = {
 local CraftDesign = {}
 
 CraftDesign.JSON_VERSION = JSON_VERSION
+CraftDesign.GRID = GameConfig.GRID_SIZE
 CraftDesign.MAX_NAME_LENGTH = MAX_NAME_LENGTH
 
 --============================================================================
@@ -163,9 +170,27 @@ function CraftDesign.blockCenter(block: Block): Vector3
 	return Vector3.new(block.gx, block.gy, block.gz) + CraftDesign.blockSize(block) / 2
 end
 
--- Design-local CFrame of the block's part-local frame (centre + orientation).
+-- Design-local CFrame (studs) of the block's part-local frame (centre + orientation).
 function CraftDesign.blockCFrame(block: Block): CFrame
-	return CFrame.new(CraftDesign.blockCenter(block)) * CraftDesign.rotationCFrame(block.rot)
+	return CFrame.new(CraftDesign.blockCenter(block) * GameConfig.GRID_SIZE) * CraftDesign.rotationCFrame(block.rot)
+end
+
+-- Orientation of the mirror image of a block across a design plane perpendicular to `axis` ("X" or "Z").
+-- The reflection S R S of a rotation R is itself a proper rotation, so it is one of the 24 orientations.
+function CraftDesign.mirrorOrientation(rot: number, axis: "X" | "Z"): number
+	local _, _, _, r00, r01, r02, r10, r11, r12, r20, r21, r22 = CraftDesign.rotationCFrame(rot):GetComponents()
+	local sx = if axis == "X" then -1 else 1
+	local sz = if axis == "Z" then -1 else 1
+	local signs = { sx, 1, sz }
+	local m = { { r00, r01, r02 }, { r10, r11, r12 }, { r20, r21, r22 } }
+	local out = {}
+	for i = 1, 3 do
+		for j = 1, 3 do
+			out[(i - 1) * 3 + j] = math.round(signs[i] * signs[j] * m[i][j])
+		end
+	end
+	local mirrored = CFrame.new(0, 0, 0, out[1], out[2], out[3], out[4], out[5], out[6], out[7], out[8], out[9])
+	return CraftDesign.rotationIndex(mirrored)
 end
 
 -- True if the two blocks' boxes share volume.
@@ -298,6 +323,9 @@ function CraftDesign.validate(design: Design, limits: Limits): (boolean, string?
 		if block.stageOverride ~= nil and (not isInteger(block.stageOverride) or block.stageOverride < 1) then
 			return false, "bad stage override"
 		end
+		if block.color ~= nil and (not isInteger(block.color) or not Paint.isValid(block.color)) then
+			return false, "bad paint colour"
+		end
 		if limits.boundsMin and limits.boundsMax then
 			local minV, maxV = CraftDesign.blockMin(block), CraftDesign.blockMax(block)
 			local lo, hi = limits.boundsMin :: Vector3, limits.boundsMax :: Vector3
@@ -335,6 +363,9 @@ function CraftDesign.toJson(design: Design): string
 		if block.stageOverride then
 			entry.s = block.stageOverride
 		end
+		if block.color then
+			entry.c = block.color
+		end
 		blocks[index] = entry
 	end
 	return Json.encode({ v = JSON_VERSION, name = design.name, blocks = blocks })
@@ -366,6 +397,7 @@ function CraftDesign.fromJson(text: string): (Design?, string?)
 			gz = entry.z,
 			rot = entry.r,
 			stageOverride = if type(entry.s) == "number" then entry.s else nil,
+			color = if type(entry.c) == "number" then entry.c else nil,
 		})
 	end
 	return design, nil
@@ -394,6 +426,7 @@ function CraftDesign.toBuffer(design: Design): buffer
 		buffer.writei16(b, offset + 7, block.gz)
 		buffer.writeu8(b, offset + 9, block.rot)
 		buffer.writeu8(b, offset + 10, block.stageOverride or NO_STAGE)
+		buffer.writeu8(b, offset + 11, block.color or NO_COLOR)
 		offset += BLOCK_BYTES
 	end
 	return b
@@ -425,6 +458,7 @@ function CraftDesign.fromBuffer(b: buffer): (Design?, string?)
 			return nil, "unknown part index"
 		end
 		local stage = buffer.readu8(b, offset + 10)
+		local color = buffer.readu8(b, offset + 11)
 		table.insert(design.blocks, {
 			id = buffer.readu16(b, offset),
 			type = def.Id,
@@ -433,6 +467,7 @@ function CraftDesign.fromBuffer(b: buffer): (Design?, string?)
 			gz = buffer.readi16(b, offset + 7),
 			rot = buffer.readu8(b, offset + 9),
 			stageOverride = if stage == NO_STAGE then nil else stage,
+			color = if color == NO_COLOR then nil else color,
 		})
 		offset += BLOCK_BYTES
 	end

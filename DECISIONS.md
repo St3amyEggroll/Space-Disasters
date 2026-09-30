@@ -86,6 +86,7 @@ Every Seat is `Disabled` by default, so walking into one does nothing.
 A TrussPart can't be narrower than 2 studs, and the ladder is 1×4×1. The ladder is two rails with rungs 1 stud apart, which Roblox characters climb.
 
 ### D18. The project file no longer has `BaseGround` / `BaseSpawn`
+(D12–D17 were written for the first Phase 1 build; D20 supersedes the hangar, plot size and pad parts of them.)
 The base site now provides the ground and spawn. **Rebuild the place** (`rojo build -o SpaceDisasters.rbxl`); a place built in Phase 0 still contains the old plate and spawn, because `rojo serve` doesn't delete them.
 
 ### D19. Phase 1 MassProps scope
@@ -93,6 +94,38 @@ MassProps computes mass, CoM, inertia, fuel groups, projected areas, leading dra
 - Contact hull points are computed with the flight model in Phase 2, which is their only user.
 - Stage Δv is simulated exactly between flameouts at full throttle.
 - Solid boosters burn only their own fuel.
+
+### D20. Plane Crazy-style building (Steamy, Phase 1 playtest feedback)
+Steamy asked for building that's "less like KSP, more like Plane Crazy". **Flight stays KSP-style** as in the spec.
+- **Block grid:** one build block = `GameConfig.GRID_SIZE` = **4 studs**, about 3/4 of a character's height.
+  - Part sizes in `Config/Parts` are now in blocks, and design coordinates are in blocks. `CraftDesign.blockCFrame` and `MassProps` convert to studs, which are still meters.
+  - New part sizes:
+
+    | Size | Parts |
+    |---|---|
+    | 1×1×1 | pod, small tank, small engine, nose, decouplers, chute, block, ladder, seat |
+    | 1×2×1 | long small tank, fin, leg |
+    | 1×3×1 | solid booster |
+    | 1×1×3 | beam |
+    | 2×1×2 | large tank, large decoupler, adapter |
+    | 2×2×2 | cabin (7×7×7 interior), long large tank, large engine, large nose |
+    | 3×1×3 | deck (was "plate") |
+
+  - Part stats (masses, thrust, Isp, fuel) are unchanged, so the Section 6.2 sanity numbers still hold.
+- **Open plots:**
+  - There's no hangar building. Each plot is a raised 80×80 baseplate (20×20 blocks) with a 4-stud grid drawn on it, and a build height of 50 blocks (200 studs). Steamy picked the "Large" plot size.
+  - The grid origin is the baseplate top (y = 1).
+- **Shared launch area:**
+  - There are 8 pads north of the plots.
+  - Roll Out reuses your pad (replacing your previous rocket), else takes the first free pad. If all pads are busy, it says so.
+- **Paint tool:**
+  - There's a 16-colour palette (`Config/Paint`, append-only indices).
+  - A block's `color` is saved in the design JSON (`c`) and in the network buffer, which is now **12 bytes per block**, matching the spec's "about 12".
+  - `PaintBlock` is validated on the server, and paint can be undone.
+- **Mirror mode:** mirror across the plot's X or Z centre plane, or both, as well as radial 2/4 symmetry.
+  - A mirrored part uses the reflected orientation S·R·S, which is always one of the 24 rotations.
+- **Controls:** B build, P paint, X delete, R/T rotate, 1/2/4 radial, M cycles mirror, Ctrl+Z undo.
+- **Builder UI:** redesigned, with a tool hotbar, category tabs with 3D part previews, a paint palette, a stats card, a save panel and a big Roll Out button.
 
 ---
 

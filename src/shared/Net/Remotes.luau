@@ -23,8 +23,9 @@ type Kind = "Reliable" | "Unreliable"
 
 local DEFINITIONS: { [string]: Kind } = {
 	-- Build (client -> server)
-	PlaceBlock = "Reliable", -- (partId: string, gx, gy, gz: number, rot: number, seq: number?)
+	PlaceBlock = "Reliable", -- (partId: string, gx, gy, gz: number, rot: number, seq: number?, color: number?)
 	RemoveBlock = "Reliable", -- (gx, gy, gz: number, seq: number?) removes the block occupying that cell
+	PaintBlock = "Reliable", -- (gx, gy, gz: number, color: number (Paint index, 0 = default), seq: number?)
 	ClearPlot = "Reliable", -- ()
 	SaveDesign = "Reliable", -- (slot: number, name: string)
 	LoadDesign = "Reliable", -- (slot: number)
@@ -33,7 +34,8 @@ local DEFINITIONS: { [string]: Kind } = {
 	-- Build (server -> client)
 	SaveSlots = "Reliable", -- (names: { [number]: string }) slot index -> design name for filled slots
 	Notify = "Reliable", -- (text: string, kind: "Info" | "Error")
-	BuildAck = "Reliable", -- (seq: number, kind: "place" | "remove", partId: string, gx, gy, gz, rot: number)
+	BuildAck = "Reliable", -- (seq, kind: "place" | "remove" | "paint", partId, gx, gy, gz, rot, color: number)
+	--   color: the block's colour (0 = default); for "paint" it is the colour BEFORE the change (for undo)
 	--   sent only for ACCEPTED operations that carried a seq > 0; the client builds its undo stack from these
 }
 

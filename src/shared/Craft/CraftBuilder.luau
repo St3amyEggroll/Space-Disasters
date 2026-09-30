@@ -8,12 +8,13 @@
 	  "Cosmetic"  client-side copies: no collision/queries/touch, massless, no prompts or seats.
 	  "Ghost"     the builder's placement preview: cosmetic, translucent, tinted by a Highlight.
 
-	Every block becomes a Model named "Block_<id>" with attributes BlockId, PartId, GX, GY, GZ, Rot (and Stage when
-	it has a stage override), pivoted to origin * CraftDesign.blockCFrame(block). All parts are Anchored
+	Every block becomes a Model named "Block_<id>" with attributes BlockId, PartId, GX, GY, GZ, Rot (and Stage /
+	Color when set; Color is a Config/Paint index applied with PartVisuals.applyPaint), pivoted to origin * CraftDesign.blockCFrame(block). All parts are Anchored
 	(DECISIONS S9). readDesign() rebuilds a Design from those attributes (the client mirrors hangar builds this way).
 ]]
 
 local CraftDesign = require(script.Parent.CraftDesign)
+local Paint = require(script.Parent.Parent.Config.Paint)
 local Parts = require(script.Parent.Parent.Config.Parts)
 local PartVisuals = require(script.Parent.PartVisuals)
 
@@ -44,6 +45,13 @@ local function tagBlock(model: Model, block: Block)
 	model:SetAttribute("GZ", block.gz)
 	model:SetAttribute("Rot", block.rot)
 	model:SetAttribute("Stage", block.stageOverride)
+	model:SetAttribute("Color", block.color)
+end
+
+-- Sets (or clears, with nil) a block model's paint colour.
+function CraftBuilder.paintBlock(model: Model, colorIndex: number?)
+	model:SetAttribute("Color", colorIndex)
+	PartVisuals.applyPaint(model, Paint.color(colorIndex))
 end
 
 -- Moves a freshly built (origin-centred) model to `cf` by transforming its parts directly. Equivalent to
@@ -61,6 +69,9 @@ function CraftBuilder.buildBlock(block: Block, mode: Mode, origin: CFrame): Mode
 	local def = Parts.get(block.type)
 	local model = PartVisuals.build(def, if mode == "Real" then "Real" else "Cosmetic")
 	tagBlock(model, block)
+	if block.color and mode ~= "Ghost" then
+		PartVisuals.applyPaint(model, Paint.color(block.color))
+	end
 	placeFresh(model, origin * CraftDesign.blockCFrame(block))
 	if mode == "Ghost" then
 		for _, descendant in model:GetDescendants() do
@@ -118,6 +129,7 @@ function CraftBuilder.readDesign(container: Instance, name: string?): Design
 			local gx, gy, gz = child:GetAttribute("GX"), child:GetAttribute("GY"), child:GetAttribute("GZ")
 			local rot = child:GetAttribute("Rot")
 			local stage = child:GetAttribute("Stage")
+			local color = child:GetAttribute("Color")
 			if
 				type(id) == "number"
 				and type(partId) == "string"
@@ -135,6 +147,7 @@ function CraftBuilder.readDesign(container: Instance, name: string?): Design
 					gz = gz,
 					rot = rot,
 					stageOverride = if type(stage) == "number" then stage else nil,
+					color = if type(color) == "number" then color else nil,
 				})
 			end
 		end

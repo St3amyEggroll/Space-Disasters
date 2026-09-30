@@ -36,9 +36,9 @@ return function(t: TestKit.Context)
 		for _, block in design.blocks do
 			local model = CraftBuilder.buildBlock(block, "Real", origin)
 			local bounds = model.PrimaryPart :: BasePart
-			local expected = origin * CFrame.new(CraftDesign.blockCenter(block))
+			local expected = origin * CFrame.new(CraftDesign.blockCenter(block) * CraftDesign.GRID)
 			t.expectNear((bounds.CFrame.Position - expected.Position).Magnitude, 0, 1e-4)
-			t.expectEqual(bounds.Size, Parts.get(block.type).Size)
+			t.expectEqual(bounds.Size, Parts.get(block.type).Size * CraftDesign.GRID)
 			model:Destroy()
 		end
 	end)

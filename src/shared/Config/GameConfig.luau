@@ -122,7 +122,9 @@ local GameConfig = {
 	MAX_BLOCKS_PER_CRAFT = 250,
 	MAX_ACTIVE_CRAFTS_PER_PLAYER = 3,
 	MAX_DEBRIS = 40,
-	BUILD_VOLUME = table.freeze({ X = 40, Y = 120, Z = 40 }),
+	GRID_SIZE = 4, -- CHANGED (Phase 1 rework): studs per build block (about 3/4 of a character's height)
+	BUILD_VOLUME = table.freeze({ X = 20, Y = 50, Z = 20 }), -- CHANGED (Phase 1 rework): in BLOCKS (80 x 200 x 80 studs)
+	LAUNCH_PAD_COUNT = 8, -- shared pads in the launch area
 	BUILD_OPS_PER_SECOND = 20,
 	UNDO_STACK_SIZE = 50,
 	SAVE_SLOTS = 10,

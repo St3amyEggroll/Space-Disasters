@@ -1,8 +1,9 @@
 --!strict
 --[[
 	CraftService
-	Registry of crafts and their authoritative records. Phase 1: Roll Out (build the player's hangar design as a
-	real, anchored craft on their launch pad in the base pocket, replacing their previous rolled-out craft),
+	Registry of crafts and their authoritative records. Phase 1: Roll Out (build the player's plot design as a
+	real, anchored craft on a free SHARED launch pad in the base pocket's launch area, replacing their previous
+	rolled-out craft; CHANGED Phase 1 rework),
 	boarding permission per player (Private / Friends / Public), and despawning a leaving player's crafts after a
 	grace period. Flight state, staging and destruction arrive in Phase 2.
 
@@ -51,6 +52,8 @@ CraftService.BOARDING_ATTRIBUTE = BOARDING_ATTRIBUTE
 
 local crafts: { [number]: CraftRecord } = {}
 local padCraftByUser: { [number]: number } = {}
+local craftOnPad: { [number]: number } = {} -- pad index -> craft id
+local padOfCraft: { [number]: number } = {} -- craft id -> pad index
 local nextCraftId = 1
 local lastRollout: { [Player]: number } = {}
 
@@ -62,6 +65,11 @@ local function removeCraft(id: number)
 	crafts[id] = nil
 	if padCraftByUser[record.ownerUserId] == id then
 		padCraftByUser[record.ownerUserId] = nil
+	end
+	local pad = padOfCraft[id]
+	if pad then
+		padOfCraft[id] = nil
+		craftOnPad[pad] = nil
 	end
 	record.state = "Destroyed"
 	record.model:Destroy()
@@ -114,18 +122,33 @@ local function onRollOut(player: Player)
 		return
 	end
 
-	-- Replace the player's previous rolled-out craft.
+	-- Reuse the player's pad (replacing their previous craft), else take the first free pad.
+	local padIndex: number? = nil
 	local previous = padCraftByUser[player.UserId]
 	if previous then
+		padIndex = padOfCraft[previous]
 		removeCraft(previous)
 	end
+	if padIndex == nil then
+		for index = 1, BaseLayout.PAD_COUNT do
+			if craftOnPad[index] == nil then
+				padIndex = index
+				break
+			end
+		end
+	end
+	if padIndex == nil then
+		BuildService.notify(player, "All launch pads are busy, try again soon", "Error")
+		return
+	end
 
-	local plot = BaseLayout.plot(plotIndex)
+	local pad = BaseLayout.pad(padIndex)
+	local grid = CraftDesign.GRID
 	local minV, maxV = CraftDesign.bounds(design)
-	local center = (minV + maxV) / 2
-	local origin = plot.padTop * CFrame.new(-center.X, -minV.Y, -center.Z)
-	local halfExtent = math.max(maxV.X - minV.X, maxV.Z - minV.Z) / 2
-	clearPad(plot.padTop, halfExtent, maxV.Y - minV.Y)
+	local center = (minV + maxV) / 2 * grid
+	local origin = pad.top * CFrame.new(-center.X, -minV.Y * grid, -center.Z)
+	local halfExtent = math.max(maxV.X - minV.X, maxV.Z - minV.Z) * grid / 2
+	clearPad(pad.top, halfExtent, (maxV.Y - minV.Y) * grid)
 
 	local id = nextCraftId
 	nextCraftId += 1
@@ -147,7 +170,10 @@ local function onRollOut(player: Player)
 		origin = origin,
 	}
 	padCraftByUser[player.UserId] = id
-	BuildService.notify(player, `Rolled out "{design.name}" to pad {plotIndex}`)
+	craftOnPad[padIndex] = id
+	padOfCraft[id] = padIndex
+	model:SetAttribute("PadIndex", padIndex)
+	BuildService.notify(player, `Rolled out "{design.name}" to launch pad {padIndex}`)
 end
 
 local function onSetBoarding(player: Player, mode: unknown)

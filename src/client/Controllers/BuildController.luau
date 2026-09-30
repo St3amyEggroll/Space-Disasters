@@ -1,15 +1,18 @@
 --!strict
 --[[
 	BuildController
-	Plane Crazy-style grid building in the player's own hangar (spec 7.2).
+	Plane Crazy-style grid building on the player's own open plot (spec 7.2, reworked in Phase 1).
 
-	Active while the local character stands in its own hangar. The server owns the design; this controller mirrors
-	it from the replicated block models (Pocket_0.Builds.Plot_<i>), shows a ghost preview (red when invalid),
-	and sends PlaceBlock / RemoveBlock requests. The same placement rules as BuildService are checked locally for
-	the ghost colour; the server re-checks everything.
+	Active while the local character stands on its own plot. The server owns the design; this controller mirrors
+	it from the replicated block models (Pocket_0.Builds.Plot_<i>), shows a ghost preview (red when invalid), and
+	sends PlaceBlock / RemoveBlock / PaintBlock requests. The same placement rules as BuildService are checked
+	locally for the ghost colour; the server re-checks everything. Undo entries are filled from the server's
+	BuildAck, so only accepted operations are undone.
 
-	Controls: click place / delete, R yaw 90, T pitch 90, X delete mode, 1 / 2 / 4 radial symmetry around the
-	hangar's vertical build axis, Ctrl+Z undo (local stack of 50).
+	Grid: design coordinates are blocks of GameConfig.GRID_SIZE studs; the grid origin is the plot baseplate top.
+
+	Tools: Build (B), Paint (P), Delete (X). R yaw 90, T pitch 90. Symmetry: 1 / 2 / 4 = off / radial 2 / radial 4
+	around the plot's vertical centre axis; M cycles mirror X -> mirror Z -> mirror X+Z -> off. Ctrl+Z undo (50).
 ]]
 
 local Players = game:GetService("Players")
@@ -25,6 +28,7 @@ local CraftDesign = require(ReplicatedStorage.Shared.Craft.CraftDesign)
 local CraftGraph = require(ReplicatedStorage.Shared.Craft.CraftGraph)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 local MassProps = require(ReplicatedStorage.Shared.Craft.MassProps)
+local Paint = require(ReplicatedStorage.Shared.Config.Paint)
 local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
 local BuildUI = require(script.Parent.Parent.UI.BuildUI)
 
@@ -35,16 +39,20 @@ type Design = CraftDesign.Design
 -- Tunables
 --============================================================================
 local DEFAULT_PART = "pod_mk1"
-local HANGAR_MARGIN = 3 -- studs outside the build footprint that still count as "in the hangar"
+local DEFAULT_COLOR = 1 -- white
+local PLOT_MARGIN = 3 -- studs off the baseplate that still count as "on the plot"
 local STATS_INTERVAL_S = 0.25
-local RAY_LENGTH = 1000
+local RAY_LENGTH = 1500
 local UNDO_LIMIT = GameConfig.UNDO_STACK_SIZE
-local CAMERA_MAX_ZOOM = 260
+local CAMERA_MAX_ZOOM = 320
 local DELETE_HIGHLIGHT_COLOR = Color3.fromRGB(255, 70, 70)
+local PAINT_HIGHLIGHT_COLOR = Color3.fromRGB(90, 180, 255)
+local SEQ_RETENTION = 400 -- forget pending seqs older than this (rejected ops never get an ack)
+local MIRROR_CYCLE: { BuildUI.Symmetry } = { "Off", "MirrorX", "MirrorZ", "MirrorXZ" }
 --============================================================================
 
-type Placement = { type: string, gx: number, gy: number, gz: number, rot: number }
-type UndoEntry = { kind: "place" | "remove", blocks: { Placement } }
+type Placement = { type: string, gx: number, gy: number, gz: number, rot: number, color: number? }
+type UndoEntry = { kind: "place" | "remove" | "paint", blocks: { Placement } }
 
 local BuildController = {}
 
@@ -63,29 +71,25 @@ local statsDirty = true
 local lastStats = 0
 
 local selectedPart = DEFAULT_PART
+local selectedColor = DEFAULT_COLOR
 local rotation = 0
-local deleteMode = false
-local symmetry = 1
+local tool: BuildUI.Tool = "Build"
+local symmetry: BuildUI.Symmetry = "Off"
 local active = false
+
 local undoStack: { UndoEntry } = {}
--- Undo entries are filled from the server's BuildAck, so only operations the server accepted can be undone.
 local nextSeq = 0
 local entryBySeq: { [number]: UndoEntry } = {}
-local SEQ_RETENTION = 400 -- forget pending seqs older than this (rejected ops never get an ack)
 
 local ghostFolder: Folder
 local ghostPool: { [string]: Model } = {}
-local deleteBox: SelectionBox
+local hoverBox: SelectionBox
 
 local UP_NAMES = { "+Y", "+X", "-X", "+Z", "-Z", "-Y" }
+local GRID_SIZE = BaseLayout.GRID_SIZE -- build volume in blocks
 
 local function rotationText(): string
-	local upIndex = rotation // 4
-	return `up {UP_NAMES[upIndex + 1]}  yaw {(rotation % 4) * 90}`
-end
-
-local function refreshModeUI()
-	ui.setMode(deleteMode, symmetry, rotationText())
+	return `up {UP_NAMES[rotation // 4 + 1]}  yaw {(rotation % 4) * 90}`
 end
 
 --============================================================================
@@ -113,7 +117,7 @@ local function updateStats()
 	end
 	local warnings = table.clone(graph.warnings)
 	if #design.blocks == 0 then
-		warnings = { "Pick a part on the left and click the floor to start" }
+		warnings = { "Pick a part and click the baseplate to start" }
 	end
 	ui.setStats({
 		mass = props.mass,
@@ -126,20 +130,20 @@ local function updateStats()
 end
 
 --============================================================================
--- Placement maths (plot grid coordinates)
+-- Placement maths (plot grid, blocks)
 --============================================================================
 
 local function isInsideVolume(block: Block): boolean
 	local size = CraftDesign.blockSize(block)
-	local limit = BaseLayout.BUILD_SIZE
 	return block.gx >= 0
 		and block.gy >= 0
 		and block.gz >= 0
-		and block.gx + size.X <= limit.X
-		and block.gy + size.Y <= limit.Y
-		and block.gz + size.Z <= limit.Z
+		and block.gx + size.X <= GRID_SIZE.X
+		and block.gy + size.Y <= GRID_SIZE.Y
+		and block.gz + size.Z <= GRID_SIZE.Z
 end
 
+-- Same rules as BuildService.checkPlacement; `extra` = copies placed earlier in the same click.
 local function isValid(block: Block, extra: { Block }): boolean
 	if #design.blocks + #extra >= GameConfig.MAX_BLOCKS_PER_CRAFT then
 		return false
@@ -157,7 +161,6 @@ local function isValid(block: Block, extra: { Block }): boolean
 			return false
 		end
 	end
-	-- the server applies symmetric copies one after another, so earlier copies count as existing blocks
 	if #design.blocks + #extra == 0 then
 		return block.gy == 0
 	end
@@ -174,37 +177,64 @@ local function isValid(block: Block, extra: { Block }): boolean
 	return false
 end
 
--- Symmetric copies (including the original first) around the hangar's vertical centre axis.
-local function symmetricCopies(block: Block): { Block }
-	local copies = { block }
-	if symmetry <= 1 then
-		return copies
-	end
-	local axis = Vector3.new(BaseLayout.BUILD_SIZE.X / 2, 0, BaseLayout.BUILD_SIZE.Z / 2)
+local function withCenter(block: Block, center: Vector3, rot: number): Block
+	local size = CraftDesign.orientedSize(block.type, rot)
+	local minCorner = center - size / 2
+	return {
+		id = 0,
+		type = block.type,
+		gx = math.round(minCorner.X),
+		gy = math.round(minCorner.Y),
+		gz = math.round(minCorner.Z),
+		rot = rot,
+		color = block.color,
+	}
+end
+
+local function mirrored(block: Block, axis: "X" | "Z"): Block
 	local center = CraftDesign.blockCenter(block)
-	for k = 1, symmetry - 1 do
-		local yaw = CFrame.Angles(0, k * 2 * math.pi / symmetry, 0)
-		local rot = CraftDesign.rotateOrientation(block.rot, yaw)
-		local size = CraftDesign.orientedSize(block.type, rot)
-		local rotatedCenter = axis + yaw:VectorToWorldSpace(center - axis)
-		local minCorner = rotatedCenter - size / 2
-		local copy: Block = {
-			id = 0,
-			type = block.type,
-			gx = math.round(minCorner.X),
-			gy = math.round(minCorner.Y),
-			gz = math.round(minCorner.Z),
-			rot = rot,
-		}
+	local newCenter = if axis == "X"
+		then Vector3.new(GRID_SIZE.X - center.X, center.Y, center.Z)
+		else Vector3.new(center.X, center.Y, GRID_SIZE.Z - center.Z)
+	return withCenter(block, newCenter, CraftDesign.mirrorOrientation(block.rot, axis))
+end
+
+local function radial(block: Block, k: number, count: number): Block
+	local axis = Vector3.new(GRID_SIZE.X / 2, 0, GRID_SIZE.Z / 2)
+	local yaw = CFrame.Angles(0, k * 2 * math.pi / count, 0)
+	local center = axis + yaw:VectorToWorldSpace(CraftDesign.blockCenter(block) - axis)
+	return withCenter(block, center, CraftDesign.rotateOrientation(block.rot, yaw))
+end
+
+-- The block and its symmetric copies (original first), without duplicates that overlap each other.
+local function symmetricCopies(block: Block): { Block }
+	local candidates = { block }
+	if symmetry == "MirrorX" then
+		table.insert(candidates, mirrored(block, "X"))
+	elseif symmetry == "MirrorZ" then
+		table.insert(candidates, mirrored(block, "Z"))
+	elseif symmetry == "MirrorXZ" then
+		local mx = mirrored(block, "X")
+		table.insert(candidates, mx)
+		table.insert(candidates, mirrored(block, "Z"))
+		table.insert(candidates, mirrored(mx, "Z"))
+	elseif symmetry == "Radial2" or symmetry == "Radial4" then
+		local count = if symmetry == "Radial2" then 2 else 4
+		for k = 1, count - 1 do
+			table.insert(candidates, radial(block, k, count))
+		end
+	end
+	local copies: { Block } = {}
+	for _, candidate in candidates do
 		local duplicate = false
 		for _, existing in copies do
-			if CraftDesign.overlaps(existing, copy) then
+			if CraftDesign.overlaps(existing, candidate) then
 				duplicate = true
 				break
 			end
 		end
 		if not duplicate then
-			table.insert(copies, copy)
+			table.insert(copies, candidate)
 		end
 	end
 	return copies
@@ -224,16 +254,27 @@ local function mouseRay(): RaycastResult?
 	return Workspace:Raycast(ray.Origin, ray.Direction * RAY_LENGTH, params)
 end
 
-local function blockFromHit(hit: Instance): Block?
+local function blockFromHit(hit: Instance): (Block?, Model?)
 	local model = hit:FindFirstAncestorOfClass("Model")
 	if model == nil then
-		return nil
+		return nil, nil
 	end
 	local id = model:GetAttribute("BlockId")
 	if type(id) ~= "number" then
-		return nil
+		return nil, nil
 	end
-	return CraftDesign.findBlock(design, id)
+	return CraftDesign.findBlock(design, id), model
+end
+
+-- The block (in the current design) that occupies the grid cell containing `cell`, or nil.
+local function blockAtCell(x: number, y: number, z: number): Block?
+	for _, block in design.blocks do
+		local minV, maxV = CraftDesign.blockMin(block), CraftDesign.blockMax(block)
+		if x >= minV.X and x < maxV.X and y >= minV.Y and y < maxV.Y and z >= minV.Z and z < maxV.Z then
+			return block
+		end
+	end
+	return nil
 end
 
 -- The placement for the selected part under the mouse, or nil.
@@ -244,7 +285,7 @@ local function targetPlacement(): Block?
 		return nil
 	end
 	local size = CraftDesign.orientedSize(selectedPart, rotation)
-	local p = result.Position - info.buildOrigin
+	local p = BaseLayout.worldToGrid(info, result.Position)
 	local n = result.Normal
 	local block: Block = { id = 0, type = selectedPart, gx = 0, gy = 0, gz = 0, rot = rotation }
 	local hitBlock = blockFromHit(result.Instance)
@@ -254,10 +295,10 @@ local function targetPlacement(): Block?
 	end
 
 	if hitBlock == nil then
-		-- the hangar floor: sit on it, clamped inside the build area
+		-- the baseplate: sit on it, clamped inside the build area
 		block.gy = 0
-		block.gx = math.clamp(lateral(p.X, size.X), 0, BaseLayout.BUILD_SIZE.X - size.X)
-		block.gz = math.clamp(lateral(p.Z, size.Z), 0, BaseLayout.BUILD_SIZE.Z - size.Z)
+		block.gx = math.clamp(lateral(p.X, size.X), 0, GRID_SIZE.X - size.X)
+		block.gz = math.clamp(lateral(p.Z, size.Z), 0, GRID_SIZE.Z - size.Z)
 		return block
 	end
 
@@ -279,8 +320,26 @@ local function targetPlacement(): Block?
 	return block
 end
 
+-- For paint/delete: the hovered block plus the existing blocks at its symmetric positions.
+local function hoveredWithCopies(): { Block }
+	local result = mouseRay()
+	local hit = if result then blockFromHit(result.Instance) else nil
+	if hit == nil then
+		return {}
+	end
+	local found: { Block } = {}
+	for _, copy in symmetricCopies(hit) do
+		local center = CraftDesign.blockCenter(copy)
+		local existing = blockAtCell(math.floor(center.X), math.floor(center.Y), math.floor(center.Z))
+		if existing and not table.find(found, existing) then
+			table.insert(found, existing)
+		end
+	end
+	return found
+end
+
 --============================================================================
--- Ghosts
+-- Ghosts and hover highlight
 --============================================================================
 
 local function ghostFor(partId: string, rot: number): Model
@@ -307,7 +366,7 @@ end
 
 local function updateGhosts()
 	local info = plotInfo
-	if not active or deleteMode or info == nil then
+	if not active or tool ~= "Build" or info == nil then
 		hideGhosts()
 		return
 	end
@@ -321,31 +380,32 @@ local function updateGhosts()
 	local origin = CFrame.new(info.buildOrigin)
 	for _, copy in symmetricCopies(target) do
 		local ghost = ghostFor(copy.type, copy.rot)
-		if used[ghost] then
-			-- same part + orientation twice (e.g. symmetric copy with identical rotation): clone once more
-			continue
+		if not used[ghost] then
+			used[ghost] = true
+			ghost:PivotTo(origin * CraftDesign.blockCFrame(copy))
+			CraftBuilder.setGhostValid(ghost, isValid(copy, placed))
+			ghost.Parent = ghostFolder
 		end
-		used[ghost] = true
-		ghost:PivotTo(origin * CraftDesign.blockCFrame(copy))
-		CraftBuilder.setGhostValid(ghost, isValid(copy, placed))
 		table.insert(placed, copy)
-		ghost.Parent = ghostFolder
 	end
 	hideGhosts(used)
 end
 
-local function updateDeleteHighlight()
-	if not (active and deleteMode) then
-		deleteBox.Adornee = nil
+local function updateHover()
+	if not active or tool == "Build" then
+		hoverBox.Adornee = nil
 		return
 	end
 	local result = mouseRay()
-	local hitBlock = if result then blockFromHit(result.Instance) else nil
-	if hitBlock and result then
-		deleteBox.Adornee = result.Instance:FindFirstAncestorOfClass("Model")
-	else
-		deleteBox.Adornee = nil
+	local model: Model? = nil
+	if result then
+		local _, hitModel = blockFromHit(result.Instance)
+		model = hitModel
 	end
+	hoverBox.Adornee = model
+	local color = if tool == "Delete" then DELETE_HIGHLIGHT_COLOR else PAINT_HIGHLIGHT_COLOR
+	hoverBox.Color3 = color
+	hoverBox.SurfaceColor3 = if tool == "Paint" then Paint.color(selectedColor) or color else color
 end
 
 --============================================================================
@@ -359,7 +419,6 @@ local function pushUndo(entry: UndoEntry)
 	end
 end
 
--- Allocates a sequence number whose acknowledgement will add the accepted block to `entry`.
 local function trackSeq(entry: UndoEntry): number
 	nextSeq += 1
 	entryBySeq[nextSeq] = entry
@@ -367,7 +426,16 @@ local function trackSeq(entry: UndoEntry): number
 	return nextSeq
 end
 
-local function onAck(seq: unknown, kind: unknown, partId: unknown, gx: unknown, gy: unknown, gz: unknown, rot: unknown)
+local function onAck(
+	seq: unknown,
+	kind: unknown,
+	partId: unknown,
+	gx: unknown,
+	gy: unknown,
+	gz: unknown,
+	rot: unknown,
+	color: unknown
+)
 	if type(seq) ~= "number" then
 		return
 	end
@@ -383,7 +451,8 @@ local function onAck(seq: unknown, kind: unknown, partId: unknown, gx: unknown, 
 		and type(gz) == "number"
 		and type(rot) == "number"
 	then
-		table.insert(entry.blocks, { type = partId, gx = gx, gy = gy, gz = gz, rot = rot })
+		local colorIndex = if type(color) == "number" and color > 0 then color else nil
+		table.insert(entry.blocks, { type = partId, gx = gx, gy = gy, gz = gz, rot = rot, color = colorIndex })
 	end
 end
 
@@ -408,18 +477,36 @@ local function place()
 end
 
 local function remove()
-	local result = mouseRay()
-	local hitBlock = if result then blockFromHit(result.Instance) else nil
-	if hitBlock == nil then
+	local blocks = hoveredWithCopies()
+	if #blocks == 0 then
 		return
 	end
 	local entry: UndoEntry = { kind = "remove", blocks = {} }
-	remotes.RemoveBlock:FireServer(hitBlock.gx, hitBlock.gy, hitBlock.gz, trackSeq(entry))
+	for _, block in blocks do
+		remotes.RemoveBlock:FireServer(block.gx, block.gy, block.gz, trackSeq(entry))
+	end
 	pushUndo(entry)
 end
 
+local function paint()
+	local blocks = hoveredWithCopies()
+	if #blocks == 0 then
+		return
+	end
+	local entry: UndoEntry = { kind = "paint", blocks = {} }
+	local sent = 0
+	for _, block in blocks do
+		if block.color ~= selectedColor then
+			remotes.PaintBlock:FireServer(block.gx, block.gy, block.gz, selectedColor, trackSeq(entry))
+			sent += 1
+		end
+	end
+	if sent > 0 then
+		pushUndo(entry)
+	end
+end
+
 local function undo()
-	-- skip entries whose operations were all rejected by the server
 	local entry = table.remove(undoStack)
 	while entry and #entry.blocks == 0 do
 		entry = table.remove(undoStack)
@@ -428,40 +515,44 @@ local function undo()
 		ui.toast("Nothing to undo")
 		return
 	end
-	if entry.kind == "place" then
-		for _, block in entry.blocks do
+	for _, block in entry.blocks do
+		if entry.kind == "place" then
 			remotes.RemoveBlock:FireServer(block.gx, block.gy, block.gz)
-		end
-	else
-		for _, block in entry.blocks do
-			remotes.PlaceBlock:FireServer(block.type, block.gx, block.gy, block.gz, block.rot)
+		elseif entry.kind == "remove" then
+			remotes.PlaceBlock:FireServer(block.type, block.gx, block.gy, block.gz, block.rot, 0, block.color)
+		else
+			remotes.PaintBlock:FireServer(block.gx, block.gy, block.gz, block.color or 0)
 		end
 	end
 end
 
+local function setTool(newTool: BuildUI.Tool)
+	tool = newTool
+	ui.setTool(tool)
+end
+
+local function setSymmetry(mode: BuildUI.Symmetry)
+	symmetry = mode
+	ui.setSymmetry(mode)
+end
+
 local function rotate(by: CFrame)
 	rotation = CraftDesign.rotateOrientation(rotation, by)
-	refreshModeUI()
+	ui.setRotationText(rotationText())
 end
 
 --============================================================================
--- Hangar detection
+-- Plot detection
 --============================================================================
 
-local function isInOwnHangar(): boolean
+local function isOnOwnPlot(): boolean
 	local info = plotInfo
 	local character = player.Character
 	local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
 	if info == nil or root == nil or not root:IsA("BasePart") then
 		return false
 	end
-	local p = root.Position - info.buildOrigin
-	return p.X >= -HANGAR_MARGIN
-		and p.X <= info.buildSize.X + HANGAR_MARGIN
-		and p.Z >= -HANGAR_MARGIN
-		and p.Z <= info.buildSize.Z + HANGAR_MARGIN
-		and p.Y >= -5
-		and p.Y <= info.buildSize.Y + 10
+	return BaseLayout.isOnPlot(info, root.Position, PLOT_MARGIN)
 end
 
 local function attachToPlot(index: number)
@@ -474,7 +565,17 @@ local function attachToPlot(index: number)
 		base:WaitForChild("Site"):WaitForChild("Plots"):WaitForChild(`Plot_{index}`):WaitForChild("BuildFloor")
 	buildFolder = folder
 	buildFloor = if floor:IsA("BasePart") then floor else nil
-	folder.ChildAdded:Connect(function()
+	-- paint changes the Color attribute of an existing block model
+	local function watchBlock(child: Instance)
+		child:GetAttributeChangedSignal("Color"):Connect(function()
+			designDirty = true
+		end)
+	end
+	for _, child in folder:GetChildren() do
+		watchBlock(child)
+	end
+	folder.ChildAdded:Connect(function(child: Instance)
+		watchBlock(child)
 		designDirty = true
 	end)
 	folder.ChildRemoved:Connect(function()
@@ -490,7 +591,16 @@ end
 
 function BuildController.Init()
 	for _, name in
-		{ "PlaceBlock", "RemoveBlock", "ClearPlot", "SaveDesign", "LoadDesign", "RollOut", "SetBoardingPermission" }
+		{
+			"PlaceBlock",
+			"RemoveBlock",
+			"PaintBlock",
+			"ClearPlot",
+			"SaveDesign",
+			"LoadDesign",
+			"RollOut",
+			"SetBoardingPermission",
+		}
 	do
 		remotes[name] = Remotes.event(name)
 	end
@@ -499,30 +609,27 @@ function BuildController.Init()
 	ghostFolder.Name = "BuildGhosts"
 	ghostFolder.Parent = Workspace
 
-	deleteBox = Instance.new("SelectionBox")
-	deleteBox.Name = "DeleteHighlight"
-	deleteBox.Color3 = DELETE_HIGHLIGHT_COLOR
-	deleteBox.LineThickness = 0.08
-	deleteBox.SurfaceTransparency = 0.8
-	deleteBox.SurfaceColor3 = DELETE_HIGHLIGHT_COLOR
-	deleteBox.Parent = ghostFolder
+	hoverBox = Instance.new("SelectionBox")
+	hoverBox.Name = "BuildHover"
+	hoverBox.LineThickness = 0.1
+	hoverBox.SurfaceTransparency = 0.7
+	hoverBox.Parent = ghostFolder
 
 	ui = BuildUI.create({
 		onSelectPart = function(partId: string)
 			selectedPart = partId
-			deleteMode = false
-			ui.setSelected(partId)
-			refreshModeUI()
+			ui.setSelectedPart(partId)
+			setTool("Build")
 		end,
+		onTool = setTool,
+		onSelectColor = function(index: number)
+			if Paint.isValid(index) then
+				selectedColor = index
+				ui.setSelectedColor(index)
+			end
+		end,
+		onSymmetry = setSymmetry,
 		onUndo = undo,
-		onToggleDelete = function()
-			deleteMode = not deleteMode
-			refreshModeUI()
-		end,
-		onSymmetry = function(count: number)
-			symmetry = count
-			refreshModeUI()
-		end,
 		onClear = function()
 			remotes.ClearPlot:FireServer()
 			undoStack = {}
@@ -541,8 +648,11 @@ function BuildController.Init()
 			remotes.SetBoardingPermission:FireServer(mode)
 		end,
 	})
-	ui.setSelected(selectedPart)
-	refreshModeUI()
+	ui.setSelectedPart(selectedPart)
+	ui.setSelectedColor(selectedColor)
+	ui.setTool(tool)
+	ui.setSymmetry(symmetry)
+	ui.setRotationText(rotationText())
 end
 
 function BuildController.Start()
@@ -580,8 +690,10 @@ function BuildController.Start()
 			return
 		end
 		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			if deleteMode then
+			if tool == "Delete" then
 				remove()
+			elseif tool == "Paint" then
+				paint()
 			else
 				place()
 			end
@@ -596,18 +708,21 @@ function BuildController.Start()
 			rotate(CFrame.Angles(0, math.pi / 2, 0))
 		elseif key == Enum.KeyCode.T then
 			rotate(CFrame.Angles(math.pi / 2, 0, 0))
+		elseif key == Enum.KeyCode.B then
+			setTool("Build")
+		elseif key == Enum.KeyCode.P then
+			setTool("Paint")
 		elseif key == Enum.KeyCode.X then
-			deleteMode = not deleteMode
-			refreshModeUI()
+			setTool(if tool == "Delete" then "Build" else "Delete")
 		elseif key == Enum.KeyCode.One then
-			symmetry = 1
-			refreshModeUI()
+			setSymmetry("Off")
 		elseif key == Enum.KeyCode.Two then
-			symmetry = 2
-			refreshModeUI()
+			setSymmetry("Radial2")
 		elseif key == Enum.KeyCode.Four then
-			symmetry = 4
-			refreshModeUI()
+			setSymmetry("Radial4")
+		elseif key == Enum.KeyCode.M then
+			local index = table.find(MIRROR_CYCLE, symmetry) or 0
+			setSymmetry(MIRROR_CYCLE[index % #MIRROR_CYCLE + 1])
 		end
 	end)
 
@@ -616,7 +731,7 @@ function BuildController.Start()
 		if type(index) == "number" and index ~= plotIndex then
 			attachToPlot(index)
 		end
-		local nowActive = isInOwnHangar()
+		local nowActive = isOnOwnPlot()
 		if nowActive ~= active then
 			active = nowActive
 			ui.setVisible(active)
@@ -624,7 +739,6 @@ function BuildController.Start()
 		end
 		if designDirty then
 			refreshDesign()
-			lastStats = 0
 		end
 		if active and statsDirty and os.clock() - lastStats >= STATS_INTERVAL_S then
 			lastStats = os.clock()
@@ -632,7 +746,7 @@ function BuildController.Start()
 			updateStats()
 		end
 		updateGhosts()
-		updateDeleteHighlight()
+		updateHover()
 	end)
 end
 

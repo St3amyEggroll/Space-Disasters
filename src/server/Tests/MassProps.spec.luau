@@ -5,6 +5,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TestKit = require(script.Parent.TestKit)
 local Fixtures = require(script.Parent.CraftFixtures)
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
+local CraftDesign = require(ReplicatedStorage.Shared.Craft.CraftDesign)
 local CraftGraph = require(ReplicatedStorage.Shared.Craft.CraftGraph)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 local MassProps = require(ReplicatedStorage.Shared.Craft.MassProps)
@@ -18,12 +19,14 @@ return function(t: TestKit.Context)
 		local props = MassProps.compute(design)
 		t.expectNear(props.mass, 4150, 1e-9)
 		t.expectNear(props.fuelMass, 2000, 1e-9)
-		-- the 3-wide chute sits half a stud off-centre (odd width on an integer grid): 100 kg at +0.5
-		t.expectNear(props.com.X, 50 / 4150, 1e-9)
-		t.expectNear(props.com.Z, 50 / 4150, 1e-9)
-		t.expectTrue(props.com.Y > 0 and props.com.Y < 20)
-		t.expectEqual(props.area.Y, 36) -- 6x6 footprint (the 3x3 chute is inside it)
-		t.expectEqual(props.area.X, 6 * 18 + 3 * 2) -- 6 wide x 18 tall stack plus the 3x2 chute
+		-- a 1-block-wide stack: every block centre is half a block (2 studs) from the grid origin
+		local half = CraftDesign.GRID / 2
+		t.expectNear(props.com.X, half, 1e-9)
+		t.expectNear(props.com.Z, half, 1e-9)
+		t.expectTrue(props.com.Y > 0 and props.com.Y < 6 * CraftDesign.GRID)
+		local cell = CraftDesign.GRID * CraftDesign.GRID
+		t.expectEqual(props.area.Y, 1 * cell) -- 1x1 block footprint
+		t.expectEqual(props.area.X, 6 * cell) -- 1 wide x 6 blocks tall
 		t.expectEqual(props.leadDragFactor["+Y"], 1)
 		t.expectTrue(props.inertia.X > 0 and props.inertia.Y > 0 and props.inertia.Z > 0)
 		t.expectNear(props.inertia.X, props.inertia.Z, 1e-6) -- symmetric in X and Z
@@ -61,8 +64,8 @@ return function(t: TestKit.Context)
 
 	t.test("solid booster burns only its own fuel; staged booster drops", function()
 		local design = Fixtures.stack("Radial", { "engine_s", "tank_s_long", "pod_mk1" })
-		Fixtures.add(design, "decoupler_r", 3, 5, 0)
-		Fixtures.add(design, "srb_s", 4, 0, -2)
+		Fixtures.add(design, "decoupler_r", 1, 1, 0)
+		Fixtures.add(design, "srb_s", 2, 0, 0)
 		local graph = CraftGraph.build(design)
 		local stats = MassProps.stageStats(graph, GameConfig.G0, G_HOME)
 		t.expectEqual(#stats, 2)

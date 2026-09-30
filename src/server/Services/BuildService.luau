@@ -19,6 +19,7 @@ local BaseLayout = require(ReplicatedStorage.Shared.Config.BaseLayout)
 local CraftBuilder = require(ReplicatedStorage.Shared.Craft.CraftBuilder)
 local CraftDesign = require(ReplicatedStorage.Shared.Craft.CraftDesign)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
+local Paint = require(ReplicatedStorage.Shared.Config.Paint)
 local Parts = require(ReplicatedStorage.Shared.Config.Parts)
 local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
 local PlotService = require(script.Parent.PlotService)
@@ -55,7 +56,7 @@ local notifyRemote: RemoteEvent
 local slotsRemote: RemoteEvent
 local ackRemote: RemoteEvent
 
-local BUILD_SIZE = BaseLayout.BUILD_SIZE
+local BUILD_SIZE = BaseLayout.GRID_SIZE -- CHANGED (Phase 1 rework): the build volume in blocks
 
 local function cellKey(x: number, y: number, z: number): number
 	return (x * 128 + y) * 128 + z
@@ -212,9 +213,9 @@ local function sendSlots(player: Player)
 	slotsRemote:FireClient(player, names)
 end
 
-local function ack(player: Player, seq: unknown, kind: string, block: Block)
+local function ack(player: Player, seq: unknown, kind: string, block: Block, color: number?)
 	if type(seq) == "number" and seq > 0 and seq % 1 == 0 then
-		ackRemote:FireClient(player, seq, kind, block.type, block.gx, block.gy, block.gz, block.rot)
+		ackRemote:FireClient(player, seq, kind, block.type, block.gx, block.gy, block.gz, block.rot, color or 0)
 	end
 end
 
@@ -242,7 +243,8 @@ local function onPlace(
 	gy: unknown,
 	gz: unknown,
 	rot: unknown,
-	seq: unknown
+	seq: unknown,
+	color: unknown
 )
 	local state = stateFor(player)
 	if state == nil then
@@ -272,6 +274,7 @@ local function onPlace(
 		gy = gy :: number,
 		gz = gz :: number,
 		rot = rot :: number,
+		color = if isInteger(color) and Paint.isValid(color :: number) then color :: number else nil,
 	}
 	local reason = BuildService.checkPlacement(state, block)
 	if reason then
@@ -280,7 +283,40 @@ local function onPlace(
 	end
 	state.nextId += 1
 	addBlock(state, block)
-	ack(player, seq, "place", block)
+	ack(player, seq, "place", block, block.color)
+end
+
+local function onPaint(player: Player, gx: unknown, gy: unknown, gz: unknown, color: unknown, seq: unknown)
+	local state = stateFor(player)
+	if state == nil or not (isInteger(gx) and isInteger(gy) and isInteger(gz) and isInteger(color)) then
+		return
+	end
+	local newColor: number? = color :: number
+	if newColor == 0 then
+		newColor = nil
+	elseif not Paint.isValid(newColor :: number) then
+		return
+	end
+	if not takeToken(state, 1) then
+		notify(player, "Slow down!", "Error")
+		return
+	end
+	local x, y, z = gx :: number, gy :: number, gz :: number
+	if x < 0 or y < 0 or z < 0 or x >= BUILD_SIZE.X or y >= BUILD_SIZE.Y or z >= BUILD_SIZE.Z then
+		return
+	end
+	local blockId = state.occupancy[cellKey(x, y, z)]
+	local block = if blockId then CraftDesign.findBlock(state.design, blockId) else nil
+	if block == nil or block.color == newColor then
+		return
+	end
+	local previous = block.color
+	block.color = newColor
+	local model = CraftBuilder.findBlockModel(state.folder, block.id)
+	if model then
+		CraftBuilder.paintBlock(model, newColor)
+	end
+	ack(player, seq, "paint", block, previous)
 end
 
 local function onRemove(player: Player, gx: unknown, gy: unknown, gz: unknown, seq: unknown)
@@ -301,7 +337,7 @@ local function onRemove(player: Player, gx: unknown, gy: unknown, gz: unknown, s
 	if blockId and block then
 		local removed = table.clone(block)
 		removeBlock(state, blockId)
-		ack(player, seq, "remove", removed)
+		ack(player, seq, "remove", removed, removed.color)
 	end
 end
 
@@ -445,6 +481,7 @@ end
 function BuildService.Start()
 	Remotes.event("PlaceBlock").OnServerEvent:Connect(onPlace)
 	Remotes.event("RemoveBlock").OnServerEvent:Connect(onRemove)
+	Remotes.event("PaintBlock").OnServerEvent:Connect(onPaint)
 	Remotes.event("ClearPlot").OnServerEvent:Connect(onClear)
 	Remotes.event("SaveDesign").OnServerEvent:Connect(onSave)
 	Remotes.event("LoadDesign").OnServerEvent:Connect(onLoad)

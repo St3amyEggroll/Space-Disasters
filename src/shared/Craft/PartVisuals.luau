@@ -3,14 +3,18 @@
 	PartVisuals
 	Builds the look of every part type out of plain Roblox primitives (no meshes yet, so they can be swapped in later).
 
+	CHANGED (Phase 1 rework, Plane Crazy-style): def.Size is in BLOCKS. A model's stud size is
+	S = def.Size * GameConfig.GRID_SIZE (one block = GRID_SIZE studs); every proportion below is in studs of S.
+
 	build(def, mode) returns a NEW Model in PART-LOCAL space:
-	  - centred at the origin, unrotated, extents exactly +-Size/2 (only Attachments may lie outside the box)
+	  - centred at the origin, unrotated, extents exactly +-S/2 (only Attachments may lie outside the box)
 	  - local +Y is the part's "up": engines exhaust toward -Y, nose cones point +Y, pods/cabins stand on -Y
 	  - local -Z is the "front" (pod window, cabin cockpit, pilot seat facing); +Z is the back / mounting face
 	    (cabin doorway, fin root, leg and radial-decoupler mounts)
-	  - PrimaryPart = "Bounds", an invisible Part of exactly Size at the identity CFrame. Callers place the model
+	  - PrimaryPart = "Bounds", an invisible Part of exactly S at the identity CFrame. Callers place the model
 	    with Model:PivotTo, so every BasePart is positioned relative to Bounds.
 	  - every BasePart is Anchored (DECISIONS S9: never weld unanchored craft parts, seats included)
+	  - structural parts (block, beam, deck) are plain full boxes of their size
 
 	Modes:
 	  Real      the physical craft: Bounds is raycastable (CanQuery) for exact grid faces, character-facing surfaces
@@ -19,18 +23,25 @@
 	  Cosmetic  a look-only copy (builder ghosts, previews, client-side visuals): nothing collides, queries or
 	            touches, everything is Massless, no ProximityPrompts and no Seat instances (plain Parts instead).
 
+	Paint:
+	  The main body surfaces (hulls, shells, walls, cones, fins, decoupler bodies, structural blocks, chute canopy)
+	  carry the attribute Paint = true and their default colour in BaseColor (Color3). applyPaint(model, color)
+	  recolours exactly those parts; applyPaint(model, nil) restores BaseColor. Glass, neon, engine metal, hazard
+	  stripes, seats and ladder rungs are never painted.
+
 	Attachments (both modes):
-	  Bounds.Exhaust     engines/boosters, at (0, -Size.Y/2, 0) rotated 180 degrees about X:
+	  Bounds.Exhaust     engines/boosters, at (0, -S.Y/2, 0) rotated 180 degrees about X:
 	                     UpVector (SecondaryAxis) = -Y, i.e. ParticleEmitter EmissionDirection Top blows downward;
 	                     Axis (RightVector) = +X, LookVector = +Z.
-	  Bounds.ChuteTop    parachute, at (0, +Size.Y/2, 0), unrotated.
-	  Bounds.Foot        landing leg, at (0, -Size.Y/2, 0), unrotated.
+	  Bounds.ChuteTop    parachute, at (0, +S.Y/2, 0), unrotated.
+	  Bounds.Foot        landing leg, at (0, -S.Y/2, 0), unrotated.
 	  Hatch.HatchOutside / Hatch.HatchInside   cabin; teleport targets for a HumanoidRootPart. Their LookVector
 	                     faces the direction the character should face after the teleport (outward / inward).
 
 	Pure module: only Instance.new, no services. Deterministic.
 ]]
 
+local GameConfig = require(script.Parent.Parent.Config.GameConfig)
 local Parts = require(script.Parent.Parent.Config.Parts)
 
 --============================================================================
@@ -42,7 +53,7 @@ local PALETTE = table.freeze({
 	Stripe = Color3.fromRGB(40, 70, 150), -- tank / booster stripe rings
 	Hazard = Color3.fromRGB(245, 200, 40), -- decoupler yellow
 	Dark = Color3.fromRGB(35, 35, 40), -- heat shield, decoupler band, foot pads
-	Metal = Color3.fromRGB(150, 155, 160), -- structural parts, rails, mounts
+	Metal = Color3.fromRGB(150, 155, 160), -- rails, mounts, structural blocks
 	Cap = Color3.fromRGB(110, 115, 122), -- tank end caps
 	Glass = Color3.fromRGB(30, 45, 70),
 	Engine = Color3.fromRGB(60, 60, 66), -- engine mounts and bells
@@ -60,6 +71,9 @@ local GLASS_MATERIAL = Enum.Material.Glass
 local NEON_MATERIAL = Enum.Material.Neon
 local FABRIC_MATERIAL = Enum.Material.Fabric
 
+local PAINT_ATTRIBUTE = "Paint"
+local BASE_COLOR_ATTRIBUTE = "BaseColor"
+
 local GLASS_TRANSPARENCY = 0.5 -- cabin windows
 local POD_WINDOW_TRANSPARENCY = 0.2 -- pod windows are dark glass
 
@@ -70,60 +84,69 @@ local PROMPT_KEY = Enum.KeyCode.E
 
 -- Fuel tanks and boosters
 local HULL_INSET = 0.15 -- hull cylinders are this much narrower than caps/stripes so the rings stand proud
-local TANK_CAP_HEIGHT = 0.35
+local TANK_CAP_HEIGHT = 0.3
 local STRIPE_HEIGHT = 0.35
-local TANK_TWO_STRIPE_HEIGHT = 8 -- tanks at least this tall get two stripe rings
+local TANK_TWO_STRIPE_HEIGHT = 8 -- tanks at least this tall (studs) get two stripe rings
 
--- Engines (fractions of Size)
-local ENGINE_MOUNT_HEIGHT = 0.3 -- of Size.Y
-local ENGINE_MOUNT_PLATE = 0.2 -- studs, lighter top plate of the mount
-local ENGINE_MOUNT_DIAMETER = 0.9 -- of Size.X (the plate is full width)
-local ENGINE_THROAT_HEIGHT = 0.1 -- of Size.Y
-local ENGINE_THROAT_DIAMETER = 0.35 -- of Size.X
-local ENGINE_BELL_DIAMETERS = { 0.5, 0.68, 0.85 } -- of Size.X, top to bottom
-local ENGINE_GLOW_DIAMETER = 0.72 -- of Size.X
+-- Engines (fractions of S)
+local ENGINE_MOUNT_HEIGHT = 0.28 -- of S.Y
+local ENGINE_MOUNT_PLATE = 0.25 -- studs, lighter top plate of the mount
+local ENGINE_MOUNT_DIAMETER = 0.85 -- of S.X (the plate is full width)
+local ENGINE_THROAT_HEIGHT = 0.1 -- of S.Y
+local ENGINE_THROAT_DIAMETER = 0.35 -- of S.X
+local ENGINE_BELL_DIAMETERS = { 0.52, 0.72, 0.9 } -- of S.X, top to bottom
+local ENGINE_GLOW_DIAMETER = 0.76 -- of S.X
 local GLOW_HEIGHT = 0.06 -- studs
 
 -- Solid booster
 local SRB_NOZZLE_HEIGHT = 1.4
-local SRB_NOZZLE_DIAMETER = 0.7 -- of Size.X
-local SRB_GLOW_DIAMETER = 0.58 -- of Size.X
+local SRB_NOZZLE_DIAMETER = 0.7 -- of S.X
+local SRB_GLOW_DIAMETER = 0.58 -- of S.X
 local SRB_NOSE_HEIGHT = 3
 local SRB_STRIPE_DROP = 1 -- stripe centre below the nose section
-local SRB_TIP_DIAMETER = 0.2 -- of Size.X
+local SRB_TIP_DIAMETER = 0.2 -- of S.X
 
--- Decouplers and adapter
-local DECOUPLER_BAND_HEIGHT = 0.3
-local DECOUPLER_BAND_INSET = 0.3
-local RADIAL_BODY_WIDTH = 0.8
-local RADIAL_PLATE_THICKNESS = 0.2
-local ADAPTER_TOP_DIAMETER = 6
-local ADAPTER_SECTIONS = 4
+-- Stacked decoupler: hull cylinder, hazard band (yellow rings around a dark separation groove) at mid-height
+local DECOUPLER_HAZARD_HEIGHT = 0.45 -- each yellow ring
+local DECOUPLER_GROOVE_HEIGHT = 0.3
+local DECOUPLER_GROOVE_INSET = 0.4 -- groove diameter = S.X - inset
+
+-- Radial decoupler: plate on +Z, arm through the block, clamp pad on -Z
+local RADIAL_PLATE_SIZE = Vector3.new(3.2, 3.2, 0.4)
+local RADIAL_PLATE_STRIPE = Vector3.new(3.4, 0.6, 0.5) -- hazard strip across the plate
+local RADIAL_ARM_WIDTH = 1.2
+local RADIAL_BAND_SIZE = Vector3.new(1.5, 1.5, 0.5) -- hazard band on the arm (the separation joint)
+local RADIAL_PAD_SIZE = Vector3.new(2.4, 2.4, 0.3)
+
+-- Adapter
+local ADAPTER_SECTIONS = 5
 
 -- Nose cones
-local NOSE_TIP_DIAMETER = 0.18 -- of Size.X
+local NOSE_TIP_DIAMETER = 0.18 -- of S.X
 
 -- Fin (root on the +Z face, tip toward -Z, swept leading edge on top)
 local FIN_THICKNESS = 0.4
-local FIN_TIP_CHORD = 0.375 -- of Size.Y
-local FIN_ROOT_PLATE = 0.3
+local FIN_TIP_CHORD = 0.375 -- of S.Y
+local FIN_ROOT_PLATE = Vector3.new(1.2, 0.9, 0.3) -- X, Y (fraction of S.Y), Z thickness
 
--- Command pod
-local POD_SHIELD_HEIGHT = 0.3
-local POD_SECTIONS = { -- diameter, height (studs, bottom to top, above the heat shield)
-	{ d = 6, h = 1.3 },
-	{ d = 5, h = 1.2 },
-	{ d = 4, h = 1.0 },
-	{ d = 3, h = 0.85 },
+-- Command pod (4x4x4 studs at one block)
+local POD_SHIELD_HEIGHT = 0.25
+local POD_SECTIONS = { -- diameter and height as fractions of S.X / S.Y, bottom to top above the heat shield
+	{ d = 1, h = 0.25 },
+	{ d = 0.85, h = 0.22 },
+	{ d = 0.7, h = 0.2 },
+	{ d = 0.53, h = 0.15 },
 }
-local POD_TOP_HATCH_DIAMETER = 2
-local POD_WINDOW_SIZE = Vector3.new(1.8, 0.6, 0.2)
+local POD_WINDOW_SECTION = 3
+local POD_TOP_HATCH_DIAMETER = 0.35 -- of S.X
+local POD_WINDOW_SIZE = Vector3.new(1.4, 0.5, 0.2)
+local POD_SEAT_SIZE = Vector3.new(2, 0.5, 2)
 
--- Crew cabin
+-- Crew cabin (8x8x8 studs at two blocks; 7x7x7 interior)
 local CABIN_WALL_THICKNESS = 0.5
 local CABIN_FLOOR_THICKNESS = 0.5
 local CABIN_ROOF_THICKNESS = 0.5
-local CABIN_WINDOW_WIDTH = 4
+local CABIN_WINDOW_WIDTH = 3
 local CABIN_WINDOW_SILL = 2.5 -- above the floor top
 local CABIN_WINDOW_HEIGHT = 3
 local CABIN_GLASS_THICKNESS = 0.2
@@ -131,22 +154,27 @@ local CABIN_DOOR_WIDTH = 3
 local CABIN_DOOR_HEIGHT = 6
 local CABIN_HATCH_THICKNESS = 0.3
 local CABIN_HATCH_ATTACH_OFFSET = 1.5 -- studs from the door centre to the Outside/Inside teleport targets
-local CABIN_CONSOLE_SIZE = Vector3.new(4, 2.5, 1)
+local CABIN_CONSOLE_SIZE = Vector3.new(3, 2.5, 1)
 local CABIN_PILOT_GAP = 0.5 -- between the console and the pilot seat
 local CABIN_BACKREST_THICKNESS = 0.3
+local CABIN_SIDE_SEAT_Z = -1.5 -- side seats sit forward, beside the pilot, clear of the back corner seat
+local CABIN_CORNER_SEAT_GAP = 0.25 -- corner seat distance from the back wall
 
 -- Utility
 local CHUTE_BASE_HEIGHT = 0.5
 local LADDER_RAIL_WIDTH = 0.2
 local LADDER_RUNG_THICKNESS = 0.2
 local LADDER_RUNG_SPACING = 1 -- humanoids climb rung ladders with gaps up to ~1.5 studs
-local LEG_STRUT_DIAMETER = 0.5
-local LEG_SHOCK_DIAMETER = 0.8
-local LEG_SHOCK_HEIGHT = 1.2
+local LEG_MOUNT_HEIGHT = 0.8
+local LEG_STRUT_DIAMETER = 0.6
+local LEG_SHOCK_DIAMETER = 1
+local LEG_SHOCK_HEIGHT = 2
 local LEG_FOOT_HEIGHT = 0.3
-local LEG_FOOT_DIAMETER = 0.9 -- of Size.X
-local LEG_BRACE_THICKNESS = 0.25
-local EXT_SEAT_BACKREST = 0.3
+local LEG_FOOT_DIAMETER = 0.9 -- of S.X
+local LEG_BRACE_THICKNESS = 0.3
+local EXT_SEAT_BASE = 0.3
+local EXT_SEAT_SIZE = Vector3.new(2.4, 1, 2)
+local EXT_SEAT_BACKREST = Vector3.new(2.4, 3, 0.3)
 
 local MIN_EXTENT = 1e-3 -- wall segments thinner than this are skipped
 --============================================================================
@@ -157,14 +185,22 @@ type Look = {
 	Color: Color3,
 	Material: Enum.Material,
 	Transparency: number,
+	Paint: boolean,
 }
 
-local function look(color: Color3, material: Enum.Material, transparency: number?): Look
-	return table.freeze({ Color = color, Material = material, Transparency = transparency or 0 })
+local function look(color: Color3, material: Enum.Material, transparency: number?, paint: boolean?): Look
+	return table.freeze({
+		Color = color,
+		Material = material,
+		Transparency = transparency or 0,
+		Paint = paint == true,
+	})
 end
 
 local LOOK = table.freeze({
-	Hull = look(PALETTE.Hull, HULL_MATERIAL),
+	Hull = look(PALETTE.Hull, HULL_MATERIAL, 0, true),
+	Structure = look(PALETTE.Metal, HULL_MATERIAL, 0, true),
+	Chute = look(PALETTE.Chute, FABRIC_MATERIAL, 0, true),
 	Accent = look(PALETTE.Accent, HULL_MATERIAL),
 	Stripe = look(PALETTE.Stripe, HULL_MATERIAL),
 	Hazard = look(PALETTE.Hazard, HULL_MATERIAL),
@@ -178,18 +214,17 @@ local LOOK = table.freeze({
 	Floor = look(PALETTE.Floor, FLOOR_MATERIAL),
 	Seat = look(PALETTE.Seat, FABRIC_MATERIAL),
 	Screen = look(PALETTE.Screen, NEON_MATERIAL),
-	Chute = look(PALETTE.Chute, FABRIC_MATERIAL),
 })
 
 -- One section of a stacked cone: diameter as a fraction of the base diameter, height as a fraction of the span.
 type Layer = { d: number, h: number, look: Look? }
 
 local NOSE_LAYERS: { Layer } = {
-	{ d = 1, h = 0.12, look = LOOK.Metal },
+	{ d = 1, h = 0.1, look = LOOK.Metal },
 	{ d = 0.94, h = 0.26 },
 	{ d = 0.74, h = 0.24 },
 	{ d = 0.52, h = 0.22 },
-	{ d = 0.32, h = 0.16 },
+	{ d = 0.32, h = 0.18 },
 }
 
 local SRB_NOSE_LAYERS: { Layer } = {
@@ -200,7 +235,7 @@ local SRB_NOSE_LAYERS: { Layer } = {
 
 type Ctx = {
 	def: Parts.PartDef,
-	size: Vector3,
+	size: Vector3, -- studs
 	real: boolean,
 	model: Model,
 	bounds: Part,
@@ -236,6 +271,10 @@ local function finish(ctx: Ctx, part: BasePart, name: string, style: Look, colli
 	end
 	if style.Material == NEON_MATERIAL or style.Transparency > 0 then
 		part.CastShadow = false
+	end
+	if style.Paint then
+		part:SetAttribute(PAINT_ATTRIBUTE, true)
+		part:SetAttribute(BASE_COLOR_ATTRIBUTE, style.Color)
 	end
 	part.Parent = ctx.model
 end
@@ -365,30 +404,31 @@ local function windowWall(ctx: Ctx, prefix: string, axis: "X" | "Z", offset: num
 end
 
 --============================================================================
--- Builders (S = def.Size; everything stays inside +-S/2)
+-- Builders (S = ctx.size in studs; everything stays inside +-S/2)
 --============================================================================
 
 local function buildPod(ctx: Ctx)
-	local hy = ctx.size.Y / 2
+	local S = ctx.size
+	local hy = S.Y / 2
 	-- Shell parts do not collide so the seated character sits inside the capsule.
 	local y = -hy + POD_SHIELD_HEIGHT
-	cylinder(ctx, "HeatShield", POD_SECTIONS[1].d, -hy, y, LOOK.Dark, false)
-	local windowSectionY = 0
+	cylinder(ctx, "HeatShield", S.X * POD_SECTIONS[1].d, -hy, y, LOOK.Dark, false)
+	local windowY, windowD = 0, S.X
 	for i, section in POD_SECTIONS do
-		cylinder(ctx, `Shell{i}`, section.d, y, y + section.h, LOOK.Hull, false)
-		if i == 3 then
-			windowSectionY = y + section.h / 2
+		local h = S.Y * section.h
+		cylinder(ctx, `Shell{i}`, S.X * section.d, y, y + h, LOOK.Hull, false)
+		if i == POD_WINDOW_SECTION then
+			windowY, windowD = y + h / 2, S.X * section.d
 		end
-		y += section.h
+		y += h
 	end
-	cylinder(ctx, "TopHatch", POD_TOP_HATCH_DIAMETER, y, hy, LOOK.Accent, false)
-	-- Front window (-Z) on the head-height section, flush with its front surface.
-	local frontZ = -POD_SECTIONS[3].d / 2
+	cylinder(ctx, "TopHatch", S.X * POD_TOP_HATCH_DIAMETER, y, hy, LOOK.Accent, false)
+	-- Front window (-Z) on the head-height section, sunk halfway into its front surface.
 	local window = POD_WINDOW_SIZE
-	box(ctx, "Window", window, CFrame.new(0, windowSectionY, frontZ + window.Z / 4), LOOK.PodGlass, false)
+	box(ctx, "Window", window, CFrame.new(0, windowY, -windowD / 2 + window.Z / 4), LOOK.PodGlass, false)
 	if ctx.def.Seats >= 1 then
-		local seatY = -hy + POD_SHIELD_HEIGHT + SEAT_SIZE.Y / 2
-		seat(ctx, 1, SEAT_SIZE, CFrame.new(0, seatY, 0))
+		-- Bottom centre, facing -Z; a seated R15 (about 4 studs) keeps its head just inside the capsule.
+		seat(ctx, 1, POD_SEAT_SIZE, CFrame.new(0, -hy + POD_SHIELD_HEIGHT + POD_SEAT_SIZE.Y / 2, 0))
 	end
 end
 
@@ -461,13 +501,16 @@ local function buildCabin(ctx: Ctx)
 		false
 	)
 
+	-- Seats: pilot front centre, two side seats forward against the side walls, one in the back-left corner.
+	-- The strip in front of the doorway (|x| <= door half width, back of the cabin) stays clear.
 	local seatY = floorTop + SEAT_SIZE.Y / 2
 	local pilotZ = -iz + console.Z + CABIN_PILOT_GAP + SEAT_SIZE.Z / 2
+	local sideX = ix - SEAT_SIZE.X / 2
 	local placements: { CFrame } = {
 		CFrame.new(0, seatY, pilotZ), -- pilot, faces the front (-Z)
-		CFrame.new(-ix + SEAT_SIZE.X / 2, seatY, 0) * FACE_PLUS_X, -- left wall, faces in
-		CFrame.new(ix - SEAT_SIZE.X / 2, seatY, 0) * FACE_MINUS_X, -- right wall, faces in
-		CFrame.new(-ix + SEAT_SIZE.X / 2, seatY, iz - SEAT_SIZE.Z / 2 - 0.25), -- back-left corner, faces front
+		CFrame.new(-sideX, seatY, CABIN_SIDE_SEAT_Z) * FACE_PLUS_X, -- left wall, faces in
+		CFrame.new(sideX, seatY, CABIN_SIDE_SEAT_Z) * FACE_MINUS_X, -- right wall, faces in
+		CFrame.new(-sideX, seatY, iz - SEAT_SIZE.Z / 2 - CABIN_CORNER_SEAT_GAP), -- back-left corner, faces front
 	}
 	for i = 1, math.min(ctx.def.Seats, #placements) do
 		seat(ctx, i, SEAT_SIZE, placements[i])
@@ -487,7 +530,7 @@ end
 
 local function buildTank(ctx: Ctx)
 	local S = ctx.size
-	local hy, d = S.Y / 2, S.X
+	local hy, d = S.Y / 2, math.min(S.X, S.Z)
 	cylinder(ctx, "CapBottom", d, -hy, -hy + TANK_CAP_HEIGHT, LOOK.Cap, true)
 	cylinder(ctx, "Hull", d - HULL_INSET, -hy + TANK_CAP_HEIGHT, hy - TANK_CAP_HEIGHT, LOOK.Hull, true)
 	cylinder(ctx, "CapTop", d, hy - TANK_CAP_HEIGHT, hy, LOOK.Cap, true)
@@ -504,7 +547,7 @@ end
 
 local function buildEngine(ctx: Ctx)
 	local S = ctx.size
-	local hy, d = S.Y / 2, S.X
+	local hy, d = S.Y / 2, math.min(S.X, S.Z)
 	local mountBottom = hy - S.Y * ENGINE_MOUNT_HEIGHT
 	cylinder(ctx, "MountPlate", d, hy - ENGINE_MOUNT_PLATE, hy, LOOK.Metal, true)
 	cylinder(ctx, "Mount", d * ENGINE_MOUNT_DIAMETER, mountBottom, hy - ENGINE_MOUNT_PLATE, LOOK.Engine, true)
@@ -525,7 +568,7 @@ end
 
 local function buildBooster(ctx: Ctx)
 	local S = ctx.size
-	local hy, d = S.Y / 2, S.X
+	local hy, d = S.Y / 2, math.min(S.X, S.Z)
 	local nozzleTop = -hy + SRB_NOZZLE_HEIGHT
 	local noseBottom = hy - SRB_NOSE_HEIGHT
 	cylinder(ctx, "Body", d - HULL_INSET, nozzleTop, noseBottom, LOOK.Hull, true)
@@ -539,47 +582,62 @@ local function buildBooster(ctx: Ctx)
 	addExhaust(ctx)
 end
 
+-- A hull-coloured cylinder with a hazard band (yellow rings around a dark separation groove) at mid-height.
 local function buildDecoupler(ctx: Ctx)
 	local S = ctx.size
-	local hy, band = S.Y / 2, DECOUPLER_BAND_HEIGHT / 2
-	cylinder(ctx, "Upper", S.X, band, hy, LOOK.Hazard, true)
-	cylinder(ctx, "Band", S.X - DECOUPLER_BAND_INSET, -band, band, LOOK.Dark, true)
-	cylinder(ctx, "Lower", S.X, -hy, -band, LOOK.Hazard, true)
+	local hy, d = S.Y / 2, math.min(S.X, S.Z)
+	local g = DECOUPLER_GROOVE_HEIGHT / 2
+	local bandTop = g + DECOUPLER_HAZARD_HEIGHT
+	cylinder(ctx, "Upper", d - HULL_INSET, bandTop, hy, LOOK.Hull, true)
+	cylinder(ctx, "HazardUpper", d, g, bandTop, LOOK.Hazard, true)
+	cylinder(ctx, "Band", d - DECOUPLER_GROOVE_INSET, -g, g, LOOK.Dark, true)
+	cylinder(ctx, "HazardLower", d, -bandTop, -g, LOOK.Hazard, true)
+	cylinder(ctx, "Lower", d - HULL_INSET, -hy, -bandTop, LOOK.Hull, true)
 end
 
+-- Mounting plate on +Z (against the parent), an arm with a hazard band through the block, clamp pad on -Z.
 local function buildRadialDecoupler(ctx: Ctx)
 	local S = ctx.size
-	local bodyW = math.min(RADIAL_BODY_WIDTH, S.X)
-	box(ctx, "Body", Vector3.new(bodyW, S.Y, bodyW), CFrame.new(), LOOK.Metal, true)
-	box(ctx, "Stripe", Vector3.new(S.X, STRIPE_HEIGHT, S.Z), CFrame.new(), LOOK.Hazard, true)
-	-- Mounting plate on the +Z face, slightly narrower than the stripe to avoid coplanar faces.
+	local hz = S.Z / 2
+	local plate = RADIAL_PLATE_SIZE
+	local plateZ = hz - plate.Z / 2
+	box(ctx, "MountPlate", plate, CFrame.new(0, 0, plateZ), LOOK.Hull, true)
+	local stripe = RADIAL_PLATE_STRIPE
+	box(ctx, "PlateStripe", stripe, CFrame.new(0, 0, hz - stripe.Z / 2), LOOK.Hazard, true)
+	local pad = RADIAL_PAD_SIZE
+	local padZ = -hz + pad.Z / 2
+	box(ctx, "Pad", pad, CFrame.new(0, 0, padZ), LOOK.Hull, true)
+	local armZ0, armZ1 = -hz + pad.Z, hz - plate.Z
 	box(
 		ctx,
-		"MountPlate",
-		Vector3.new(S.X * 0.9, S.Y, RADIAL_PLATE_THICKNESS),
-		CFrame.new(0, 0, S.Z / 2 - RADIAL_PLATE_THICKNESS / 2),
-		LOOK.Dark,
+		"Arm",
+		Vector3.new(RADIAL_ARM_WIDTH, RADIAL_ARM_WIDTH, armZ1 - armZ0),
+		CFrame.new(0, 0, (armZ0 + armZ1) / 2),
+		LOOK.Metal,
 		true
 	)
+	box(ctx, "Band", RADIAL_BAND_SIZE, CFrame.new(0, 0, (armZ0 + armZ1) / 2), LOOK.Hazard, true)
 end
 
+-- Tapers from the full diameter at the bottom to one block (the small stack size) at the top.
 local function buildAdapter(ctx: Ctx)
 	local S = ctx.size
-	local topFraction = math.min(ADAPTER_TOP_DIAMETER, S.X) / S.X
+	local d = math.min(S.X, S.Z)
+	local topFraction = math.min(GameConfig.GRID_SIZE, d) / d
 	local layers: { Layer } = {}
 	for i = 1, ADAPTER_SECTIONS do
 		local t = (i - 1) / (ADAPTER_SECTIONS - 1)
 		local edge = i == 1 or i == ADAPTER_SECTIONS
 		layers[i] = { d = 1 + (topFraction - 1) * t, h = 1 / ADAPTER_SECTIONS, look = if edge then LOOK.Metal else nil }
 	end
-	stack(ctx, "Section", S.X, -S.Y / 2, S.Y / 2, layers, LOOK.Hull)
+	stack(ctx, "Section", d, -S.Y / 2, S.Y / 2, layers, LOOK.Hull)
 end
 
 local function buildNose(ctx: Ctx)
 	local S = ctx.size
-	local hy = S.Y / 2
-	local tipD = math.min(S.X * NOSE_TIP_DIAMETER, S.Y / 2)
-	stack(ctx, "Cone", S.X, -hy, hy - tipD / 2, NOSE_LAYERS, LOOK.Hull)
+	local hy, d = S.Y / 2, math.min(S.X, S.Z)
+	local tipD = math.min(d * NOSE_TIP_DIAMETER, S.Y / 2)
+	stack(ctx, "Cone", d, -hy, hy - tipD / 2, NOSE_LAYERS, LOOK.Hull)
 	ball(ctx, "Tip", tipD, Vector3.new(0, hy - tipD / 2, 0), LOOK.Accent, false)
 end
 
@@ -588,7 +646,8 @@ local function buildFin(ctx: Ctx)
 	local hy, hz = S.Y / 2, S.Z / 2
 	local t = math.min(FIN_THICKNESS, S.X)
 	local tipChord = S.Y * FIN_TIP_CHORD
-	local z0, z1 = -hz, hz - FIN_ROOT_PLATE -- blade from the tip to the root plate
+	local rootT = FIN_ROOT_PLATE.Z
+	local z0, z1 = -hz, hz - rootT -- blade from the tip to the root plate
 	local span, zc = z1 - z0, (z0 + z1) / 2
 	box(ctx, "Blade", Vector3.new(t, tipChord, span), CFrame.new(0, -hy + tipChord / 2, zc), LOOK.Hull, true)
 	local sweepH = S.Y - tipChord
@@ -596,8 +655,8 @@ local function buildFin(ctx: Ctx)
 	box(
 		ctx,
 		"RootPlate",
-		Vector3.new(S.X, S.Y, FIN_ROOT_PLATE),
-		CFrame.new(0, 0, hz - FIN_ROOT_PLATE / 2),
+		Vector3.new(math.min(FIN_ROOT_PLATE.X, S.X), S.Y * FIN_ROOT_PLATE.Y, rootT),
+		CFrame.new(0, 0, hz - rootT / 2),
 		LOOK.Metal,
 		true
 	)
@@ -605,7 +664,7 @@ end
 
 local function buildChute(ctx: Ctx)
 	local S = ctx.size
-	local hy, d = S.Y / 2, S.X
+	local hy, d = S.Y / 2, math.min(S.X, S.Z)
 	local baseTop = -hy + CHUTE_BASE_HEIGHT
 	cylinder(ctx, "Base", d, -hy, baseTop, LOOK.Metal, true)
 	local packTop = baseTop + (hy - baseTop) * 0.45
@@ -621,14 +680,14 @@ local function buildLeg(ctx: Ctx)
 	local S = ctx.size
 	local hy, hz = S.Y / 2, S.Z / 2
 	local footTop = -hy + LEG_FOOT_HEIGHT
-	local mountH = 0.6
-	-- Mount block on the +Z (mounting) face at the top.
-	box(ctx, "Mount", Vector3.new(S.X * 0.8, mountH, hz), CFrame.new(0, hy - mountH / 2, hz / 2), LOOK.Metal, true)
+	local mountH = LEG_MOUNT_HEIGHT
+	-- Mount block on the +Z (mounting) face at the top, reaching back to the strut.
+	box(ctx, "Mount", Vector3.new(S.X * 0.6, mountH, hz), CFrame.new(0, hy - mountH / 2, hz / 2), LOOK.Metal, true)
 	cylinder(ctx, "Strut", LEG_STRUT_DIAMETER, footTop, hy, LOOK.Metal, true)
 	cylinder(ctx, "Shock", LEG_SHOCK_DIAMETER, footTop, footTop + LEG_SHOCK_HEIGHT, LOOK.Engine, true)
 	-- Diagonal brace from the back of the mount down to the strut.
-	local top = Vector3.new(0, hy - mountH, hz - 0.15)
-	local bottom = Vector3.new(0, -hy * 0.24, 0)
+	local top = Vector3.new(0, hy - mountH, hz - 0.3)
+	local bottom = Vector3.new(0, -hy * 0.3, 0)
 	local delta = top - bottom
 	local angle = math.atan2(delta.Z, delta.Y) -- rotation about X that tilts +Y toward +Z
 	box(
@@ -659,23 +718,22 @@ local function buildLadder(ctx: Ctx)
 	end
 end
 
+-- Base plate across the cell, seat on it, backrest on the +Z (mounting) side.
 local function buildExternalSeat(ctx: Ctx)
 	local S = ctx.size
 	local hy, hz = S.Y / 2, S.Z / 2
-	local seatSize = Vector3.new(S.X, SEAT_SIZE.Y, S.Z - EXT_SEAT_BACKREST)
-	seat(ctx, 1, seatSize, CFrame.new(0, -hy + seatSize.Y / 2, -EXT_SEAT_BACKREST / 2))
-	box(
-		ctx,
-		"Backrest",
-		Vector3.new(S.X, S.Y, EXT_SEAT_BACKREST),
-		CFrame.new(0, 0, hz - EXT_SEAT_BACKREST / 2),
-		LOOK.Seat,
-		true
-	)
+	local baseTop = -hy + EXT_SEAT_BASE
+	box(ctx, "Base", Vector3.new(S.X, EXT_SEAT_BASE, S.Z), CFrame.new(0, (-hy + baseTop) / 2, 0), LOOK.Metal, true)
+	local back = EXT_SEAT_BACKREST
+	local seatSize = EXT_SEAT_SIZE
+	local seatZ = hz - back.Z - seatSize.Z / 2
+	seat(ctx, 1, seatSize, CFrame.new(0, baseTop + seatSize.Y / 2, seatZ))
+	box(ctx, "Backrest", back, CFrame.new(0, baseTop + back.Y / 2, hz - back.Z / 2), LOOK.Seat, true)
 end
 
+-- Plane Crazy-style building block: a plain full box of its size.
 local function buildStructural(ctx: Ctx)
-	box(ctx, "Block", ctx.size, CFrame.new(), LOOK.Metal, true)
+	box(ctx, "Block", ctx.size, CFrame.new(), LOOK.Structure, true)
 end
 
 -- Unknown / new part types: a plain hull block of the right size.
@@ -719,13 +777,14 @@ PartVisuals.PALETTE = PALETTE
 -- Builds a new Model for the part in part-local space (see the header). The caller parents and pivots it.
 function PartVisuals.build(def: Parts.PartDef, mode: Mode): Model
 	local real = mode == "Real"
+	local size = def.Size * GameConfig.GRID_SIZE
 	local model = Instance.new("Model")
 	model.Name = def.Id
 	model:SetAttribute("PartId", def.Id)
 
 	local bounds = Instance.new("Part")
 	bounds.Name = "Bounds"
-	bounds.Size = def.Size
+	bounds.Size = size
 	bounds.CFrame = CFrame.identity
 	bounds.Transparency = 1
 	bounds.Anchored = true
@@ -739,10 +798,22 @@ function PartVisuals.build(def: Parts.PartDef, mode: Mode): Model
 	bounds.Parent = model
 	model.PrimaryPart = bounds
 
-	local ctx: Ctx = { def = def, size = def.Size, real = real, model = model, bounds = bounds }
+	local ctx: Ctx = { def = def, size = size, real = real, model = model, bounds = bounds }
 	local builder = BUILDERS[def.Id] or buildFallback
 	builder(ctx)
 	return model
+end
+
+-- Recolours every paintable part (Paint = true) of a built model; nil restores each part's BaseColor.
+function PartVisuals.applyPaint(model: Model, color: Color3?)
+	for _, descendant in model:GetDescendants() do
+		if descendant:IsA("BasePart") and descendant:GetAttribute(PAINT_ATTRIBUTE) == true then
+			local target = color or descendant:GetAttribute(BASE_COLOR_ATTRIBUTE)
+			if typeof(target) == "Color3" then
+				descendant.Color = target
+			end
+		end
+	end
 end
 
 return table.freeze(PartVisuals)

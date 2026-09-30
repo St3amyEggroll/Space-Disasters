@@ -8,7 +8,8 @@
 	    the 6 directions, fin area, and an area-weighted centre of pressure
 	  * per-stage delta-v (sea level and vacuum), TWR on Homeworld, burn time (stageStats)
 
-	Contact hull points arrive with the flight model in Phase 2.
+	Design coordinates are in blocks; every output is in studs (= meters): positions and sizes are scaled by
+	CraftDesign.GRID (CHANGED Phase 1 rework). Contact hull points arrive with the flight model in Phase 2.
 	Pure module: no services.
 ]]
 
@@ -22,6 +23,7 @@ type Graph = CraftGraph.Graph
 --============================================================================
 -- Tunables
 --============================================================================
+local GRID = CraftDesign.GRID
 local MAX_BURN_EVENTS = 512 -- safety cap on flameout events per stage
 local EPSILON_FUEL = 1e-9 -- kg
 --============================================================================
@@ -107,7 +109,7 @@ function MassProps.compute(design: Design, fuel: FuelState?, onlyIds: { [number]
 		dryMass += def.DryMass
 		fuelMass += f
 		mass += m
-		local center = CraftDesign.blockCenter(block)
+		local center = CraftDesign.blockCenter(block) * GRID
 		weighted += center * m
 
 		local minV, maxV = CraftDesign.blockMin(block), CraftDesign.blockMax(block)
@@ -115,7 +117,7 @@ function MassProps.compute(design: Design, fuel: FuelState?, onlyIds: { [number]
 		table.insert(rectsY, { minV.X, minV.Z, maxV.X, maxV.Z })
 		table.insert(rectsZ, { minV.X, minV.Y, maxV.X, maxV.Y })
 
-		local size = maxV - minV
+		local size = (maxV - minV) * GRID
 		local faceArea = size.X * size.Y + size.Y * size.Z + size.X * size.Z
 		copSum += center * (faceArea * def.DragFactor)
 		copWeight += faceArea * def.DragFactor
@@ -147,8 +149,8 @@ function MassProps.compute(design: Design, fuel: FuelState?, onlyIds: { [number]
 	for _, block in blocks do
 		local def = Parts.get(block.type)
 		local m = def.DryMass + blockFuel(block, fuel)
-		local size = CraftDesign.blockSize(block)
-		local d = CraftDesign.blockCenter(block) - com
+		local size = CraftDesign.blockSize(block) * GRID
+		local d = CraftDesign.blockCenter(block) * GRID - com
 		ix += m * (size.Y ^ 2 + size.Z ^ 2) / 12 + m * (d.Y ^ 2 + d.Z ^ 2)
 		iy += m * (size.X ^ 2 + size.Z ^ 2) / 12 + m * (d.X ^ 2 + d.Z ^ 2)
 		iz += m * (size.X ^ 2 + size.Y ^ 2) / 12 + m * (d.X ^ 2 + d.Y ^ 2)
@@ -165,7 +167,7 @@ function MassProps.compute(design: Design, fuel: FuelState?, onlyIds: { [number]
 		fuelMass = fuelMass,
 		com = com,
 		inertia = Vector3.new(ix, iy, iz),
-		area = Vector3.new(unionArea(rectsX), unionArea(rectsY), unionArea(rectsZ)),
+		area = Vector3.new(unionArea(rectsX), unionArea(rectsY), unionArea(rectsZ)) * (GRID * GRID),
 		leadDragFactor = leadDragFactor,
 		finArea = finArea,
 		cop = if copWeight > 0 then copSum / copWeight else com,

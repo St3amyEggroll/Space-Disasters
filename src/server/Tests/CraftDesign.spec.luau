@@ -36,9 +36,10 @@ return function(t: TestKit.Context)
 	end)
 
 	t.test("oriented size swaps axes", function()
-		t.expectEqual(CraftDesign.orientedSize("fin", 0), Vector3.new(1, 4, 3))
+		t.expectEqual(CraftDesign.orientedSize("fin", 0), Vector3.new(1, 2, 1))
 		local lying = CraftDesign.rotateOrientation(0, CFrame.Angles(0, 0, math.pi / 2))
-		t.expectEqual(CraftDesign.orientedSize("srb_s", lying), Vector3.new(14, 4, 4))
+		t.expectEqual(CraftDesign.orientedSize("srb_s", lying), Vector3.new(3, 1, 1))
+		t.expectEqual(CraftDesign.orientedSize("beam_4", 0), Vector3.new(1, 1, 3))
 	end)
 
 	t.test("touches needs a shared face with area; overlaps needs volume", function()
@@ -83,6 +84,7 @@ return function(t: TestKit.Context)
 	t.test("JSON round trip", function()
 		local design = Fixtures.sanity()
 		design.blocks[1].stageOverride = 2
+		design.blocks[1].color = 5
 		design.blocks[2].rot = 13
 		local decoded, err = CraftDesign.fromJson(CraftDesign.toJson(design))
 		t.expectTrue(decoded ~= nil, tostring(err))
@@ -98,18 +100,20 @@ return function(t: TestKit.Context)
 				t.expectEqual(other.gz, block.gz)
 				t.expectEqual(other.rot, block.rot)
 				t.expectEqual(other.stageOverride, block.stageOverride)
+				t.expectEqual(other.color, block.color)
 			end
 		end
 		t.expectTrue(CraftDesign.fromJson("{") == nil)
 		t.expectTrue(CraftDesign.fromJson('{"v":99,"blocks":[]}') == nil)
 	end)
 
-	t.test("buffer round trip (11 bytes per block)", function()
+	t.test("buffer round trip (12 bytes per block)", function()
 		local design = Fixtures.sanity()
 		design.blocks[3].stageOverride = 7
+		design.blocks[3].color = 12
 		design.blocks[4].gx = -300
 		local b = CraftDesign.toBuffer(design)
-		t.expectEqual(buffer.len(b), 2 + #design.name + 2 + #design.blocks * 11)
+		t.expectEqual(buffer.len(b), 2 + #design.name + 2 + #design.blocks * 12)
 		local decoded = CraftDesign.fromBuffer(b)
 		t.expectTrue(decoded ~= nil)
 		if decoded then
@@ -118,16 +122,32 @@ return function(t: TestKit.Context)
 				t.expectEqual(other.type, block.type)
 				t.expectEqual(other.gx, block.gx)
 				t.expectEqual(other.stageOverride, block.stageOverride)
+				t.expectEqual(other.color, block.color)
 			end
 		end
 		t.expectTrue(CraftDesign.fromBuffer(buffer.create(3)) == nil)
 	end)
 
+	t.test("mirror orientations are proper rotations and mirror twice to the start", function()
+		for rot = 0, 23 do
+			for _, axis in { "X", "Z" } do
+				local m = CraftDesign.mirrorOrientation(rot, axis :: "X" | "Z")
+				t.expectEqual(CraftDesign.mirrorOrientation(m, axis :: "X" | "Z"), rot)
+			end
+		end
+		-- a part pointing +X mirrors across X to point -X
+		local pointX = CraftDesign.rotateOrientation(0, CFrame.Angles(0, 0, -math.pi / 2))
+		local up = CraftDesign.rotationCFrame(CraftDesign.mirrorOrientation(pointX, "X")).UpVector
+		t.expectNear(up.X, -1, 1e-6)
+	end)
+
 	t.test("bounds and root block", function()
 		local design = Fixtures.sanity()
 		local minV, maxV = CraftDesign.bounds(design)
-		t.expectEqual(minV, Vector3.new(-3, 0, -3))
-		t.expectEqual(maxV.Y, 4 + 8 + 1 + 5 + 2)
+		t.expectEqual(minV, Vector3.new(0, 0, 0))
+		t.expectEqual(maxV.Y, 1 + 2 + 1 + 1 + 1)
+		-- block CFrames are in studs
+		t.expectEqual(CraftDesign.blockCFrame(design.blocks[1]).Position, Vector3.new(0.5, 0.5, 0.5) * CraftDesign.GRID)
 		local root = CraftDesign.rootBlock(design)
 		t.expectTrue(root ~= nil and root.type == "pod_mk1")
 	end)
