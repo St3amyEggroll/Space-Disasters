@@ -18,28 +18,28 @@ Phase 2 is split into 2a/2b so you can playtest halfway through (agreed with Ste
 
 ---
 
-## Phase 1: what was built
+## Phase 1: what was built (Plane Crazy-style rework, see DECISIONS D20)
 
 - **Base (Oopsie Point Launch Complex):**
-  - The base pocket (slot 0, SURFACE_ALIGNED, lat 0 / lon 0) holds the HomeBase site: ground plate, spawn, street, decorations, and 12 plots.
-  - Each plot is a 40×120×40 hangar build area plus a launch pad. The site is 735 parts.
-- **Plots:** assigned on join (player attribute `PlotIndex`, with your name on the plot sign) and freed on leave. Rolled-out crafts despawn 60 s after their owner leaves.
-- **Builder (in your own hangar):**
-  - A palette grouped by category, and a ghost preview (green, or red when invalid).
-  - Click to place. **R** yaw, **T** pitch, **X** delete mode, **1/2/4** radial symmetry, **Ctrl+Z** undo (50 steps).
-  - Live stats: mass, part count, per-stage Δv (vacuum/sea level), TWR, total Δv, warnings.
-- **Server validation:** plot owner only, inside the build volume, no overlap, ≤ 250 blocks, ≤ 20 ops/s, and every new block must touch the craft (only the first block may sit on the floor).
-- **All 23 parts** with procedural visuals. The Crew Cabin has a real walkable interior (7-stud headroom, windows, 4 seats) and a hatch door.
-- **Save/load:** 10 slots with names, plus your hangar is restored when you rejoin.
-- **Roll Out:** builds your craft on your pad and replaces your previous one. It refuses crafts with no command part or with loose blocks.
-- **Seats and hatches:**
-  - "Pilot"/"Sit" prompts on seats, and "Enter"/"Exit" prompts on the cabin hatch.
-  - The **Boarding** button (Public → Friends → Private) controls who can use them, on your pad craft and in your hangar.
-- **Tests:** 52 offline tests, including staging on 5 fixture rockets and the Section 6.2 sanity numbers.
+  - 12 open plots, each a raised 80×80-stud baseplate: 20×20 blocks with a 4-stud grid drawn on it, and room to build 50 blocks tall.
+  - The plots sit either side of the street, with a shared **launch area** of 8 pads to the north (follow the road through the gap in the north row).
+  - The site is 948 parts.
+- **Plots:** assigned on join (your name is on the plot sign) and freed on leave.
+- **Builder (on your own plot):**
+  - Tools: **Build (B)**, **Paint (P)**, **Delete (X)**.
+  - **R/T** rotate. **1/2/4** give radial symmetry off/2/4. **M** cycles mirror X → Z → X+Z → off. **Ctrl+Z** undoes.
+  - The part panel has category tabs and 3D previews. There's a 16-colour paint palette.
+  - The live stats card shows mass, parts, per-stage Δv/TWR and warnings.
+- **Server validation:** plot owner only, inside the build volume, no overlap, ≤ 250 blocks, ≤ 20 ops/s, and every new block must touch the craft. Only the first block sits on the baseplate by itself. Paint is validated too.
+- **All 23 parts** are sized in blocks. The Crew Cabin (2×2×2 blocks) has a walkable interior and a hatch.
+- **Save/load:** 10 slots, plus your plot is restored when you rejoin.
+- **Roll Out:** puts your rocket on a free launch pad, replacing your previous rocket. If every pad is taken, it says so.
+- **Seats and hatches:** Pilot/Sit prompts on seats, Enter/Exit on the cabin hatch, and the Boarding toggle (Public/Friends/Private).
+- **Tests:** 53 offline tests.
 
 ## Phase 1: how to test
 
-**Rebuild the place first.** The ground and spawn moved into the base site, and an old place still has the Phase 0 plate. In PowerShell in the repo folder:
+**Rebuild the place** (the base layout changed). In PowerShell in the repo folder:
 ```
 git pull
 rojo build -o SpaceDisasters.rbxl
@@ -47,18 +47,15 @@ rojo serve
 ```
 Open the new `SpaceDisasters.rbxl`, click **Connect**, then **Play**.
 
-1. **Spawn:** you appear on the orange pad in the middle of the street. Your name is on one plot's sign. Walk into that hangar (the open side faces the street). The builder UI appears: parts on the left, stats on the right, saves at the bottom right.
-2. **Build the sanity rocket**, bottom to top: **Small Engine** on the floor, then **Small Tank Long** on top, **Small Decoupler**, **Command Pod**, **Parachute**.
-   - Stats should show about **4.15 t**, stage 1 about **2,100 m/s vac**, **TWR ≈ 1.9**, and 3 stages.
-   - Try R/T rotation, X delete, Ctrl+Z undo, and 2x/4x symmetry with fins around the tank.
-3. **Invalid placements:** try placing floating blocks, placing outside the hangar, and spam-clicking. You should see a red ghost and an error toast, and nothing gets placed.
-4. **Save/Load:** type a name, pick slot 1, and click **Save**. Click **Clear** twice, then **Load**.
-5. **Roll Out:** the rocket appears on your pad behind the hangar.
-6. **Cabin:** build a **Crew Cabin** on the floor and Roll Out. At the pad, use **Enter** on the orange door, walk around inside, and use **Pilot** or **Sit** on a seat. Press Space to get up, then **Exit**.
-7. **Two players** (Test → Clients and Servers, 2 players):
-   - Both build side by side and see each other's blocks appear live.
-   - Player 1 sets **Boarding: Private**. Player 2 is then refused at player 1's hatch and seats (an error toast appears).
-8. **Rejoin:** stop and Play again. Your hangar build comes back. Saves persist across sessions only if the place is published with Studio API access on; otherwise a warning explains that saves last only for this session.
+1. **Find your plot:** your name is on one plot's sign. Walk up the little ramp onto your baseplate, and the builder UI appears.
+2. **Build the sanity rocket**, bottom to top: **Small Engine** on the baseplate, then **Small Tank Long**, **Small Decoupler**, **Command Pod**, **Parachute**. Stats should read about **4.15 t**, stage 1 about **2,100 m/s**, **TWR ≈ 1.9**.
+3. **Paint:** press **P**, pick a colour, and click blocks. Ctrl+Z undoes the paint.
+4. **Mirror and radial:** press **M** and place fins on the tank's side; the mirrored copies appear on the other side. Try **2**/**4** too.
+5. **Invalid spots** show a red ghost and an error message.
+6. **Save/Load:** name it, Save, Clear (click twice), then Load.
+7. **ROLL OUT:** follow the road north to the launch area. Your rocket is on one of the numbered pads.
+8. **Cabin:** build a **Crew Cabin**, roll out, press **E** on the door to go in, sit, press Space, then Exit.
+9. **Two players:** you see each other's building live, and Boarding: Private blocks the other player.
 
 ## Phase 0: what was built
 
