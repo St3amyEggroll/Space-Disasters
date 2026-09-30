@@ -20,6 +20,10 @@ local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime)
 local BOOT_ORDER = {
 	"DebugOverlay",
 	"BuildController", -- CHANGED (Phase 1): hangar builder
+	"RemoteCraftRenderer", -- CHANGED (Phase 2a): flight rendering and control
+	"PocketController",
+	"FlightController",
+	"UniverseRenderer",
 }
 --============================================================================
 

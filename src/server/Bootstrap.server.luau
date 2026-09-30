@@ -19,6 +19,10 @@ local BOOT_ORDER = {
 	"BuildService", -- creates the remotes (Remotes.createAll) in Init
 	"CraftService",
 	"CrewService",
+	"FlightService", -- CHANGED (Phase 2a): launch, staging, pilot states, crashes
+	"ServerSimService",
+	"FlightRelayService",
+	"DebugService",
 }
 --============================================================================
 

@@ -127,6 +127,59 @@ Steamy asked for building that's "less like KSP, more like Plane Crazy". **Fligh
 - **Controls:** B build, P paint, X delete, R/T rotate, 1/2/4 radial, M cycles mirror, Ctrl+Z undo.
 - **Builder UI:** redesigned, with a tool hotbar, category tabs with 3D part previews, a paint palette, a stats card, a save panel and a big Roll Out button.
 
+### D21. Flight model details (Phase 2a)
+- **State:** the craft state is the root block's centre (else the lowest block id), in doubles, relative to the dominant body. The centre of mass is tracked inside the model, so staging never makes the reference point jump.
+- **Integration:**
+  - Position uses velocity Verlet.
+  - Rotation is semi-implicit on the diagonal inertia (the craft's principal axes are approximated by its block axes).
+  - Fixed steps at `GameConfig.SIM_RATE` (60 Hz), with 2 substeps in flight and 4 near the ground.
+- **Contact:** penalty springs whose stiffness is scaled by the craft's mass (natural frequency 7 Hz, damping ratio 0.8), so heavy and light crafts land with the same feel. A block breaks when its impact speed exceeds its part's `CrashTolerance`.
+- **SAS:** a PD controller (`SAS_KP`, `SAS_KD`), limited by the gimbal torque budget and `MAX_ANGULAR_SPEED`.
+- **Staging:** the stage list is fixed at launch (from `CraftGraph`), as in KSP.
+  - Decoupling splits the craft graph. Every piece without the root block becomes debris, with the decoupler's push applied.
+  - Debris state is computed **before** the blocks are removed from the parent.
+
+### D22. Who simulates what (Phase 2a)
+- The **pilot's client** simulates its own craft and sends a `PilotState` at 20 Hz.
+- The server also runs a copy and validates the pilot's state against it. Implausible jumps earn strikes, and repeated strikes send a `FlightOverride`.
+- The **server** simulates debris, and any craft whose pilot left (`ServerSimService`, `DEBRIS_SIM_RATE`).
+- The server streams every craft's state in batches (`CraftStates`, 77 bytes per craft, packets kept under 900 bytes, spike S7).
+- **Crashes are reported by the pilot** (`ReportPartsDestroyed`). The server accepts a report only if its own copy agrees within `CRASH_REPORT_MARGIN`.
+
+### D23. Other crafts and debris are drawn from Phase 2a (earlier than Phase 3)
+Staging needs debris you can see, so `RemoteCraftRenderer` exists now.
+- It draws a local cosmetic copy of every craft and debris piece in your pocket from the design buffer, interpolated `INTERP_DELAY` behind.
+- Phase 3 still owns the rest of multiplayer crafts: joining someone else's pocket mid-flight and pocket merging.
+
+### D24. Hatches lock in flight
+Cabin hatches only open while the craft is on the pad (`State = Prelaunch`). Otherwise someone could walk out of a moving craft into the pocket void. EVA is Phase 6.
+
+### D25. `client/Render/` folder (layout addition)
+The render layers are plain modules, not controllers, so they live in `StarterPlayerScripts/Client/Render`:
+- `ScaledSpace`, `Surface`, `SkyLighting`, `ChaseCamera`, `Plumes`
+- `RenderContext` and `HudData`, which only define types
+
+The new `UniverseRenderer` controller runs them all once per frame (after the camera) in this order: ScaledSpace, Surface, SkyLighting, RemoteCraftRenderer.
+
+### D26. Scaled space and sky lighting done in 2a
+The 2a request included the sky, so the D10/D11 scaled space and the Q1 = A lighting are built now instead of in Phase 4.
+- **Draw distance per quality level** (from S11), in studs:
+
+  | Quality | Studs |
+  |---|---|
+  | 1 | 1250 |
+  | 2 | 1400 |
+  | 3–5 | 1500 |
+  | 6 | 2200 |
+  | 7 | 3000 |
+  | 8 | 5000 |
+  | 9 | 8000 |
+  | 10 | 20000 |
+  | Automatic | 3000 |
+
+- **The limb budget:** a proxy sphere only needs its visible limb within the draw distance, not its far hemisphere. Budgeting for the limb lets proxies sit closer and bigger than the first, far-side budget allowed.
+- **Fallback:** if EditableMesh is unavailable (the place isn't published, or the Mesh/Image APIs setting is off), bodies are drawn as single Ball parts.
+
 ---
 
 ## Phase 0 spike results

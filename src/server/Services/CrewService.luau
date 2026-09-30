@@ -167,6 +167,16 @@ local function onHatchPrompt(prompt: ProximityPrompt, player: Player, entering: 
 	if character == nil or humanoid == nil then
 		return
 	end
+	-- CHANGED (Phase 2a): hatches only work on the pad (EVA arrives in Phase 6)
+	local node: Instance? = hatch
+	while node and node:GetAttribute("CraftId") == nil do
+		node = node.Parent
+	end
+	local craftState = if node then node:GetAttribute("State") else nil
+	if craftState ~= nil and craftState ~= "Prelaunch" then
+		notifyRemote:FireClient(player, "The hatch is locked during flight", "Error")
+		return
+	end
 	if entering and not canBoard(player, hatch) then
 		notifyRemote:FireClient(player, "The owner hasn't allowed you to board this craft", "Error")
 		return

@@ -3,11 +3,11 @@
 | Phase | Status |
 |---|---|
 | 0: Project setup and engine spikes | **Done. All spikes S1–S12 recorded in DECISIONS.md; Q1 answered (A)** |
-| 1: Base and builder | **Built. Waiting for Steamy's playtest** |
-| 2a: Flight in the pocket (fly, stage, crash) | Not started |
+| 1: Base and builder | **Built (Plane Crazy rework). Waiting for Steamy's playtest** |
+| 2a: Flight in the pocket (fly, stage, crash) | **Built. Waiting for Steamy's playtest** |
 | 2b: Chutes, legs, landing rebase, recovery | Not started |
 | 3: Multiplayer crafts | Not started |
-| 4: Scaled space and visuals | Not started |
+| 4: Scaled space and visuals | Started early: scaled-space bodies, sky and lighting came with 2a (D26) |
 | 5: Orbits, rails, map, navball | Not started |
 | 6: EVA, bubbles, boarding | Not started |
 | 7: Time warp | Not started |
@@ -17,6 +17,73 @@
 Phase 2 is split into 2a/2b so you can playtest halfway through (agreed with Steamy).
 
 ---
+
+## Phase 2a: what was built
+
+- **Launch:** sit in the pilot seat (the Command Pod or a cabin seat) of a rocket on a launch pad and press **Space**.
+  - After a 1 s countdown the rocket moves into its own **flight pocket** (a separate area of the server map that follows the craft), and stage 1 fires.
+  - Everyone seated in the rocket moves with it.
+- **Flight model (KSP-style, `Shared/Sim/FlightModel`):**
+  - Gravity from Kablamo and Dent.
+  - Thrust with engine gimbal, and a per-tank fuel map (fuel flows within a stage segment).
+  - Drag from the atmosphere (`Shared/Sim/Atmosphere`), with nose cones helping. Fins give lift and stability.
+  - Ground contact, and crashes: any block that hits harder than its crash tolerance breaks off.
+  - SAS holds your heading.
+- **The world while flying:**
+  - Big Toasty, Kablamo and Dent are drawn as scaled spheres in the sky (scaled space).
+  - Near the ground a tiled planet surface appears, plus a copy of Oopsie Point, so you can see the base as you leave.
+  - The sun moves with the day cycle. When it's below the horizon you get the "shadow side" look (Q1 = A). The sky darkens as you climb out of the air.
+- **Staging:**
+  - Space fires the next stage (the stage list is fixed at launch).
+  - Decoupled parts become **debris** that keeps falling (the server simulates it) until it crashes.
+- **Flight HUD:** altitude, speed, vertical speed, throttle, SAS, fuel, current stage with Δv/TWR, and key hints.
+- **Chase camera:** it follows the rocket. Right-drag orbits and the mouse wheel zooms. **V** switches back to the normal camera.
+- **Plumes:** engine flames when burning.
+- **Multiplayer basics:** other players' rockets and debris are shown in your pocket, smoothed over the network.
+- **Debug commands** (Studio only):
+  - `/orbit 20` puts your rocket in a circular 20 km orbit. `/orbit 10 dent` orbits Dent.
+  - `/fuel` refills the tanks.
+  - `/base` takes you back to base.
+- **F3 overlay:** new lines for your pocket, flight and universe, plus per-layer timings.
+- **Tests:** 68 offline tests (new: Universe, FlightModel, Protocol).
+
+## Phase 2a: how to test
+
+**Rebuild the place first** (new settings and scripts). In PowerShell in the repo folder:
+```
+git pull
+rojo build -o SpaceDisasters.rbxl
+rojo serve
+```
+Open the new `SpaceDisasters.rbxl`, click **Connect** in the Rojo plugin, then **Play**.
+
+> If the Output warns about `EditableMesh` / "Allow Mesh / Image APIs": turn on **Game Settings > Security > Allow Mesh / Image APIs** (it needs a published place). Until then the planets are drawn as plain balls, which is fine for testing.
+
+**Flight keys:**
+
+| Key | Does |
+|---|---|
+| Space | launch, then fire the next stage |
+| Shift / Ctrl | throttle up / down |
+| Z / X | full / zero throttle |
+| W / S | pitch |
+| A / D | yaw |
+| Q / E | roll |
+| T | SAS on/off |
+| V | chase camera on/off |
+| F | leave the seat |
+
+1. **Build the sanity rocket:** Small Engine, Small Tank Long, Small Decoupler, Command Pod, Parachute. **ROLL OUT**, walk to your pad, and press **E** on the pod to sit.
+2. **Launch:** press **Space**. After about a second the rocket lifts off and the HUD shows altitude climbing. The base should drop away below you.
+3. **Steer:** tap **D** to lean over a little, then **T** to hold it with SAS.
+4. **Stage:** when the tank runs dry, press **Space**. The empty tank and engine fall away as debris. The pod keeps going up and then falls back.
+5. **Crash:** let the pod hit the ground. It should break (there are no working chutes until Phase 2b). You go back to base.
+6. **Orbit:** launch again, and once you're flying type `/orbit 20` in chat. The planet should curve away below, with Dent visible in the sky. Leave it running for a bit and watch day turn into night.
+7. **Fuel and base:** try `/fuel` and `/base`.
+8. **F3:** check the pocket, flight and universe lines, and that FPS is OK.
+9. **Two players (optional):** with Test > Clients and Servers set to 2, one player launches while the other watches from the ground. Then try riding along in a Crew Cabin.
+
+Please paste back anything red in the Output, plus anything that looks or feels wrong.
 
 ## Phase 1: what was built (Plane Crazy-style rework, see DECISIONS D20)
 
@@ -136,4 +203,6 @@ These place files already have `Lighting.Technology = Future`, `StreamingEnabled
 
 ## Known issues
 
-- None yet. Spikes may turn up engine limits. Those will be recorded in `DECISIONS.md` before Phase 1 starts.
+- **Phase 2a has not been played in Studio yet.** Everything passes the offline checks (formatting, strict types, 68 tests), but feel, tuning and camera need a playtest.
+- **Low graphics quality:** between about 8 km altitude and the scaled-space handover, the ground can look thin or empty at the lowest quality levels (the engine culls far parts, S11). To be tuned after the playtest.
+- **No parachutes, legs, landing or recovery yet.** That's Phase 2b, so every flight ends in a crash or `/base`.

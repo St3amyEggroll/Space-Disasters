@@ -34,6 +34,20 @@ local DEFINITIONS: { [string]: Kind } = {
 	-- Build (server -> client)
 	SaveSlots = "Reliable", -- (names: { [number]: string }) slot index -> design name for filled slots
 	Notify = "Reliable", -- (text: string, kind: "Info" | "Error")
+	-- CHANGED (Phase 2a): flight
+	RequestStage = "Reliable", -- (craftId) pilot pressed Space: launch from the pad, or fire the next stage
+	LeaveSeat = "Reliable", -- () pilot/passenger pressed F
+	ReportPartsDestroyed = "Reliable", -- (craftId, blockIds: {number}, ut) pilot's sim saw impacts
+	FlightStart = "Reliable", -- server -> pilot (craftId, stateBuffer, stagesFired, designBuffer) start simulating
+	FlightOverride = "Reliable", -- server -> pilot (craftId, stateBuffer?, refuel: boolean) debug / reset
+	CraftSpawned = "Reliable", -- (craftId, designBuffer, stateBuffer, info: {ownerUserId, pocketId, active: {number}})
+	CraftRemoved = "Reliable", -- (craftId)
+	CraftStaged = "Reliable", -- (craftId, stageIndex, ut, ignited: {number}, decoupled: {number}, debris: {{craftId, blockIds}})
+	PartsDestroyed = "Reliable", -- (craftId, blockIds: {number}, ut, pieces: {{craftId, blockIds}})
+	PocketTransfer = "Reliable", -- (transferId, sourcePocket, destPocket, M: CFrame, frameEpoch)
+	PocketTransferAck = "Reliable", -- (transferId)
+	PilotState = "Unreliable", -- client -> server, Protocol.encodePilotState (20 Hz)
+	CraftStates = "Unreliable", -- server -> client, Protocol.encodeStates batches
 	BuildAck = "Reliable", -- (seq, kind: "place" | "remove" | "paint", partId, gx, gy, gz, rot, color: number)
 	--   color: the block's colour (0 = default); for "paint" it is the colour BEFORE the change (for undo)
 	--   sent only for ACCEPTED operations that carried a seq > 0; the client builds its undo stack from these

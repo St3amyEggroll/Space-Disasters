@@ -5,9 +5,15 @@
 	real, anchored craft on a free SHARED launch pad in the base pocket's launch area, replacing their previous
 	rolled-out craft; CHANGED Phase 1 rework),
 	boarding permission per player (Private / Friends / Public), and despawning a leaving player's crafts after a
-	grace period. Flight state, staging and destruction arrive in Phase 2.
+	grace period.
 
-	Craft models: Workspace.Pockets.Pocket_0.Crafts.Craft_<id>, attributes CraftId, OwnerUserId, Boarding, State.
+	CHANGED (Phase 2a): records also carry the flight simulation. Every flying craft has a server copy
+	(`sim`, a FlightModel.Craft). Crewed crafts are simulated by their pilot's client (`pilot`); the server copy
+	then follows the pilot's reported state and is used for staging/splits. Uncrewed crafts and debris are
+	simulated on the server (`serverSim`). Crafts in flight are announced with CraftSpawned / CraftRemoved.
+
+	Craft models (crewed crafts only): Workspace.Pockets.Pocket_<id>.Crafts.Craft_<id>, attributes CraftId,
+	OwnerUserId, Boarding, State.
 ]]
 
 local Players = game:GetService("Players")
@@ -17,6 +23,8 @@ local BaseLayout = require(ReplicatedStorage.Shared.Config.BaseLayout)
 local CraftBuilder = require(ReplicatedStorage.Shared.Craft.CraftBuilder)
 local CraftDesign = require(ReplicatedStorage.Shared.Craft.CraftDesign)
 local CraftGraph = require(ReplicatedStorage.Shared.Craft.CraftGraph)
+local FlightModel = require(ReplicatedStorage.Shared.Sim.FlightModel)
+local Protocol = require(ReplicatedStorage.Shared.Net.Protocol)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
 local BuildService = require(script.Parent.BuildService)
@@ -33,6 +41,7 @@ local DESPAWN_GRACE_S = GameConfig.PAD_DESPAWN_GRACE_S
 local BOARDING_MODES = { Private = true, Friends = true, Public = true }
 local BOARDING_ATTRIBUTE = "Boarding"
 local PAD_CLEAR_MARGIN = 4 -- studs; characters standing where the craft appears are moved off the pad
+local MAX_DEBRIS = GameConfig.MAX_DEBRIS
 --============================================================================
 
 export type CraftState = "Prelaunch" | "Flying" | "Landed" | "OnRails" | "Destroyed"
@@ -41,9 +50,17 @@ export type CraftRecord = {
 	id: number,
 	ownerUserId: number,
 	design: Design, -- design-local = craft-local grid
-	model: Model,
+	model: Model?, -- real model (crewed crafts in a pocket); nil for debris / uncrewed crafts
 	state: CraftState,
 	origin: CFrame, -- where the design grid origin sits in its pocket (Prelaunch)
+	-- flight (Phase 2a)
+	sim: FlightModel.Craft?, -- server copy of the simulation
+	pilot: Player?, -- client that simulates this craft (nil = server simulates when serverSim)
+	serverSim: boolean,
+	pocketId: number?, -- flight pocket holding the real model
+	isDebris: boolean,
+	createdAt: number, -- os.clock()
+	restingSince: number?, -- os.clock() when a server-simulated craft came to rest
 }
 
 local CraftService = {}
@@ -72,7 +89,12 @@ local function removeCraft(id: number)
 		craftOnPad[pad] = nil
 	end
 	record.state = "Destroyed"
-	record.model:Destroy()
+	if record.model then
+		record.model:Destroy()
+	end
+	if record.sim then
+		Remotes.event("CraftRemoved"):FireAllClients(id)
+	end
 end
 
 -- Moves characters that stand inside the area a new craft will occupy to the pad edge.
@@ -168,6 +190,13 @@ local function onRollOut(player: Player)
 		model = model,
 		state = "Prelaunch",
 		origin = origin,
+		sim = nil,
+		pilot = nil,
+		serverSim = false,
+		pocketId = nil,
+		isDebris = false,
+		createdAt = os.clock(),
+		restingSince = nil,
 	}
 	padCraftByUser[player.UserId] = id
 	craftOnPad[padIndex] = id
@@ -182,8 +211,9 @@ local function onSetBoarding(player: Player, mode: unknown)
 	end
 	player:SetAttribute(BOARDING_ATTRIBUTE, mode)
 	for _, record in crafts do
-		if record.ownerUserId == player.UserId then
-			record.model:SetAttribute(BOARDING_ATTRIBUTE, mode)
+		local model = record.model
+		if record.ownerUserId == player.UserId and model then
+			model:SetAttribute(BOARDING_ATTRIBUTE, mode)
 		end
 	end
 end
@@ -222,6 +252,94 @@ end
 
 function CraftService.get(id: number): CraftRecord?
 	return crafts[id]
+end
+
+function CraftService.all(): { [number]: CraftRecord }
+	return crafts
+end
+
+-- Frees the craft's launch pad (it has lifted off).
+function CraftService.freePad(id: number)
+	local record = crafts[id]
+	local pad = padOfCraft[id]
+	if pad then
+		padOfCraft[id] = nil
+		craftOnPad[pad] = nil
+	end
+	if record and padCraftByUser[record.ownerUserId] == id then
+		padCraftByUser[record.ownerUserId] = nil
+	end
+end
+
+local function activeList(sim: FlightModel.Craft): { number }
+	local list = {}
+	for id in sim.active do
+		table.insert(list, id)
+	end
+	table.sort(list)
+	return list
+end
+
+-- Announces a flying craft to one player (join snapshot) or everyone.
+function CraftService.announce(record: CraftRecord, toPlayer: Player?)
+	local sim = record.sim
+	if sim == nil then
+		return
+	end
+	local remote = Remotes.event("CraftSpawned")
+	local designBuffer = CraftDesign.toBuffer(sim.physics.design)
+	local stateBuffer = Protocol.encodeState(record.id, sim.state)
+	local info = { ownerUserId = record.ownerUserId, pocketId = record.pocketId or 0, active = activeList(sim) }
+	if toPlayer then
+		remote:FireClient(toPlayer, record.id, designBuffer, stateBuffer, info)
+	else
+		remote:FireAllClients(record.id, designBuffer, stateBuffer, info)
+	end
+end
+
+-- Creates a server-simulated debris craft from a piece split off a parent (FlightModel.Debris).
+function CraftService.spawnDebris(parent: CraftRecord, debris: FlightModel.Debris): CraftRecord
+	local id = nextCraftId
+	nextCraftId += 1
+	local parentSim = parent.sim :: FlightModel.Craft
+	local sim = FlightModel.newCraft(debris.design, debris.state, debris.fuel, parentSim.stages, math.huge)
+	for engineId in debris.active do
+		sim.active[engineId] = true
+	end
+	local record: CraftRecord = {
+		id = id,
+		ownerUserId = parent.ownerUserId,
+		design = debris.design,
+		model = nil,
+		state = "Flying",
+		origin = CFrame.identity,
+		sim = sim,
+		pilot = nil,
+		serverSim = true,
+		pocketId = nil,
+		isDebris = true,
+		createdAt = os.clock(),
+		restingSince = nil,
+	}
+	crafts[id] = record
+	CraftService.announce(record)
+
+	-- keep at most MAX_DEBRIS pieces: remove the oldest
+	local debrisIds = {}
+	for otherId, other in crafts do
+		if other.isDebris then
+			table.insert(debrisIds, otherId)
+		end
+	end
+	if #debrisIds > MAX_DEBRIS then
+		table.sort(debrisIds, function(a, b)
+			return crafts[a].createdAt < crafts[b].createdAt
+		end)
+		for index = 1, #debrisIds - MAX_DEBRIS do
+			removeCraft(debrisIds[index])
+		end
+	end
+	return record
 end
 
 function CraftService.remove(id: number)
