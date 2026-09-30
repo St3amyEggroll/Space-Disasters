@@ -32,7 +32,7 @@ The Init/Start loader is shared by both bootstraps, so it lives in `Shared/Util`
 `Workspace.BaseGround` (a 2048 × 20 × 2048 plate, top at y = 0) and `Workspace.BaseSpawn` are defined in `default.project.json`. That satisfies "players spawn in the base pocket (slot 0)" and "the base has a server-side ground plate" from day one. Phase 1 folds them into the base pocket / HomeBase site.
 
 ### D5. `Lighting.Technology` can't be synced by `rojo serve`
-It's in `default.project.json`, which covers `rojo build`. The live-sync plugin writes properties with script permissions, though, and scripts can't set Technology. So it's also listed as a manual setting in `PROGRESS.md`.
+The live-sync plugin writes properties with script permissions, and scripts can't set Technology. The workflow is therefore `rojo build -o SpaceDisasters.rbxl` once, which bakes in every project property, then `rojo serve` for code. The spike place works the same way: `spikes.project.json` includes its own baseplate, spawn, Sky and Atmosphere, so it builds standalone.
 
 ### D6. Phase 2 is split into 2a and 2b (agreed with Steamy)
 - **2a:** flight model, launch transfer, pocket rendering, staging, debris, crashes.

@@ -23,7 +23,7 @@ Phase 2 is split into 2a/2b so you can playtest halfway through (agreed with Ste
 - Rojo project (`default.project.json`) with the Section 4 layout, plus these project settings:
   - `StreamingEnabled = false`
   - `FallenPartsDestroyHeight = -20000`
-  - `Lighting.Technology = Future` (only applies with `rojo build`; see manual settings below)
+  - `Lighting.Technology = Future` (baked in by `rojo build`; `rojo serve` cannot set it)
   - A server-side ground plate (`BaseGround`) and a spawn (`BaseSpawn`) at slot 0
 - `Shared/Config`:
   - `GameConfig`: every global tunable from Appendix B, plus Section 8 limits
@@ -46,15 +46,18 @@ Phase 2 is split into 2a/2b so you can playtest halfway through (agreed with Ste
 
 ## Phase 0: how to test
 
-### Manual Studio settings (the project file can't set these through `rojo serve`)
+### Place setup (once)
 
-- [ ] `Lighting.Technology = Future`, in both the game place and the spike place
-- [ ] Game place: delete the template's `Workspace.Baseplate` and `Workspace.SpawnLocation`. The project provides `BaseGround` and `BaseSpawn`.
-- [ ] Check that `Workspace.StreamingEnabled` is off. Rojo sets it, but confirm in Properties.
+In PowerShell, in the repo folder:
+```
+rojo build -o SpaceDisasters.rbxl
+rojo build spikes.project.json -o Spikes.rbxl
+```
+These place files already have `Lighting.Technology = Future`, `StreamingEnabled = false`, and the ground and spawn. Nothing needs setting by hand.
 
 ### Game place
 
-1. `rojo serve`, connect, then **Play** (Play Solo).
+1. Open `SpaceDisasters.rbxl`, run `rojo serve`, click **Connect** in the Rojo plugin, then **Play** (Play Solo).
 2. The Output should show, with **no red errors**:
    - `[Server] booted 1 module(s) in ... ms`
    - `[Client] booted 1 module(s) in ... ms`
@@ -65,7 +68,7 @@ Phase 2 is split into 2a/2b so you can playtest halfway through (agreed with Ste
 
 ### Spike place (results go in `DECISIONS.md`)
 
-1. Make a new Baseplate place, set Technology = Future, run `rojo serve spikes.project.json`, and connect.
+1. Open `Spikes.rbxl`, run `rojo serve spikes.project.json --port 34873`, set the Rojo plugin's port to 34873, and click **Connect**.
 2. Press **Play**. Click **Spike menu** (top right). Hover a spike to read its instructions, then click it to run it.
 3. Some spikes need **2 players**: **S3**, **S9**. For those, use Test > Clients and Servers with 2 players and start the spike from either client window.
 4. Answer the on-screen questions as they appear.

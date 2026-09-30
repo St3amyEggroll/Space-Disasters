@@ -16,21 +16,31 @@ Display names live in `src/shared/Config/Bodies.luau` and `GameConfig.BASE_SITE_
 
 ## Setup (Windows, Studio + Rojo 7.4)
 
-1. Install the Rojo 7.4 Studio plugin and CLI.
-2. In Studio, make a new **Baseplate** place.
-3. Delete `Workspace.Baseplate` and `Workspace.SpawnLocation`. The project supplies its own ground and spawn.
-4. Set `Lighting.Technology = Future` by hand. `rojo serve` can't set it, because scripts can't write that property.
-5. Save the place as `SpaceDisasters.rbxl`. Anywhere works; if you keep it in the repo folder, git ignores `*.rbxl`.
-6. In the repo folder, run `rojo serve`. In Studio, open the Rojo plugin and click **Connect**.
-7. Press **Play**. See `PROGRESS.md` for what to expect.
+Run these in a terminal (PowerShell) opened in the repo folder.
 
-### Engine spikes (Phase 0 only)
+**Game place**
+```
+rojo build -o SpaceDisasters.rbxl      # once: makes a place file with every project setting applied
+rojo serve                             # every session: live-syncs code into Studio
+```
+1. Open `SpaceDisasters.rbxl` in Studio. It's git-ignored.
+2. In Studio, open the Rojo plugin and click **Connect**.
+3. Press **Play**. See `PROGRESS.md` for what to expect.
 
-The spikes run in a separate throwaway place, so they never touch the game.
+`rojo build` applies `Lighting.Technology = Future` and `StreamingEnabled = false`. `rojo serve` can't set Technology, which is why the build step comes first. Re-run `rojo build` only when you want a fresh place.
 
-1. Make another new **Baseplate** place and set `Lighting.Technology = Future`.
-2. Run `rojo serve spikes.project.json`. Stop the game's `rojo serve` first, or add `--port 34873` and point the plugin at that port.
-3. Connect, press Play, and use the **Spike menu** button (top right).
+**Spike place (Phase 0 only)**
+
+This is a separate throwaway place, so it never touches the game.
+```
+rojo build spikes.project.json -o Spikes.rbxl
+rojo serve spikes.project.json --port 34873
+```
+1. Open `Spikes.rbxl`.
+2. In the Rojo plugin, set the port to **34873** and click **Connect**.
+3. Press Play and use the **Spike menu** button (top right).
+
+The different port lets both `rojo serve` commands run at the same time. Otherwise, stop one with Ctrl+C before starting the other.
 
 ## Layout
 
