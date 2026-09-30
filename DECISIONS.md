@@ -57,17 +57,34 @@ The live-sync plugin writes properties with script permissions, and scripts can'
 
 ## Phase 0 spike results
 
-Spikes live in `spikes/` and run in a separate place (see `PROGRESS.md`). Each row shows what we **expect** from the engine as documented. **Expectations are UNVERIFIED** until Steamy runs the spike and pastes the `[SPIKE ...]` output here.
+Steamy ran all ten spikes in Studio on 2026-09-30. The raw `[SPIKE ...]` output is summarized here.
 
-| Spike | Question | Expected (unverified) | Result | Consequence if the expectation is wrong |
-|---|---|---|---|---|
-| S1 | Is a 2048-stud sphere culled at 2k / 5k / 10k / 20k, at quality 1 / 5 / 10? | Visible at all four (large parts aren't distance-culled like small ones) | _pending_ | Lower `SCALED_FAR` / `PROXY_MAX_RADIUS` below the culling distance |
-| S2 | Does LocalTransparencyModifier hide non-character parts, decals and textures? Do hidden parts cast shadows? | Parts hide. Decals/textures may **not** follow. Hidden parts likely **still cast shadows** and still block raycasts | _pending_ | PocketController also sets `CastShadow = false` locally and hides decals/textures/GUIs explicitly (already planned in 7.5); raycasts use Include filters |
-| S3 | Does client-side `workspace.Gravity` affect only the local character? | Yes | _pending_ | A per-character VectorForce to fake gravity |
-| S4 | Does `Sky.SkyboxOrientation` rotate the skybox at runtime? | Yes | _pending_ | Use the procedural star shell (600 neon parts) from 7.6 |
-| S5 | Can ClockTime + GeographicLatitude reach any sun direction? | Directions above the horizon: yes. **Below the horizon, Roblox may switch to night/moon lighting** | _pending_ | If so, a CRAFT_ALIGNED pocket whose sun sits "below" pocket-down would be lit like night. Options: hide the lighting change behind space darkness, or add a directional fill light. Will be raised with Steamy if confirmed |
-| S6 | EditableMesh sphere patch: time, memory, availability, publishing requirements | Works at runtime, with a memory budget. Published games need Game Settings → Security → "Allow Mesh / Image APIs" | _pending_ | Upload one patch mesh and use MeshParts |
-| S7 | UnreliableRemoteEvent payload limit; are buffers supported? | About 900–1000 bytes; buffers are supported | _pending_ | Adjust `UNRELIABLE_PAYLOAD_LIMIT` / `MAX_STATES_PER_PACKET` |
-| S8 | Server moves a part, then fires a reliable event: has the client already seen the move when the event arrives? | Yes (property replication and reliable remotes are ordered together) | _pending_ | PocketTransfer carries the expected pose, and the client waits for the parts to match |
-| S9 | A Humanoid in an anchored Seat moved with PivotTo: does the character follow on all clients? | Yes, through the SeatWeld | _pending_ | Weld-based ride-along, or client-side character carry |
-| S10 | Any visible jitter for characters and anchored geometry at 12,000 studs? | None (float32 resolution at 12k is ~0.001 stud) | _pending_ | Shrink `POCKET_SPACING` or the lattice |
+| Spike | Question | Result | Decision |
+|---|---|---|---|
+| S1 | Is a 2048-stud sphere culled at 2k/5k/10k/20k, at quality 1/5/10? | **Quality 10: drawn at every distance. Quality 1 and 5: not drawn at ANY distance, not even 2,000 studs** (confirmed by scene triangle counts, not just by eye). | **Blocker for the universe renderer on low settings.** Follow-up spike **S11** measures the real cut-off per quality level and part size. Scaled-space distances (`SCALED_NEAR/FAR`, `PROXY_MAX_RADIUS`) will be set from its results before Phase 2's scaled-space work. |
+| S2 | Does LocalTransparencyModifier hide world parts, decals and textures? Shadows? | The part hides (the model test was clear). **Decals, SurfaceGuis and BillboardGuis stay visible.** Hidden parts **still block raycasts**. The explicit fallback (Transparency 1 on decals/textures, GUIs disabled, CastShadow false) hides everything, shadows included. | As planned in 7.5: PocketController hides decals/textures/GUIs explicitly, sets CastShadow false locally, and every client raycast uses an Include filter. |
+| S3 | Does client-side `workspace.Gravity` affect only that client? | **Yes.** Gravity 50 gave 18.1-stud jumps against 4.7 for the other player, seen the same on every screen. Server Gravity stayed 196.2. | Spec 7.5 works as written. |
+| S4 | Does `Sky.SkyboxOrientation` rotate the skybox at runtime? | **Yes**, with any values, at 1.6 µs per write. Night skybox rotation was visible ("a bit choppy"). The daytime sky did not rotate, because it's drawn by the Atmosphere and not the skybox. Procedural stars weren't visible. `CelestialBodiesShown = false` leaves only the sun glow. | Use SkyboxOrientation with our own star skybox textures. In space Atmosphere.Density is 0, so the skybox shows. The 600-part star shell isn't needed. |
+| S5 | Can ClockTime + GeographicLatitude reach any sun direction? | **Above the horizon: yes.** 291/300 random directions were solved exactly; the misses were near the latitude clamp, and the engine accepts latitude beyond ±90, so widening the search fixes them. Warm-started tracking: max 0.03° error, 0.58 ms per step. **Below the horizon, Roblox switches to night/moonlight lighting**, even though `GetSunDirection()` reports the right direction. | **Engine limit → question for Steamy (Q1 below).** |
+| S6 | EditableMesh sphere patch: time, memory, availability | **Works in Studio.** Building a 2,048-triangle patch takes about 4 ms. It stays at full detail out to 20,000 studs, and textures via EditableImage work. **But:** (1) creation hit **"memory budget limits" after only ~7 patches**; (2) **a MeshPart disappears when its EditableMesh is destroyed**, so meshes must stay alive; (3) Size clamps to 2048 per axis as expected. | **Blocker for 24-patch proxies built as separate meshes.** All 24 patches of a cube-sphere have the same shape, so the plan is **one shared patch mesh for every proxy**. Follow-up spike **S12** checks that many MeshParts can share one EditableMesh, and measures the real budget. Fallback: upload the single patch mesh as an asset. |
+| S7 | UnreliableRemoteEvent payload limit; buffers? | **Buffers work** (typeof `buffer`, intact). **Nothing was dropped up to 1,200 bytes**, the largest size tested, in both directions, with and without extra arguments. A reliable 50 KB buffer arrives intact. | Studio's local networking may not enforce the live-server limit, so `UNRELIABLE_PAYLOAD_LIMIT` stays at a conservative 900 bytes. It will be re-checked on a published server in Phase 3. |
+| S8 | Server moves a part, then fires a reliable event: has the client already seen the move? | **Yes, for position, rotation, model pivot and attributes: 300/300.** The client state was never older than the event. **Re-parenting was not always ordered:** 12/300 events arrived before the model's new Parent, which caught up 5–14 frames later. | The PocketTransfer protocol can rely on PivotTo moves and attributes. **The client must not assume a re-parented craft is already in the destination pocket's folder.** It waits for the parent change, with a timeout, and PocketId attributes are the source of truth. |
+| S9 | A seated Humanoid in a Seat moved with PivotTo: does it follow on all clients? | **Anchored Seat: follows perfectly on server and both clients.** **Unanchored Seat welded to an anchored root: the character gets thrown out of the seat** during smooth moves and rotations (SeatWeld lost, 10-stud drift). | **Craft parts, seats included, are all individually Anchored.** Of the spec's "anchored, or welded to an anchored root" (I3), we take the anchored option. |
+| S10 | Jitter at 12,000 studs? | **None**, at 12,000 or 24,000: zero measured jitter and "None" to every visual check. | The pocket lattice is safe, with 2× headroom. |
+
+### Follow-up spikes (pending)
+
+- **S11, cull distance:** for each quality level (1/3/5/7/10) and each part size (4/64/512/2048), the largest distance at which the part is still drawn. Automatic, about 1 minute per level.
+- **S12, EditableMesh budget and sharing:** how many EditableMeshes/EditableImages fit at different sizes, whether 24+ MeshParts can share one EditableMesh, and whether `MeshPart:Clone()` keeps the shared mesh.
+
+---
+
+## Open questions for Steamy
+
+### Q1. Sun "below" the pocket floor: Roblox lights the scene like night
+In a flying craft's pocket the craft is always upright, so the sun can be in any direction relative to the floor, including underneath it. Roblox only does proper sunlight (bright, with shadows) when the sun is above the horizon. S5 confirmed this. With the sun below pocket-down, you'd get night/moonlight: dim, bluish, no sun shadows. It happens whenever the sun is on the "floor side" of the craft, which could be close to half the time in orbit.
+
+Options:
+- **A (recommended for v1):** accept it and style it. When the sun is below the pocket horizon, switch to a "shadow side" look: no direct sun, ambient tinted slightly warm so things stay readable. Planets and the sky still render correctly, because they're drawn by our own code. Only the lighting on the craft itself is affected. Cheap and honest.
+- **B:** mirror the sun above the horizon (light from the reflected direction). The craft stays brightly lit, but shadows and lit faces are on the wrong side, so the sun can appear to shine through the floor.
+- **C:** research a custom lighting rig (e.g. many SurfaceLights/SpotLights around the craft). Complex, costly, and short-ranged (60 studs). Not recommended.
