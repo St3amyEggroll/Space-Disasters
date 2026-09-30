@@ -36,6 +36,7 @@ export type SaveData = {
 type Entry = {
 	data: SaveData,
 	loaded: boolean,
+	loadFailed: boolean, -- never write over stored data we could not read
 	dirty: boolean,
 	loadedSignal: BindableEvent,
 }
@@ -46,6 +47,8 @@ local store: DataStore? = nil
 local storeUnavailableWarned = false
 local entries: { [Player]: Entry } = {}
 local pendingWrites = 0
+local memory: { [number]: SaveData } = {} -- session-only copy used when DataStores are unavailable
+local shutdownHooks: { () -> () } = {}
 
 local function emptyData(): SaveData
 	return { version = DATA_VERSION, slots = {}, current = nil }
@@ -118,8 +121,13 @@ warnUnavailable = function(reason: string)
 end
 
 local function load(player: Player)
-	local entry: Entry =
-		{ data = emptyData(), loaded = false, dirty = false, loadedSignal = Instance.new("BindableEvent") }
+	local entry: Entry = {
+		data = emptyData(),
+		loaded = false,
+		loadFailed = false,
+		dirty = false,
+		loadedSignal = Instance.new("BindableEvent"),
+	}
 	entries[player] = entry
 	local activeStore = store
 	if activeStore then
@@ -128,9 +136,13 @@ local function load(player: Player)
 		end)
 		if ok then
 			entry.data = sanitize(raw)
-		else
-			warn(`[SaveService] could not load saves for {player.Name}; using an empty profile this session`)
+		elseif store ~= nil then
+			entry.loadFailed = true
+			warn(`[SaveService] could not load saves for {player.Name}; saving is disabled for them this session`)
 		end
+	end
+	if store == nil and memory[player.UserId] then
+		entry.data = memory[player.UserId]
 	end
 	entry.loaded = true
 	entry.loadedSignal:Fire()
@@ -143,8 +155,14 @@ local function write(userId: number, data: SaveData): boolean
 	end
 	pendingWrites += 1
 	local ok = withRetries(`save {userId}`, function()
-		activeStore:UpdateAsync(key(userId), function()
-			return { version = DATA_VERSION, slots = data.slots, current = data.current }
+		activeStore:UpdateAsync(key(userId), function(old: any)
+			-- merge over whatever is stored so a slot we never loaded can't be wiped
+			local merged = sanitize(old)
+			for slotKey, json in data.slots do
+				merged.slots[slotKey] = json
+			end
+			merged.current = data.current
+			return { version = DATA_VERSION, slots = merged.slots, current = merged.current }
 		end)
 		return true
 	end)
@@ -154,7 +172,10 @@ end
 
 local function flush(player: Player)
 	local entry = entries[player]
-	if entry and entry.loaded and entry.dirty then
+	if entry and store == nil and entry.loaded then
+		memory[player.UserId] = entry.data
+	end
+	if entry and entry.loaded and entry.dirty and not entry.loadFailed then
 		entry.dirty = false
 		if not write(player.UserId, entry.data) and store ~= nil then
 			entry.dirty = true
@@ -183,12 +204,16 @@ function SaveService.Start()
 	Players.PlayerRemoving:Connect(function(player: Player)
 		flush(player)
 		local entry = entries[player]
+		entries[player] = nil
 		if entry then
+			entry.loadedSignal:Fire() -- release anyone still waiting in waitForLoad
 			entry.loadedSignal:Destroy()
 		end
-		entries[player] = nil
 	end)
 	game:BindToClose(function()
+		for _, hook in shutdownHooks do
+			pcall(hook)
+		end
 		for player in entries do
 			task.spawn(flush, player)
 		end
@@ -197,7 +222,7 @@ function SaveService.Start()
 		while os.clock() < deadline do
 			local busy = pendingWrites > 0
 			for _, entry in entries do
-				if entry.dirty and store ~= nil then
+				if entry.dirty and store ~= nil and not entry.loadFailed then
 					busy = true
 				end
 			end
@@ -220,10 +245,10 @@ function SaveService.waitForLoad(player: Player): boolean
 	if entry == nil then
 		return false
 	end
-	if not entry.loaded then
+	if not entry.loaded and entries[player] == entry then
 		entry.loadedSignal.Event:Wait()
 	end
-	return entry.loaded
+	return entry.loaded and entries[player] == entry
 end
 
 -- Slot index -> design name for the filled slots (names read from the saved JSON's "name" field by the caller).
@@ -270,6 +295,11 @@ function SaveService.setCurrent(player: Player, json: string?)
 		entry.data.current = json
 		entry.dirty = true
 	end
+end
+
+-- Runs before the final flush on server shutdown (e.g. to capture hangar contents into `current`).
+function SaveService.addShutdownHook(hook: () -> ())
+	table.insert(shutdownHooks, hook)
 end
 
 -- True when saves persist beyond this server session.

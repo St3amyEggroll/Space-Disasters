@@ -322,6 +322,11 @@ local function seat(ctx: Ctx, index: number, size: Vector3, cf: CFrame): BasePar
 	part.Size = size
 	part.CFrame = cf
 	finish(ctx, part, if ctx.real then `Seat{index}` else `SeatVisual{index}`, LOOK.Seat, true)
+	if ctx.real then
+		-- CHANGED (Phase 1 review): keep the Seat touchable like the Seat spike S9 validated; Disabled already
+		-- stops touch-sitting, and CrewService enables it only for the permitted Sit.
+		part.CanTouch = true
+	end
 	part:SetAttribute("SeatIndex", index)
 	part:SetAttribute("IsPilot", isPilot)
 	if ctx.real then

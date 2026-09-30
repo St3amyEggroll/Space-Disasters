@@ -23,8 +23,8 @@ type Kind = "Reliable" | "Unreliable"
 
 local DEFINITIONS: { [string]: Kind } = {
 	-- Build (client -> server)
-	PlaceBlock = "Reliable", -- (partId: string, gx: number, gy: number, gz: number, rot: number)
-	RemoveBlock = "Reliable", -- (gx: number, gy: number, gz: number) removes the block occupying that cell
+	PlaceBlock = "Reliable", -- (partId: string, gx, gy, gz: number, rot: number, seq: number?)
+	RemoveBlock = "Reliable", -- (gx, gy, gz: number, seq: number?) removes the block occupying that cell
 	ClearPlot = "Reliable", -- ()
 	SaveDesign = "Reliable", -- (slot: number, name: string)
 	LoadDesign = "Reliable", -- (slot: number)
@@ -33,6 +33,8 @@ local DEFINITIONS: { [string]: Kind } = {
 	-- Build (server -> client)
 	SaveSlots = "Reliable", -- (names: { [number]: string }) slot index -> design name for filled slots
 	Notify = "Reliable", -- (text: string, kind: "Info" | "Error")
+	BuildAck = "Reliable", -- (seq: number, kind: "place" | "remove", partId: string, gx, gy, gz, rot: number)
+	--   sent only for ACCEPTED operations that carried a seq > 0; the client builds its undo stack from these
 }
 
 local Remotes = {}

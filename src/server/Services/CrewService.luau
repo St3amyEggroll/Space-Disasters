@@ -92,6 +92,21 @@ local function aliveHumanoid(player: Player): (Model?, Humanoid?)
 	return nil, nil
 end
 
+-- Gets a humanoid out of its seat safely: the SeatWeld must go BEFORE the character is moved, or moving the
+-- character drags the (anchored) seat along with it (review finding; same order as spike S9's unseat).
+local function unseat(humanoid: Humanoid)
+	local seatPart = humanoid.SeatPart
+	if seatPart == nil then
+		return
+	end
+	local weld = seatPart:FindFirstChild("SeatWeld")
+	if weld then
+		weld:Destroy()
+	end
+	humanoid.Sit = false
+	task.wait()
+end
+
 local function watchSeat(seat: Seat)
 	if watchedSeats[seat] then
 		return
@@ -124,9 +139,9 @@ local function onSitPrompt(prompt: ProximityPrompt, player: Player)
 		return
 	end
 	watchSeat(seat)
-	if humanoid.SeatPart then
-		humanoid.Sit = false
-		task.wait()
+	unseat(humanoid)
+	if seat.Occupant ~= nil then
+		return
 	end
 	seat.Disabled = false
 	seat:Sit(humanoid)
@@ -160,9 +175,7 @@ local function onHatchPrompt(prompt: ProximityPrompt, player: Player, entering: 
 	if not (target and target:IsA("Attachment")) then
 		return
 	end
-	if humanoid.SeatPart then
-		humanoid.Sit = false
-	end
+	unseat(humanoid)
 	character:PivotTo(target.WorldCFrame)
 end
 

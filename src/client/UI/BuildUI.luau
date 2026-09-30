@@ -106,6 +106,7 @@ local function panel(parent: Instance, props: { [string]: any }): Frame
 	frame.BackgroundColor3 = BG
 	frame.BackgroundTransparency = PANEL_TRANSPARENCY
 	frame.BorderSizePixel = 0
+	frame.Active = true -- clicks on panels must not place blocks behind them
 	corner(frame, 8)
 	return frame
 end
@@ -440,7 +441,8 @@ function BuildUI.create(callbacks: Callbacks): BuildUI
 				math.floor(stats.totalVac + 0.5),
 				math.floor(stats.totalAsl + 0.5)
 			)
-			summary.Size = UDim2.new(1, 0, 0, 38)
+			summary.Size = UDim2.new(1, 0, 0, 0)
+			summary.AutomaticSize = Enum.AutomaticSize.Y
 			summary.TextWrapped = true
 			local lines = { "Stage   dv vac   dv ASL   TWR" }
 			for _, row in stats.stages do

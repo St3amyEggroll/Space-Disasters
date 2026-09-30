@@ -59,6 +59,7 @@ local buildFloor: BasePart? = nil
 
 local design: Design = CraftDesign.new()
 local designDirty = true
+local statsDirty = true
 local lastStats = 0
 
 local selectedPart = DEFAULT_PART
@@ -67,6 +68,10 @@ local deleteMode = false
 local symmetry = 1
 local active = false
 local undoStack: { UndoEntry } = {}
+-- Undo entries are filled from the server's BuildAck, so only operations the server accepted can be undone.
+local nextSeq = 0
+local entryBySeq: { [number]: UndoEntry } = {}
+local SEQ_RETENTION = 400 -- forget pending seqs older than this (rejected ops never get an ack)
 
 local ghostFolder: Folder
 local ghostPool: { [string]: Model } = {}
@@ -94,6 +99,7 @@ local function refreshDesign()
 	end
 	design = CraftBuilder.readDesign(folder, design.name)
 	designDirty = false
+	statsDirty = true
 end
 
 local function updateStats()
@@ -151,10 +157,16 @@ local function isValid(block: Block, extra: { Block }): boolean
 			return false
 		end
 	end
-	if #design.blocks == 0 then
+	-- the server applies symmetric copies one after another, so earlier copies count as existing blocks
+	if #design.blocks + #extra == 0 then
 		return block.gy == 0
 	end
 	for _, other in design.blocks do
+		if CraftDesign.touches(block, other) then
+			return true
+		end
+	end
+	for _, other in extra do
 		if CraftDesign.touches(block, other) then
 			return true
 		end
@@ -347,22 +359,49 @@ local function pushUndo(entry: UndoEntry)
 	end
 end
 
+-- Allocates a sequence number whose acknowledgement will add the accepted block to `entry`.
+local function trackSeq(entry: UndoEntry): number
+	nextSeq += 1
+	entryBySeq[nextSeq] = entry
+	entryBySeq[nextSeq - SEQ_RETENTION] = nil
+	return nextSeq
+end
+
+local function onAck(seq: unknown, kind: unknown, partId: unknown, gx: unknown, gy: unknown, gz: unknown, rot: unknown)
+	if type(seq) ~= "number" then
+		return
+	end
+	local entry = entryBySeq[seq]
+	entryBySeq[seq] = nil
+	if entry == nil or entry.kind ~= kind then
+		return
+	end
+	if
+		type(partId) == "string"
+		and type(gx) == "number"
+		and type(gy) == "number"
+		and type(gz) == "number"
+		and type(rot) == "number"
+	then
+		table.insert(entry.blocks, { type = partId, gx = gx, gy = gy, gz = gz, rot = rot })
+	end
+end
+
 local function place()
 	local target = targetPlacement()
 	if target == nil then
 		return
 	end
 	local placed: { Block } = {}
-	local undoBlocks: { Placement } = {}
+	local entry: UndoEntry = { kind = "place", blocks = {} }
 	for _, copy in symmetricCopies(target) do
 		if isValid(copy, placed) then
 			table.insert(placed, copy)
-			remotes.PlaceBlock:FireServer(copy.type, copy.gx, copy.gy, copy.gz, copy.rot)
-			table.insert(undoBlocks, { type = copy.type, gx = copy.gx, gy = copy.gy, gz = copy.gz, rot = copy.rot })
+			remotes.PlaceBlock:FireServer(copy.type, copy.gx, copy.gy, copy.gz, copy.rot, trackSeq(entry))
 		end
 	end
-	if #undoBlocks > 0 then
-		pushUndo({ kind = "place", blocks = undoBlocks })
+	if #placed > 0 then
+		pushUndo(entry)
 	else
 		ui.toast("Can't place there", "Error")
 	end
@@ -374,15 +413,17 @@ local function remove()
 	if hitBlock == nil then
 		return
 	end
-	remotes.RemoveBlock:FireServer(hitBlock.gx, hitBlock.gy, hitBlock.gz)
-	pushUndo({
-		kind = "remove",
-		blocks = { { type = hitBlock.type, gx = hitBlock.gx, gy = hitBlock.gy, gz = hitBlock.gz, rot = hitBlock.rot } },
-	})
+	local entry: UndoEntry = { kind = "remove", blocks = {} }
+	remotes.RemoveBlock:FireServer(hitBlock.gx, hitBlock.gy, hitBlock.gz, trackSeq(entry))
+	pushUndo(entry)
 end
 
 local function undo()
+	-- skip entries whose operations were all rejected by the server
 	local entry = table.remove(undoStack)
+	while entry and #entry.blocks == 0 do
+		entry = table.remove(undoStack)
+	end
 	if entry == nil then
 		ui.toast("Nothing to undo")
 		return
@@ -512,6 +553,7 @@ function BuildController.Start()
 			ui.toast(text, if type(kind) == "string" then kind else nil)
 		end
 	end)
+	Remotes.event("BuildAck").OnClientEvent:Connect(onAck)
 	Remotes.event("SaveSlots").OnClientEvent:Connect(function(names: unknown)
 		if type(names) ~= "table" then
 			return
@@ -578,13 +620,15 @@ function BuildController.Start()
 		if nowActive ~= active then
 			active = nowActive
 			ui.setVisible(active)
+			statsDirty = true
 		end
 		if designDirty then
 			refreshDesign()
 			lastStats = 0
 		end
-		if active and os.clock() - lastStats >= STATS_INTERVAL_S then
+		if active and statsDirty and os.clock() - lastStats >= STATS_INTERVAL_S then
 			lastStats = os.clock()
+			statsDirty = false
 			updateStats()
 		end
 		updateGhosts()

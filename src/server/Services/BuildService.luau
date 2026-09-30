@@ -53,6 +53,7 @@ local BuildService = {}
 local plots: { [number]: PlotState } = {}
 local notifyRemote: RemoteEvent
 local slotsRemote: RemoteEvent
+local ackRemote: RemoteEvent
 
 local BUILD_SIZE = BaseLayout.BUILD_SIZE
 
@@ -202,19 +203,47 @@ local function stateFor(player: Player): PlotState?
 end
 
 local function sendSlots(player: Player)
-	local names: { [number]: string } = {}
+	-- string keys: a sparse number-keyed table would be truncated by remote serialization
+	local names: { [string]: string } = {}
 	for slot, json in SaveService.getSlots(player) do
 		local design = CraftDesign.fromJson(json)
-		names[slot] = if design then design.name else "(unreadable)"
+		names[tostring(slot)] = if design then design.name else "(unreadable)"
 	end
 	slotsRemote:FireClient(player, names)
+end
+
+local function ack(player: Player, seq: unknown, kind: string, block: Block)
+	if type(seq) == "number" and seq > 0 and seq % 1 == 0 then
+		ackRemote:FireClient(player, seq, kind, block.type, block.gx, block.gy, block.gz, block.rot)
+	end
+end
+
+-- Valid UTF-8, no control characters, at most MAX_NAME_LENGTH characters (not bytes). nil if unusable.
+local function cleanName(raw: string): string?
+	if utf8.len(raw) == nil then
+		return nil
+	end
+	local stripped = string.gsub(raw, "%c", "")
+	local cut = utf8.offset(stripped, CraftDesign.MAX_NAME_LENGTH + 1)
+	if cut then
+		stripped = string.sub(stripped, 1, cut - 1)
+	end
+	return stripped
 end
 
 --============================================================================
 -- Remote handlers
 --============================================================================
 
-local function onPlace(player: Player, partId: unknown, gx: unknown, gy: unknown, gz: unknown, rot: unknown)
+local function onPlace(
+	player: Player,
+	partId: unknown,
+	gx: unknown,
+	gy: unknown,
+	gz: unknown,
+	rot: unknown,
+	seq: unknown
+)
 	local state = stateFor(player)
 	if state == nil then
 		return
@@ -251,9 +280,10 @@ local function onPlace(player: Player, partId: unknown, gx: unknown, gy: unknown
 	end
 	state.nextId += 1
 	addBlock(state, block)
+	ack(player, seq, "place", block)
 end
 
-local function onRemove(player: Player, gx: unknown, gy: unknown, gz: unknown)
+local function onRemove(player: Player, gx: unknown, gy: unknown, gz: unknown, seq: unknown)
 	local state = stateFor(player)
 	if state == nil or not (isInteger(gx) and isInteger(gy) and isInteger(gz)) then
 		return
@@ -262,9 +292,16 @@ local function onRemove(player: Player, gx: unknown, gy: unknown, gz: unknown)
 		notify(player, "Slow down!", "Error")
 		return
 	end
-	local blockId = state.occupancy[cellKey(gx :: number, gy :: number, gz :: number)]
-	if blockId then
+	local x, y, z = gx :: number, gy :: number, gz :: number
+	if x < 0 or y < 0 or z < 0 or x >= BUILD_SIZE.X or y >= BUILD_SIZE.Y or z >= BUILD_SIZE.Z then
+		return
+	end
+	local blockId = state.occupancy[cellKey(x, y, z)]
+	local block = if blockId then CraftDesign.findBlock(state.design, blockId) else nil
+	if blockId and block then
+		local removed = table.clone(block)
 		removeBlock(state, blockId)
+		ack(player, seq, "remove", removed)
 	end
 end
 
@@ -287,22 +324,24 @@ local function onSave(player: Player, slot: unknown, name: unknown)
 		notify(player, "Slow down!", "Error")
 		return
 	end
-	local cleanName = string.sub(string.gsub(name :: string, "[%c]", ""), 1, CraftDesign.MAX_NAME_LENGTH)
-	if cleanName == "" then
-		cleanName = `Craft {slot}`
+	local cleaned = cleanName(name :: string)
+	if cleaned == nil then
+		notify(player, "That name has invalid characters", "Error")
+		return
 	end
+	local finalName = if cleaned == "" then `Craft {slot}` else cleaned
 	if #state.design.blocks == 0 then
 		notify(player, "Nothing to save", "Error")
 		return
 	end
-	state.design.name = cleanName
+	state.design.name = finalName
 	local saved = SaveService.setSlot(player, slot :: number, CraftDesign.toJson(state.design))
 	if saved then
 		notify(
 			player,
 			if SaveService.isPersistent()
-				then `Saved "{cleanName}" to slot {slot}`
-				else `Saved "{cleanName}" to slot {slot} (this session only: DataStores unavailable)`
+				then `Saved "{finalName}" to slot {slot}`
+				else `Saved "{finalName}" to slot {slot} (this session only: DataStores unavailable)`
 		)
 	else
 		notify(player, "Saves are still loading, try again in a moment", "Error")
@@ -367,6 +406,7 @@ function BuildService.Init()
 	Remotes.createAll()
 	notifyRemote = Remotes.event("Notify")
 	slotsRemote = Remotes.event("SaveSlots")
+	ackRemote = Remotes.event("BuildAck")
 
 	local builds = PocketService.baseBuilds()
 	for index = 1, BaseLayout.PLOT_COUNT do
@@ -387,6 +427,19 @@ function BuildService.Init()
 
 	PlotService.onAssigned(onAssigned)
 	PlotService.onFreed(onFreed)
+
+	-- Capture every hangar into `current` before the final save flush on shutdown.
+	SaveService.addShutdownHook(function()
+		for _, player in Players:GetPlayers() do
+			local state = stateFor(player)
+			if state then
+				SaveService.setCurrent(
+					player,
+					if #state.design.blocks > 0 then CraftDesign.toJson(state.design) else nil
+				)
+			end
+		end
+	end)
 end
 
 function BuildService.Start()
