@@ -2,7 +2,7 @@
 
 | Phase | Status |
 |---|---|
-| 0: Project setup and engine spikes | **Spikes S1–S10 done (see DECISIONS.md). Q1 answered (A). Waiting on follow-up spikes S11/S12** |
+| 0: Project setup and engine spikes | **Done. All spikes S1–S12 recorded in DECISIONS.md; Q1 answered (A)** |
 | 1: Base and builder | Not started |
 | 2a: Flight in the pocket (fly, stage, crash) | Not started |
 | 2b: Chutes, legs, landing rebase, recovery | Not started |
@@ -93,6 +93,7 @@ These place files already have `Lighting.Technology = Future`, `StreamingEnabled
 
 - 2026-09-30, Play Solo (Steamy): both bootstraps booted and Studio printed `[Tests] 24 passed, 0 failed` with no errors.
 - 2026-09-30, spikes S1–S10 (Steamy): all ran to completion, including the 2-player S3 and S9. Results are in `DECISIONS.md`. Two harness issues were fixed: S5 started twice on a double click, and the spike lock now waits for every client to finish.
+- 2026-09-30, follow-up spikes S11 (cull distance) and S12 (EditableMesh budget/sharing) (Steamy): results and decisions D10/D11 are in `DECISIONS.md`.
 
 ## Known issues
 

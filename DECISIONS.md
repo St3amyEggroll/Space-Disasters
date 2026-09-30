@@ -72,10 +72,36 @@ Steamy ran all ten spikes in Studio on 2026-09-30. The raw `[SPIKE ...]` output 
 | S9 | A seated Humanoid in a Seat moved with PivotTo: does it follow on all clients? | **Anchored Seat: follows perfectly on server and both clients.** **Unanchored Seat welded to an anchored root: the character gets thrown out of the seat** during smooth moves and rotations (SeatWeld lost, 10-stud drift). | **Craft parts, seats included, are all individually Anchored.** Of the spec's "anchored, or welded to an anchored root" (I3), we take the anchored option. |
 | S10 | Jitter at 12,000 studs? | **None**, at 12,000 or 24,000: zero measured jitter and "None" to every visual check. | The pocket lattice is safe, with 2× headroom. |
 
-### Follow-up spikes (pending)
+### Follow-up spike results (S11, S12), 2026-09-30
 
-- **S11, cull distance:** for each quality level (1/3/5/7/10) and each part size (4/64/512/2048), the largest distance at which the part is still drawn. Automatic, about 1 minute per level.
-- **S12, EditableMesh budget and sharing:** how many EditableMeshes/EditableImages fit at different sizes, whether 24+ MeshParts can share one EditableMesh, and whether `MeshPart:Clone()` keeps the shared mesh.
+**S11, the distance at which a part stops being drawn** (distance measured to the part's centre, by scene triangle counts):
+
+| Quality | 4-stud part | 64-stud part | 512-stud part | 2048-stud part |
+|---|---|---|---|---|
+| 1 | 300 | 300 | 500 | 1,250 |
+| 3 | 500 | 500 | 800 | 1,500 |
+| 5 | 650 | 650 | 800 | 1,500 |
+| 7 | 2,000 | 2,000 | 2,500 | 3,000 |
+| 10 | 5,000 | 20,000+ | 20,000+ | 20,000+ |
+
+Roblox cuts off drawing by distance, and the cutoff depends on the quality level. Bigger parts survive somewhat farther. At quality 1–5, the planned scaled-space layout (bodies at 400–1,800 studs, dominant proxy up to 2,800 studs in radius, star shell at 1,950) **would be partly or fully invisible**.
+
+**Decision D10, a quality-adaptive scaled space (implemented with the universe renderer in Phase 2):**
+- A client `RenderBudget` measures the current draw distance at startup, and again whenever the quality setting changes. It uses the S11 method: a hidden probe part and a triangle-count check, taking about 0.5 s. This also covers "Automatic" quality, whose real level can't be read.
+- `SCALED_NEAR/FAR`, `PROXY_MAX_RADIUS` and the star distance are then scaled to fit inside that budget, keeping everything at least ~20% inside the cutoff. At quality 1 that means bodies at about 150–250 studs and a smaller dominant proxy. The config values become the maxima, used at high quality.
+- The trade-off at low quality: the proxy→surface handover altitude (`PROXY_MIN_ALT`) rises and the near render radius shrinks. Low-quality players see a slightly less detailed world, but **nothing disappears**, which is the pillar that matters.
+- Star sky: the skybox (S4) is used instead of star parts, so stars are unaffected by culling.
+
+**S12, EditableMesh budget and sharing (Studio):**
+- **The EditableMesh budget is a count, not a size: 8 meshes**, whether each has 81 or 4,225 vertices. The budget frees up again after `Destroy()`.
+- **One EditableMesh can feed many MeshParts:** 24× `CreateMeshPartAsync` from one mesh succeeded, and `MeshPart:Clone()` works.
+- The visual check came back "some missing". That's explained by a mistake in the test layout: each copy was spun about its own axis before being turned toward the camera, so some faced away and were back-face culled. The API result stands.
+- EditableImage: 200× 256×256 fit without complaint; 1024×1024 hit the budget after 19.
+
+**Decision D11:**
+- **All scaled-space proxies share ONE patch EditableMesh.** All 24 cube-sphere patches are congruent, so each body is 24 MeshParts, all rotated copies. Fallback: upload the patch as a mesh asset.
+- Body textures come from EditableImages, which are plentiful at 256–512 px, or from uploaded textures.
+- **Phase 8 terrain can't use one EditableMesh per chunk** under an 8-mesh budget. It needs a different design, e.g. client-side Roblox Terrain voxels or a few large merged meshes. That will be re-spiked at the start of Phase 8.
 
 ---
 
