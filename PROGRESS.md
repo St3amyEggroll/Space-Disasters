@@ -2,7 +2,7 @@
 
 | Phase | Status |
 |---|---|
-| 0: Project setup and engine spikes | **Spikes S1–S10 done (see DECISIONS.md). Waiting on follow-up spikes S11/S12 and the answer to Q1** |
+| 0: Project setup and engine spikes | **Spikes S1–S10 done (see DECISIONS.md). Q1 answered (A). Waiting on follow-up spikes S11/S12** |
 | 1: Base and builder | Not started |
 | 2a: Flight in the pocket (fly, stage, crash) | Not started |
 | 2b: Chutes, legs, landing rebase, recovery | Not started |

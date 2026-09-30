@@ -81,10 +81,12 @@ Steamy ran all ten spikes in Studio on 2026-09-30. The raw `[SPIKE ...]` output 
 
 ## Open questions for Steamy
 
-### Q1. Sun "below" the pocket floor: Roblox lights the scene like night
+### Q1. Sun "below" the pocket floor: Roblox lights the scene like night (ANSWERED: A)
 In a flying craft's pocket the craft is always upright, so the sun can be in any direction relative to the floor, including underneath it. Roblox only does proper sunlight (bright, with shadows) when the sun is above the horizon. S5 confirmed this. With the sun below pocket-down, you'd get night/moonlight: dim, bluish, no sun shadows. It happens whenever the sun is on the "floor side" of the craft, which could be close to half the time in orbit.
 
 Options:
 - **A (recommended for v1):** accept it and style it. When the sun is below the pocket horizon, switch to a "shadow side" look: no direct sun, ambient tinted slightly warm so things stay readable. Planets and the sky still render correctly, because they're drawn by our own code. Only the lighting on the craft itself is affected. Cheap and honest.
 - **B:** mirror the sun above the horizon (light from the reflected direction). The craft stays brightly lit, but shadows and lit faces are on the wrong side, so the sun can appear to shine through the floor.
 - **C:** research a custom lighting rig (e.g. many SurfaceLights/SpotLights around the craft). Complex, costly, and short-ranged (60 studs). Not recommended.
+
+**Decision (Steamy, 2026-09-30): A.** When the sun is below the pocket horizon, SkyLightingController switches to a styled "shadow side" look: no direct sun, and ambient/OutdoorAmbient tinted slightly warm and bright enough to stay readable. Scaled-space bodies and the skybox are unaffected, because our own code draws them. The sun solve also searches latitudes beyond ±90° to fix the S5 near-pole misses.
