@@ -2,7 +2,7 @@
 
 | Phase | Status |
 |---|---|
-| 0: Project setup and engine spikes | **Built. Waiting for Steamy's playtest and spike results** |
+| 0: Project setup and engine spikes | **Built. Play Solo verified; waiting on the 2-player run and spike results** |
 | 1: Base and builder | Not started |
 | 2a: Flight in the pocket (fly, stage, crash) | Not started |
 | 2b: Chutes, legs, landing rebase, recovery | Not started |
@@ -86,6 +86,10 @@ These place files already have `Lighting.Technology = Future`, `StreamingEnabled
 | S8 replication ordering | 1 | No, it's automatic |
 | S9 seated character + PivotTo | 2 | 2 questions |
 | S10 jitter at 12,000 studs | 1 | Yes. Walk around. |
+
+## Playtest log
+
+- 2026-09-30, Play Solo (Steamy): both bootstraps booted and Studio printed `[Tests] 24 passed, 0 failed` with no errors.
 
 ## Known issues
 
