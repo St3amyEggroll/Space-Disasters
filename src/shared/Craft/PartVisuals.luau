@@ -165,6 +165,7 @@ local CHUTE_BASE_HEIGHT = 0.5
 local LADDER_RAIL_WIDTH = 0.2
 local LADDER_RUNG_THICKNESS = 0.2
 local LADDER_RUNG_SPACING = 1 -- humanoids climb rung ladders with gaps up to ~1.5 studs
+local LADDER_RUNG_STANDOFF = 0.7 -- studs between the mounting face and the rung centres
 local LEG_MOUNT_HEIGHT = 0.8
 local LEG_STRUT_DIAMETER = 0.6
 local LEG_SHOCK_DIAMETER = 1
@@ -704,17 +705,21 @@ end
 
 local function buildLadder(ctx: Ctx)
 	local S = ctx.size
-	local hx, hy = S.X / 2, S.Y / 2
+	local hx, hy, hz = S.X / 2, S.Y / 2, S.Z / 2
 	local railX = hx - LADDER_RAIL_WIDTH / 2
+	-- CHANGED (Phase 1 rework): hug the +Z (mounting) face so the ladder sits against what it is attached to;
+	-- the rungs stand a little off the face so hands and feet fit behind them.
+	local railZ = hz - LADDER_RAIL_WIDTH / 2
+	local rungZ = hz - LADDER_RUNG_STANDOFF
 	local rail = Vector3.new(LADDER_RAIL_WIDTH, S.Y, LADDER_RAIL_WIDTH)
-	box(ctx, "RailLeft", rail, CFrame.new(-railX, 0, 0), LOOK.Metal, true)
-	box(ctx, "RailRight", rail, CFrame.new(railX, 0, 0), LOOK.Metal, true)
+	box(ctx, "RailLeft", rail, CFrame.new(-railX, 0, railZ), LOOK.Metal, true)
+	box(ctx, "RailRight", rail, CFrame.new(railX, 0, railZ), LOOK.Metal, true)
 	-- Rungs every LADDER_RUNG_SPACING, offset half a spacing from the ends so stacked ladders keep the rhythm.
 	local rungSize = Vector3.new(S.X - 2 * LADDER_RAIL_WIDTH, LADDER_RUNG_THICKNESS, LADDER_RUNG_THICKNESS)
 	local count = math.floor(S.Y / LADDER_RUNG_SPACING + 0.5)
 	for i = 1, count do
 		local y = -hy + (i - 0.5) * LADDER_RUNG_SPACING
-		box(ctx, `Rung{i}`, rungSize, CFrame.new(0, y, 0), LOOK.Metal, true)
+		box(ctx, `Rung{i}`, rungSize, CFrame.new(0, y, rungZ), LOOK.Metal, true)
 	end
 end
 
