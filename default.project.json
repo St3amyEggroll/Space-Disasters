@@ -1,0 +1,134 @@
+{
+	"name": "SpaceDisasters",
+	"tree": {
+		"$className": "DataModel",
+		"ReplicatedStorage": {
+			"$className": "ReplicatedStorage",
+			"Shared": {
+				"$path": "src/shared"
+			}
+		},
+		"ServerScriptService": {
+			"$className": "ServerScriptService",
+			"Server": {
+				"$path": "src/server"
+			}
+		},
+		"StarterPlayer": {
+			"$className": "StarterPlayer",
+			"StarterPlayerScripts": {
+				"$className": "StarterPlayerScripts",
+				"Client": {
+					"$path": "src/client"
+				}
+			}
+		},
+		"Workspace": {
+			"$className": "Workspace",
+			"$properties": {
+				"StreamingEnabled": false,
+				"FallenPartsDestroyHeight": -20000
+			},
+			"BaseGround": {
+				"$className": "Part",
+				"$properties": {
+					"Anchored": true,
+					"Locked": true,
+					"Size": [
+						2048,
+						20,
+						2048
+					],
+					"CFrame": {
+						"CFrame": {
+							"position": [
+								0,
+								-10,
+								0
+							],
+							"orientation": [
+								[
+									1,
+									0,
+									0
+								],
+								[
+									0,
+									1,
+									0
+								],
+								[
+									0,
+									0,
+									1
+								]
+							]
+						}
+					},
+					"Material": "Concrete",
+					"Color": [
+						0.39,
+						0.4,
+						0.42
+					],
+					"TopSurface": "Smooth",
+					"BottomSurface": "Smooth"
+				}
+			},
+			"BaseSpawn": {
+				"$className": "SpawnLocation",
+				"$properties": {
+					"Anchored": true,
+					"Locked": true,
+					"Size": [
+						12,
+						1,
+						12
+					],
+					"CFrame": {
+						"CFrame": {
+							"position": [
+								0,
+								0.5,
+								0
+							],
+							"orientation": [
+								[
+									1,
+									0,
+									0
+								],
+								[
+									0,
+									1,
+									0
+								],
+								[
+									0,
+									0,
+									1
+								]
+							]
+						}
+					},
+					"Material": "Metal",
+					"Color": [
+						1,
+						0.55,
+						0.1
+					],
+					"Duration": 0,
+					"Neutral": true,
+					"TopSurface": "Smooth",
+					"BottomSurface": "Smooth"
+				}
+			}
+		},
+		"Lighting": {
+			"$className": "Lighting",
+			"$properties": {
+				"Technology": "Future"
+			}
+		}
+	}
+}
