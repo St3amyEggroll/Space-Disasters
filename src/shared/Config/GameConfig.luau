@@ -42,6 +42,14 @@ local GameConfig = {
 	MASS_PROPS_FUEL_RATE = 2, -- Hz, mass/CoM/inertia refresh while fuel drains
 	LAUNCH_COUNTDOWN_S = 1.0,
 	MAX_HULL_POINTS = 64,
+	-- CHANGED (Phase 2a): flight controls, SAS and simulation tunables
+	THROTTLE_RATE = 0.8, -- throttle change per second while Shift/Ctrl is held
+	SAS_KP = 4.0, -- attitude-hold proportional gain (1/s^2, scaled by the torque budget)
+	SAS_KD = 3.0, -- attitude-hold derivative gain (1/s)
+	MAX_ANGULAR_SPEED = 3.0, -- rad/s clamp so a tiny craft cannot spin itself apart numerically
+	DEBRIS_SIM_RATE = 30, -- Hz for server-simulated uncrewed crafts (substeps still apply near the surface)
+	CRAFT_STATE_RATE = 20, -- Hz the server relays craft states to clients (Phase 3 adds interest management)
+	CRASH_REPORT_MARGIN = 5, -- m/s slack when the server checks a reported crash for plausibility
 
 	--========================================================================
 	-- Pockets
@@ -76,6 +84,10 @@ local GameConfig = {
 	CRAFT_MARKER_ANGLE_DEG = 0.15, -- below this angular size a craft becomes a marker
 	CRAFT_SCALE_UPDATE_RATE = 4, -- Hz, max Model:ScaleTo rate
 	CRAFT_SCALE_UPDATE_THRESHOLD = 0.05, -- only rescale on >5% change
+	-- CHANGED (Phase 2a): camera
+	CHASE_ZOOM_MIN = 20,
+	CHASE_ZOOM_MAX = 400,
+	CHASE_ZOOM_DEFAULT = 60,
 
 	--========================================================================
 	-- Networking
