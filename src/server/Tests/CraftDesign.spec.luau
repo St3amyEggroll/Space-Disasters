@@ -1,0 +1,134 @@
+--!strict
+-- Tests for Shared/Craft/CraftDesign: orientations, geometry, validation, JSON and buffer round trips.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TestKit = require(script.Parent.TestKit)
+local Fixtures = require(script.Parent.CraftFixtures)
+local CraftDesign = require(ReplicatedStorage.Shared.Craft.CraftDesign)
+
+local LIMITS = { maxBlocks = 250 }
+
+return function(t: TestKit.Context)
+	t.test("24 distinct orientations, index 0 is identity", function()
+		local seen: { [string]: boolean } = {}
+		for rot = 0, 23 do
+			local cf = CraftDesign.rotationCFrame(rot)
+			local key = tostring(cf.RightVector) .. tostring(cf.UpVector)
+			t.expectTrue(not seen[key], "orientation " .. rot .. " duplicated")
+			seen[key] = true
+			t.expectEqual(CraftDesign.rotationIndex(cf), rot)
+		end
+		t.expectEqual(CraftDesign.rotationCFrame(0), CFrame.identity)
+	end)
+
+	t.test("four yaws return to the start; pitch changes the up axis", function()
+		local yaw = CFrame.Angles(0, math.pi / 2, 0)
+		for rot = 0, 23 do
+			local r = rot
+			for _ = 1, 4 do
+				r = CraftDesign.rotateOrientation(r, yaw)
+			end
+			t.expectEqual(r, rot)
+		end
+		local pitched = CraftDesign.rotateOrientation(0, CFrame.Angles(math.pi / 2, 0, 0))
+		local up = CraftDesign.rotationCFrame(pitched).UpVector
+		t.expectNear(math.abs(up.Y), 0, 1e-6)
+	end)
+
+	t.test("oriented size swaps axes", function()
+		t.expectEqual(CraftDesign.orientedSize("fin", 0), Vector3.new(1, 4, 3))
+		local lying = CraftDesign.rotateOrientation(0, CFrame.Angles(0, 0, math.pi / 2))
+		t.expectEqual(CraftDesign.orientedSize("srb_s", lying), Vector3.new(14, 4, 4))
+	end)
+
+	t.test("touches needs a shared face with area; overlaps needs volume", function()
+		local design = CraftDesign.new()
+		local a = { id = 1, type = "block_1", gx = 0, gy = 0, gz = 0, rot = 0 }
+		local faceNeighbor = { id = 2, type = "block_1", gx = 1, gy = 0, gz = 0, rot = 0 }
+		local edgeOnly = { id = 3, type = "block_1", gx = 1, gy = 1, gz = 0, rot = 0 }
+		local apart = { id = 4, type = "block_1", gx = 3, gy = 0, gz = 0, rot = 0 }
+		local inside = { id = 5, type = "plate_4", gx = 0, gy = 0, gz = 0, rot = 0 }
+		t.expectTrue(CraftDesign.touches(a, faceNeighbor))
+		t.expectTrue(not CraftDesign.touches(a, edgeOnly))
+		t.expectTrue(not CraftDesign.touches(a, apart))
+		t.expectTrue(not CraftDesign.overlaps(a, faceNeighbor))
+		t.expectTrue(CraftDesign.overlaps(a, inside))
+		design.blocks = { a, faceNeighbor }
+		t.expectTrue((CraftDesign.validate(design, LIMITS)))
+		design.blocks = { a, inside }
+		local ok, reason = CraftDesign.validate(design, LIMITS)
+		t.expectTrue(not ok and reason ~= nil, "overlap rejected")
+	end)
+
+	t.test("validation rejects bad data", function()
+		local cases = {
+			{ id = 1, type = "nope", gx = 0, gy = 0, gz = 0, rot = 0 },
+			{ id = 1, type = "block_1", gx = 0.5, gy = 0, gz = 0, rot = 0 },
+			{ id = 1, type = "block_1", gx = 0, gy = 0, gz = 0, rot = 24 },
+			{ id = 0, type = "block_1", gx = 0, gy = 0, gz = 0, rot = 0 },
+		}
+		for _, block in cases do
+			local design = CraftDesign.new()
+			design.blocks = { block :: any }
+			t.expectTrue(not (CraftDesign.validate(design, LIMITS)))
+		end
+		local design = CraftDesign.new()
+		design.blocks = { { id = 1, type = "block_1", gx = 0, gy = 0, gz = 0, rot = 0 } }
+		local bounded = { maxBlocks = 250, boundsMin = Vector3.new(1, 0, 0), boundsMax = Vector3.new(40, 120, 40) }
+		t.expectTrue(not (CraftDesign.validate(design, bounded)), "outside bounds")
+		local tiny = { maxBlocks = 0 }
+		t.expectTrue(not (CraftDesign.validate(design, tiny)), "too many blocks")
+	end)
+
+	t.test("JSON round trip", function()
+		local design = Fixtures.sanity()
+		design.blocks[1].stageOverride = 2
+		design.blocks[2].rot = 13
+		local decoded, err = CraftDesign.fromJson(CraftDesign.toJson(design))
+		t.expectTrue(decoded ~= nil, tostring(err))
+		if decoded then
+			t.expectEqual(decoded.name, "Sanity")
+			t.expectEqual(#decoded.blocks, #design.blocks)
+			for index, block in design.blocks do
+				local other = decoded.blocks[index]
+				t.expectEqual(other.id, block.id)
+				t.expectEqual(other.type, block.type)
+				t.expectEqual(other.gx, block.gx)
+				t.expectEqual(other.gy, block.gy)
+				t.expectEqual(other.gz, block.gz)
+				t.expectEqual(other.rot, block.rot)
+				t.expectEqual(other.stageOverride, block.stageOverride)
+			end
+		end
+		t.expectTrue(CraftDesign.fromJson("{") == nil)
+		t.expectTrue(CraftDesign.fromJson('{"v":99,"blocks":[]}') == nil)
+	end)
+
+	t.test("buffer round trip (11 bytes per block)", function()
+		local design = Fixtures.sanity()
+		design.blocks[3].stageOverride = 7
+		design.blocks[4].gx = -300
+		local b = CraftDesign.toBuffer(design)
+		t.expectEqual(buffer.len(b), 2 + #design.name + 2 + #design.blocks * 11)
+		local decoded = CraftDesign.fromBuffer(b)
+		t.expectTrue(decoded ~= nil)
+		if decoded then
+			for index, block in design.blocks do
+				local other = decoded.blocks[index]
+				t.expectEqual(other.type, block.type)
+				t.expectEqual(other.gx, block.gx)
+				t.expectEqual(other.stageOverride, block.stageOverride)
+			end
+		end
+		t.expectTrue(CraftDesign.fromBuffer(buffer.create(3)) == nil)
+	end)
+
+	t.test("bounds and root block", function()
+		local design = Fixtures.sanity()
+		local minV, maxV = CraftDesign.bounds(design)
+		t.expectEqual(minV, Vector3.new(-3, 0, -3))
+		t.expectEqual(maxV.Y, 4 + 8 + 1 + 5 + 2)
+		local root = CraftDesign.rootBlock(design)
+		t.expectTrue(root ~= nil and root.type == "pod_mk1")
+	end)
+end

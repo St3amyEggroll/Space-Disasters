@@ -3,7 +3,7 @@
 | Phase | Status |
 |---|---|
 | 0: Project setup and engine spikes | **Done. All spikes S1–S12 recorded in DECISIONS.md; Q1 answered (A)** |
-| 1: Base and builder | Not started |
+| 1: Base and builder | **Built. Waiting for Steamy's playtest** |
 | 2a: Flight in the pocket (fly, stage, crash) | Not started |
 | 2b: Chutes, legs, landing rebase, recovery | Not started |
 | 3: Multiplayer crafts | Not started |
@@ -17,6 +17,48 @@
 Phase 2 is split into 2a/2b so you can playtest halfway through (agreed with Steamy).
 
 ---
+
+## Phase 1: what was built
+
+- **Base (Oopsie Point Launch Complex):**
+  - The base pocket (slot 0, SURFACE_ALIGNED, lat 0 / lon 0) holds the HomeBase site: ground plate, spawn, street, decorations, and 12 plots.
+  - Each plot is a 40×120×40 hangar build area plus a launch pad. The site is 735 parts.
+- **Plots:** assigned on join (player attribute `PlotIndex`, with your name on the plot sign) and freed on leave. Rolled-out crafts despawn 60 s after their owner leaves.
+- **Builder (in your own hangar):**
+  - A palette grouped by category, and a ghost preview (green, or red when invalid).
+  - Click to place. **R** yaw, **T** pitch, **X** delete mode, **1/2/4** radial symmetry, **Ctrl+Z** undo (50 steps).
+  - Live stats: mass, part count, per-stage Δv (vacuum/sea level), TWR, total Δv, warnings.
+- **Server validation:** plot owner only, inside the build volume, no overlap, ≤ 250 blocks, ≤ 20 ops/s, and every new block must touch the craft (only the first block may sit on the floor).
+- **All 23 parts** with procedural visuals. The Crew Cabin has a real walkable interior (7-stud headroom, windows, 4 seats) and a hatch door.
+- **Save/load:** 10 slots with names, plus your hangar is restored when you rejoin.
+- **Roll Out:** builds your craft on your pad and replaces your previous one. It refuses crafts with no command part or with loose blocks.
+- **Seats and hatches:**
+  - "Pilot"/"Sit" prompts on seats, and "Enter"/"Exit" prompts on the cabin hatch.
+  - The **Boarding** button (Public → Friends → Private) controls who can use them, on your pad craft and in your hangar.
+- **Tests:** 52 offline tests, including staging on 5 fixture rockets and the Section 6.2 sanity numbers.
+
+## Phase 1: how to test
+
+**Rebuild the place first.** The ground and spawn moved into the base site, and an old place still has the Phase 0 plate. In PowerShell in the repo folder:
+```
+git pull
+rojo build -o SpaceDisasters.rbxl
+rojo serve
+```
+Open the new `SpaceDisasters.rbxl`, click **Connect**, then **Play**.
+
+1. **Spawn:** you appear on the orange pad in the middle of the street. Your name is on one plot's sign. Walk into that hangar (the open side faces the street). The builder UI appears: parts on the left, stats on the right, saves at the bottom right.
+2. **Build the sanity rocket**, bottom to top: **Small Engine** on the floor, then **Small Tank Long** on top, **Small Decoupler**, **Command Pod**, **Parachute**.
+   - Stats should show about **4.15 t**, stage 1 about **2,100 m/s vac**, **TWR ≈ 1.9**, and 3 stages.
+   - Try R/T rotation, X delete, Ctrl+Z undo, and 2x/4x symmetry with fins around the tank.
+3. **Invalid placements:** try placing floating blocks, placing outside the hangar, and spam-clicking. You should see a red ghost and an error toast, and nothing gets placed.
+4. **Save/Load:** type a name, pick slot 1, and click **Save**. Click **Clear** twice, then **Load**.
+5. **Roll Out:** the rocket appears on your pad behind the hangar.
+6. **Cabin:** build a **Crew Cabin** on the floor and Roll Out. At the pad, use **Enter** on the orange door, walk around inside, and use **Pilot** or **Sit** on a seat. Press Space to get up, then **Exit**.
+7. **Two players** (Test → Clients and Servers, 2 players):
+   - Both build side by side and see each other's blocks appear live.
+   - Player 1 sets **Boarding: Private**. Player 2 is then refused at player 1's hatch and seats (an error toast appears).
+8. **Rejoin:** stop and Play again. Your hangar build comes back. Saves persist across sessions only if the place is published with Studio API access on; otherwise a warning explains that saves last only for this session.
 
 ## Phase 0: what was built
 

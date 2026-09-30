@@ -73,7 +73,7 @@ export type PartDef = {
 	DragFactor: number, -- nose cones reduce drag when leading
 	CrashTolerance: number, -- m/s impact speed that destroys the part
 	UnlockId: string,
-	SortOrder: number, -- palette order
+	SortOrder: number, -- palette order AND the stable wire index (CraftDesign buffers); only ever append new parts
 }
 
 -- Fields every definition may omit; filled with defaults by define().
@@ -403,6 +403,11 @@ end
 
 function Parts.find(id: string): PartDef?
 	return byId[id]
+end
+
+-- CHANGED (Phase 1): stable numeric index for network buffers (1-based, definition order).
+function Parts.byIndex(index: number): PartDef?
+	return list[index]
 end
 
 function Parts.isCommand(def: PartDef): boolean

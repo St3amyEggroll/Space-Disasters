@@ -53,6 +53,47 @@ The live-sync plugin writes properties with script permissions, and scripts can'
 - At the exact poles, where north is undefined, universe −X projected onto the tangent plane is used instead.
 - The base site at lat 0 / lon 0 has pocket +Y = universe +X, pocket +Z = universe +Y (north), and pocket +X = universe +Z (east).
 
+### D12. Saves also keep the hangar contents (`current`)
+The save record is `{version = 1, slots = {["1"]..["10"] = design JSON}, current = design JSON?}`.
+- `current` is additive. It holds the hangar contents, saved on leave and shutdown and restored into your plot on the next join.
+- That's what "save on player leave" saves.
+- Explicit saves go to the 10 slots.
+- If DataStores are unavailable (an unpublished place, or Studio without API access), saves last only for the session and a warning is printed.
+
+### D13. HomeBase is a shared builder module, not a replicated template
+The spec puts the site template at `ReplicatedStorage.Assets.Sites.HomeBase`. Instead, `Shared/Sites/HomeBase.luau` builds the site deterministically from `Config/BaseLayout`.
+- The server builds it into the base pocket.
+- Clients in other pockets (Phase 2) call the same function to render it. That avoids replicating a second ~735-part copy.
+
+### D14. Remote additions and shapes
+- `SaveSlots` (server→client: slot names) and `Notify` (server→client: toast text) are new.
+- `RemoveBlock` takes a grid cell `(gx, gy, gz)` instead of a block id, so undo works without the client knowing server ids.
+- Symmetry is done on the client, as several `PlaceBlock` calls that are each validated on the server.
+
+### D15. Seats are sat through prompts
+Every Seat is `Disabled` by default, so walking into one does nothing.
+- Its `SitPrompt` asks the server, which checks boarding permission, enables the seat and calls `Seat:Sit`.
+- The seat stays enabled only while occupied.
+- Cabin hatches are prompts that teleport the character between `HatchOutside` and `HatchInside` (Enter checks permission, Exit doesn't).
+
+### D16. Design grid, orientation and wire conventions
+- A block's `(gx, gy, gz)` is the minimum corner of its oriented box.
+- `rot = upIndex * 4 + yawIndex` (24 orientations; 0 = identity).
+- `Parts` definition order is the stable wire index for design buffers, so new parts may only be appended.
+- Part-local front is -Z; the mounting/back face is +Z (cabin door, fin root, leg mount, radial decoupler plate).
+
+### D17. Ladders are rung ladders, not TrussParts
+A TrussPart can't be narrower than 2 studs, and the ladder is 1×4×1. The ladder is two rails with rungs 1 stud apart, which Roblox characters climb.
+
+### D18. The project file no longer has `BaseGround` / `BaseSpawn`
+The base site now provides the ground and spawn. **Rebuild the place** (`rojo build -o SpaceDisasters.rbxl`); a place built in Phase 0 still contains the old plate and spawn, because `rojo serve` doesn't delete them.
+
+### D19. Phase 1 MassProps scope
+MassProps computes mass, CoM, inertia, fuel groups, projected areas, leading drag factors, fin area, centre of pressure, and per-stage Δv/TWR.
+- Contact hull points are computed with the flight model in Phase 2, which is their only user.
+- Stage Δv is simulated exactly between flameouts at full throttle.
+- Solid boosters burn only their own fuel.
+
 ---
 
 ## Phase 0 spike results

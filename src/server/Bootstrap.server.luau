@@ -13,6 +13,12 @@ local Loader = require(ReplicatedStorage.Shared.Util.Loader)
 --============================================================================
 local BOOT_ORDER = {
 	"TimeService", -- first: everything else reads UT
+	"PocketService", -- CHANGED (Phase 1): base pocket + site must exist before plots and builds
+	"PlotService",
+	"SaveService",
+	"BuildService", -- creates the remotes (Remotes.createAll) in Init
+	"CraftService",
+	"CrewService",
 }
 --============================================================================
 
