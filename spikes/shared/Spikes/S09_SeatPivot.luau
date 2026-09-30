@@ -592,7 +592,7 @@ local function runClient(ctx: SpikeKit.ClientContext)
 		if seatedPlayer == ctx.player then
 			ctx.ask(
 				string.format(
-					"[Variant %s] Did your camera and character move smoothly with the seat during the smooth move (phase %d)?",
+					"[Variant %s] Did your camera and character move smoothly with the seat during the smooth move (phase %d, the 30 studs/s slide)?",
 					variant.key,
 					SMOOTH_MOVE_PHASE
 				),
@@ -643,6 +643,7 @@ local function runClient(ctx: SpikeKit.ClientContext)
 			local current = active
 			if current and index and PHASES[index] ~= nil then
 				current.sampler.phase = index
+				ctx.status(string.format("S9: phase %d/%d - %s", index, #PHASES, PHASES[index]))
 			end
 		elseif message.kind == "end" then
 			if index and VARIANTS[index] ~= nil then
