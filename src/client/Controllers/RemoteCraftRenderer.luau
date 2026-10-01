@@ -157,6 +157,12 @@ function RemoteCraftRenderer.craftIds(): { number }
 	return ids
 end
 
+-- CHANGED (Phase 5): is this craft debris (CraftSpawned info.isDebris)? Used by the map view.
+function RemoteCraftRenderer.isDebris(craftId: number): boolean
+	local entry = entries[craftId]
+	return entry ~= nil and entry.isDebris
+end
+
 function RemoteCraftRenderer.design(craftId: number): Design?
 	local entry = entries[craftId]
 	return if entry then entry.design else nil
@@ -365,10 +371,15 @@ function RemoteCraftRenderer.render(ctx: RenderContext.RenderContext)
 			else entry.pocketId ~= 0 and entry.pocketId == ctx.pocketId
 		local state: State? = nil
 		if not inMyPocket and #entry.design.blocks > 0 then
-			local sampled, mode = StateBuffer.sample(entry.states, renderUT)
-			state = sampled
-			if mode == "Frozen" then
-				frameStats.frozen += 1
+			local onRails = railsById[id] -- CHANGED (Phase 5): crafts on rails are not streamed; sample the rail
+			if onRails then
+				state = Rails.stateAt(onRails, renderUT)
+			else
+				local sampled, mode = StateBuffer.sample(entry.states, renderUT)
+				state = sampled
+				if mode == "Frozen" then
+					frameStats.frozen += 1
+				end
 			end
 		end
 		if state == nil then

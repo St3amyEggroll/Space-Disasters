@@ -187,7 +187,7 @@ local function updateOnRails(record: CraftRecord, rails: Rails.Rails, now: numbe
 		broadcastRails(record, changed)
 		syncSim(record, changed, now)
 		if now >= changed.exitUT then
-			RailsService.takeOffRails(record, now)
+			RailsService.takeOffRails(record, changed.exitUT)
 		end
 	else
 		syncSim(record, rails, now)

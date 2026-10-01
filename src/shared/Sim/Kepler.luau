@@ -435,14 +435,17 @@ end
 	Upper bound of the speed along the orbit while it stays at or above `floorRadius` (the speed is largest at
 	the smallest radius reached; vis-viva).
 ]]
-function Kepler.speedBound(mu: number, r: Vec3d, v: Vec3d, floorRadius: number?): number
-	local el = Kepler.elements(mu, r, v)
+local function speedBoundOf(mu: number, el: Elements, v: Vec3d, floorRadius: number?): number
 	local rmin = math.max(el.periapsis, floorRadius or 0)
 	local speed2 = Vec3d.lengthSq(v)
 	if rmin <= 0 then
 		return math.huge
 	end
 	return math.sqrt(math.max(speed2, 2 * el.energy + 2 * mu / rmin))
+end
+
+function Kepler.speedBound(mu: number, r: Vec3d, v: Vec3d, floorRadius: number?): number
+	return speedBoundOf(mu, Kepler.elements(mu, r, v), v, floorRadius)
 end
 
 --[[
@@ -517,7 +520,7 @@ function Kepler.findRadiusCrossing(
 	if startR < radius and el.kind == "Elliptic" and el.apoapsis < radius then
 		return nil -- never gets that high
 	end
-	local vmax = Kepler.speedBound(mu, r0, v0, floorRadius)
+	local vmax = speedBoundOf(mu, el, v0, floorRadius)
 	local radialMax = if el.radial or el.p <= 0 then vmax else el.e * math.sqrt(mu / el.p)
 	local rate = math.min(vmax, radialMax * 1.0000001 + 1e-9)
 	local r, v = Vec3d.zero(), Vec3d.zero()

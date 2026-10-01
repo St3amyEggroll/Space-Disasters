@@ -891,10 +891,12 @@ local function onCraftOffRails(id: unknown, _ut: unknown)
 	if id ~= craftId then
 		return
 	end
+	-- only a refusal / server-ended rail delays the next proposal; the echo of our own leaving (rails already nil)
+	-- must not hold the craft off rails for RAILS_RETRY_S
 	if rails then
 		leaveRails()
+		railsRetryAt = os.clock() + RAILS_RETRY_S
 	end
-	railsRetryAt = os.clock() + RAILS_RETRY_S
 end
 
 --============================================================================

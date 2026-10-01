@@ -399,15 +399,17 @@ function Rails.predict(bodyId: number, pos: Vec3d, vel: Vec3d, ut: number, optio
 
 		for _, child in Bodies.children(currentBody) do
 			local orbit = child.Orbit
-			if orbit and child.Id ~= justLeft then
+			if orbit then
 				local reach = orbit.Radius - child.SoiRadius
 				local beyond = orbit.Radius + child.SoiRadius
 				if el.periapsis <= beyond and el.apoapsis >= reach then
 					local childId = child.Id
 					local startUT = currentUT
+					-- the SOI just left is searched again after the guard (a later re-encounter still counts)
+					local from = if childId == justLeft then guard else 0
 					local t = Kepler.findSphereEntry(mu, r, v, function(dt: number): Vec3d
 						return Universe.bodyOffset(childId, currentBody, startUT + dt)
-					end, orbit.Radius * orbit.AngularRate, child.SoiRadius, 0, math.min(window, endT), body.Radius)
+					end, orbit.Radius * orbit.AngularRate, child.SoiRadius, from, math.min(window, endT), body.Radius)
 					if t and t < endT then
 						endT, reason, nextBody = t, "Enter", childId
 					end

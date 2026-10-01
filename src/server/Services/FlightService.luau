@@ -706,7 +706,7 @@ local function onSeated(player: Player, seat: Seat)
 	local record = pilotSeatCraft(player)
 	if record and record.state == "Prelaunch" then
 		FlightService.startFlight(player, record)
-	elseif record and record.state == "Flying" and record.pilot == nil then
+	elseif record and (record.state == "Flying" or record.state == "OnRails") and record.pilot == nil then
 		handBack(player, record) -- CHANGED (Phase 3): a pilot took a server-simulated craft back
 	end
 end

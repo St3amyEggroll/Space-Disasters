@@ -695,7 +695,7 @@ local function refreshOthers(ut: number, focusAbs: Vec3d)
 	local candidates: { { id: number, distance: number, state: State } } = {}
 	for _, id in RemoteCraftRenderer.craftIds() do
 		local design = RemoteCraftRenderer.design(id)
-		if id ~= trackedId and design and not string.find(string.lower(design.name), "debris", 1, true) then
+		if id ~= trackedId and design and not RemoteCraftRenderer.isDebris(id) then
 			local state = craftState(id, ut)
 			if state then
 				local distance = Vec3d.distance(absolute(state.bodyId, state.pos, ut), focusAbs)
@@ -827,7 +827,7 @@ local function updateMarkers(ut: number, focusAbs: Vec3d)
 		local marker = craftMarkers[id]
 		local design = RemoteCraftRenderer.design(id)
 		local name = if design then design.name else "Craft"
-		local isDebris = string.find(string.lower(name), "debris", 1, true) ~= nil
+		local isDebris = RemoteCraftRenderer.isDebris(id)
 		if marker == nil then
 			local color = if id == ownId then OWN_COLOR elseif isDebris then DEBRIS_COLOR else CRAFT_COLOR
 			local created = newMarker(`Craft{id}`, color, true)

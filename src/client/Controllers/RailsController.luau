@@ -35,9 +35,10 @@ local RailsController = {}
 local lastCheck: { [number]: number } = {} -- craft id -> UT of the last local SOI check
 local tracked: { [number]: boolean } = {}
 
-local function setRails(craftId: number, rails: Rails.Rails?)
+-- `at` (default now): the UT a cleared rail ends at, where the resumed stream picks up.
+local function setRails(craftId: number, rails: Rails.Rails?, at: number?)
 	local now = UniverseTime.now()
-	RemoteCraftRenderer.setRails(craftId, rails, now)
+	RemoteCraftRenderer.setRails(craftId, rails, at or now)
 	if rails then
 		tracked[craftId] = true
 		-- the server has checked everything up to about now
@@ -56,9 +57,11 @@ local function onCraftRails(packet: unknown)
 	setRails(craftId, Rails.fromData(data))
 end
 
-local function onOffRails(craftId: unknown, _ut: unknown)
+local function onOffRails(craftId: unknown, ut: unknown)
 	if type(craftId) == "number" and tracked[craftId] then
-		setRails(craftId, nil)
+		-- seed the stream buffer where the server left the rail (the resumed stream starts there), never later than now
+		local at = if type(ut) == "number" and ut == ut then math.min(ut, UniverseTime.now()) else nil
+		setRails(craftId, nil, at)
 	end
 end
 
