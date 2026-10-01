@@ -439,7 +439,7 @@ Steamy asked for "an effects phase, to update effects of rockets and everything"
   - These are display names only. Body ids and code names (`Homeworld`, `Moon`, `Sun`) are unchanged.
   - `/orbit` accepts either name (e.g. `/orbit 10 mun` or `/orbit 10 moon`).
 - Earlier entries in this file keep the old names as written at the time.
-- **Mars:** Steamy wants a Mars. It's a new planet, not a rename, so its design is pending (see PROGRESS).
+- **Mars (Steamy's choice: a real solar system):** Earth (with the Mun) and Mars will both orbit Sol, with Sol as the root body. This is a new Phase 7b after time warp, because interplanetary transfers are long. Planned scale: orbits sized so an Earth-to-Mars transfer takes a few minutes at 50× warp.
 
 ---
 

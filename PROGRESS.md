@@ -11,6 +11,7 @@
 | 5: Orbits, rails, map, navball | **Built. Waiting for Steamy's playtest** (D36) |
 | 6: EVA, bubbles, boarding | Not started |
 | 7: Time warp | Not started |
+| 7b: Solar system: Mars (Steamy) | Not started. Earth (with the Mun) and Mars both orbit Sol; fly Earth to Mars with transfer orbits. Comes after time warp, because the trip is long |
 | 8: Surface terrain | Not started |
 | 9: Polish and backlog | Not started |
 | 10: Effects (Steamy) | **Built. Waiting for Steamy's playtest** (D38) |
