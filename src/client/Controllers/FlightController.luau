@@ -138,7 +138,6 @@ local idleTime = 0 -- s the craft has been eligible without input
 local railsRetryAt = 0 -- os.clock() before which no new rail is proposed
 local inputPulse = false -- a discrete flight key was pressed since the last simulation step
 local leaveRails: () -> () -- defined in the rails section below (stage() needs it first)
-local separationEffects: (craft: Craft) -> () -- CHANGED (Phase 10): defined next to stage()
 
 --============================================================================
 -- Seat detection
@@ -217,7 +216,7 @@ local function hideBlocksLocally(ids: { number })
 end
 
 -- CHANGED (Phase 10): separation puffs at the decouplers the next stage fires (call before FlightModel.stage).
-separationEffects = function(craft: Craft)
+local function separationEffects(craft: Craft)
 	local id = craftId
 	local next = craft.stages[craft.stageIndex]
 	if id == nil or next == nil or #next.decouple == 0 then

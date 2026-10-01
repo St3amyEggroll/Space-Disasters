@@ -269,7 +269,7 @@ function UniverseRenderer.Init()
 	DebugOverlay.addLine("universe", 22, function()
 		return lastSummary
 	end)
-	DebugOverlay.addLine("effects", 24, Effects.summary) -- CHANGED (Phase 10)
+	DebugOverlay.addLine("effects", 24.5, Effects.summary) -- CHANGED (Phase 10): after "map" (24)
 end
 
 function UniverseRenderer.Start()

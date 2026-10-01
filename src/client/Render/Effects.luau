@@ -236,6 +236,8 @@ type AeroSlot = {
 	vapor: Beam,
 	light: PointLight,
 	heatLevel: number, -- quantised heat the beam sequences were built for (-1 = never)
+	heatRadius: number, -- radius the glow / streak sizes were built for
+	heatLength: number, -- plasma length the streak speed was built for
 	vaporLevel: number,
 }
 
@@ -667,6 +669,8 @@ local function takeAero(): AeroSlot?
 		vapor = vapor,
 		light = light,
 		heatLevel = -1,
+		heatRadius = -1,
+		heatLength = -1,
 		vaporLevel = -1,
 	}
 end
@@ -679,6 +683,8 @@ local function releaseAero(slot: AeroSlot)
 	slot.vapor.Enabled = false
 	slot.light.Enabled = false
 	slot.heatLevel = -1
+	slot.heatRadius = -1
+	slot.heatLength = -1
 	slot.vaporLevel = -1
 	slot.part.CFrame = PARK_CFRAME
 	table.insert(freeAero, slot)
@@ -1261,18 +1267,26 @@ local function updateAero(
 		aero.outer.Width0 = radius * 3.2 * wobble
 		aero.outer.Width1 = radius * 2.2
 		local level = math.ceil(heat / HEAT_QUANTUM) * HEAT_QUANTUM
+		local resized = math.abs(radius - aero.heatRadius) > 0.05 * aero.heatRadius
 		if level ~= aero.heatLevel then
-			aero.heatLevel = level
 			aero.inner.Transparency = heatSequence(0.2, level)
 			aero.outer.Transparency = heatSequence(0.55, level)
+		end
+		-- sequences and ranges are only rebuilt when the heat step or the size moved (not every frame)
+		if level ~= aero.heatLevel or resized then
+			aero.heatRadius = radius
+			aero.cap.Size = sizeSequence(radius * 2.4 * (0.7 + 0.3 * level), radius * 1.6)
+			aero.streaks.Size = sizeSequence(math.max(radius * 0.35, 0.4), radius * 0.15)
+		end
+		aero.heatLevel = level
+		if math.abs(length - aero.heatLength) > 0.05 * aero.heatLength then
+			aero.heatLength = length
+			aero.streaks.Speed = NumberRange.new(length / HEAT_STREAK_LIFETIME * 0.8, length / HEAT_STREAK_LIFETIME)
 		end
 		aero.inner.Enabled = true
 		aero.outer.Enabled = true
 		aero.cap.Rate = HEAT_CAP_RATE * heat * quality
-		aero.cap.Size = sizeSequence(radius * 2.4 * (0.7 + 0.3 * heat), radius * 1.6)
 		aero.streaks.Rate = HEAT_STREAK_RATE * heat * quality
-		aero.streaks.Speed = NumberRange.new(length / HEAT_STREAK_LIFETIME * 0.8, length / HEAT_STREAK_LIFETIME)
-		aero.streaks.Size = sizeSequence(math.max(radius * 0.35, 0.4), radius * 0.15)
 		aero.light.Brightness = HEAT_LIGHT * heat
 		aero.light.Range = math.min(radius * 6, 60)
 		aero.light.Enabled = true

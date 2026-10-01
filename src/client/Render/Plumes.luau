@@ -43,7 +43,10 @@ local EffectsMath = require(script.Parent.EffectsMath) -- CHANGED (Phase 10)
 -- Tunables
 --============================================================================
 local THROTTLE_EPSILON = 0.02 -- only rewrite properties when the throttle moved more than this
-local PRESSURE_EPSILON = 0.02 -- CHANGED (Phase 10): ... or the air pressure ratio moved more than this
+-- CHANGED (Phase 10): ... or the plume's vacuum factor (EffectsMath.vacuumFactor, which is what shapes it) moved
+-- more than this. Not the raw pressure ratio: the shape follows its square root, so equal pressure steps would
+-- freeze the plume high up and then snap it.
+local VACUUM_EPSILON = 0.02
 local SCALE_EPSILON = 0.01 -- relative Model:GetScale() change that forces a rewrite
 local MIN_THROTTLE = 0.001 -- at or below this an engine counts as off
 local REFERENCE_DIAMETER = 4 -- studs; engine_s nozzle, all "per diameter" factors below are relative to this
@@ -130,7 +133,7 @@ type Plume = {
 	diameter: number, -- unscaled nozzle diameter, studs
 	solid: boolean, -- CHANGED (Phase 10): solid booster (was a length multiplier from the block's shape)
 	throttle: number, -- last applied throttle (0 = off)
-	pressure: number, -- CHANGED (Phase 10): last applied pressure ratio
+	vacuum: number, -- CHANGED (Phase 10): last applied EffectsMath.vacuumFactor
 	scale: number, -- Model:GetScale() the properties were last written for
 	flash: number, -- CHANGED (Phase 10): seconds of ignition flash left
 	baseLight: number, -- PointLight brightness without the flash
@@ -266,7 +269,7 @@ local function createPlume(exhaust: Attachment, modelScale: number): Plume
 		diameter = diameter,
 		solid = solid,
 		throttle = 0,
-		pressure = -1,
+		vacuum = -1,
 		scale = modelScale,
 		flash = 0,
 		baseLight = 0,
@@ -302,20 +305,22 @@ local function switchOff(plume: Plume, modelScale: number, events: { PlumeEvent 
 	end
 end
 
--- CHANGED (Phase 10): the shape now depends on the air pressure (EffectsMath.plumeShape).
-local function apply(plume: Plume, throttle: number, pressure: number, modelScale: number): boolean
+-- CHANGED (Phase 10): the shape now depends on the air pressure (EffectsMath.plumeShape). Returns whether any
+-- property was written, and whether the plume just lit.
+local function apply(plume: Plume, throttle: number, pressure: number, modelScale: number): (boolean, boolean)
 	local wasOn = plume.throttle > 0
 	local rescaled = math.abs(modelScale - plume.scale) > SCALE_EPSILON * plume.scale
+	local vacuum = EffectsMath.vacuumFactor(pressure)
 	if
 		wasOn
 		and not rescaled
 		and math.abs(throttle - plume.throttle) <= THROTTLE_EPSILON
-		and math.abs(pressure - plume.pressure) <= PRESSURE_EPSILON
+		and math.abs(vacuum - plume.vacuum) <= VACUUM_EPSILON
 	then
-		return false
+		return false, false
 	end
 	plume.throttle = throttle
-	plume.pressure = pressure
+	plume.vacuum = vacuum
 	plume.scale = modelScale
 
 	local shape = EffectsMath.plumeShape(throttle, pressure, plume.solid)
@@ -352,7 +357,7 @@ local function apply(plume: Plume, throttle: number, pressure: number, modelScal
 	plume.glow.Transparency = fadedSequence(GLOW_TRANSPARENCY_KEYS, shape.fade)
 	plume.glow.Brightness = shape.glowBrightness
 	plume.baseCore = shape.coreBrightness
-	local vacuumColors = EffectsMath.vacuumFactor(pressure) > VACUUM_COLOR_THRESHOLD
+	local vacuumColors = vacuum > VACUUM_COLOR_THRESHOLD
 	if vacuumColors ~= plume.vacuumColors then
 		plume.vacuumColors = vacuumColors
 		plume.glow.Color = if vacuumColors then GLOW_COLOR_VACUUM else GLOW_COLOR
@@ -368,7 +373,7 @@ local function apply(plume: Plume, throttle: number, pressure: number, modelScal
 	if not wasOn then
 		plume.light.Enabled = true
 	end
-	return not wasOn
+	return true, not wasOn
 end
 
 -- CHANGED (Phase 10): light and core brightness, including the decaying ignition flash.
@@ -433,7 +438,7 @@ function Plumes.update(
 			end
 		end
 		if plume then
-			local ignited = apply(plume, math.clamp(throttle, 0, 1), p, modelScale)
+			local changed, ignited = apply(plume, math.clamp(throttle, 0, 1), p, modelScale)
 			if ignited and not state.fresh then
 				plume.flash = FLASH_TIME
 				plume.emitter:Emit(FLASH_PARTICLES)
@@ -441,7 +446,10 @@ function Plumes.update(
 					table.insert(events, event(plume, "Ignite", modelScale))
 				end
 			end
-			applyBrightness(plume, dt)
+			-- a steady burn without a flash writes nothing
+			if changed or plume.flash > 0 then
+				applyBrightness(plume, dt)
+			end
 		end
 	end
 	state.fresh = false
