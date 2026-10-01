@@ -258,6 +258,22 @@ The flight camera no longer turns with the rocket.
 - **Clouds** from D30 are off (`CLOUDS_ENABLED = false`). Studio does not let game scripts set `SurfaceAppearance.ColorMapContent` ("lacking capability Plugin").
 - **Plumes:** each engine's flame now follows `FlightModel.engineBurning` exactly, and every flame goes out when the local simulation ends. Remote copies no longer keep a minimum 5% flame on throttled-down liquid engines. Solid boosters (SRBs) still can't be throttled, as in KSP.
 
+### D32. No Roblox Atmosphere: we paint the whole sky (Steamy, Phase 2a playtest 3)
+**What went wrong:** S4 concluded that "in space Atmosphere.Density is 0, so the skybox shows". Play proved that wrong. Whenever an Atmosphere instance exists, Roblox draws its own procedural sky, even at Density 0. That sky has a fixed grey "below the horizon" half. It split the screen into blue and grey (on the ground too) and kept space blue.
+
+**What changed:**
+- **The Atmosphere is gone.** SkyLighting removes any Atmosphere in Lighting, including ones added later.
+- **StarSky paints all six skybox faces** (EditableImage) as a blend:
+  - space: near-black with point stars, fixed to universe axes by SkyboxOrientation
+  - day: one flat sky colour, blue and warmer toward sunset
+- **How much "day":** `day = smoothstep(sun elevation from -0.08 to 0.1) × air^0.7 × (1 − shadow)`.
+  - Daylight low in the air gives a blue sky; night, space, Dent and planet shadow all give black with stars.
+  - A flat day colour needs no knowledge of the skybox faces' directions, so there are no seams.
+- **Cost:** a repaint is a fast background fill plus the star pixels. It runs only when the blend moved by more than 0.01, two faces per frame.
+- **Night stars:** Roblox's own `StarCount` is now 0, because those stars would turn with the pocket.
+- **What we lose:** Roblox's aerial haze on distant parts.
+- **Invisible rocket:** a craft model that reaches the shown pocket after the pocket switch is now un-hidden on arrival. A re-parent can lag the transfer event (S8), and the model kept the hidden state of the pocket it left. In the playtest the rocket flew invisible, with only its seat prompt showing.
+
 ---
 
 ## Phase 0 spike results

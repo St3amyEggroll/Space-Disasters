@@ -24,8 +24,10 @@
 	  body's angular radius asin(R / d)), softened over +/-SHADOW_SOFT_DEG. Below the surface d is treated as R,
 	  which makes the test the true geometric horizon.
 
-	Atmosphere (spike S4): Density and Haze are exactly 0 in space and for bodies without an atmosphere (fog would
-	hide the scaled-space planets and the star skybox). Inside, they fade from sea level to the atmosphere top.
+	Atmosphere: CHANGED (Phase 2a playtest): NONE. Whenever an Atmosphere instance exists Roblox draws its own
+	procedural sky, even at Density 0 (S4's "the skybox shows at Density 0" turned out wrong in play): a sky with a
+	fixed grey "below the horizon" half that split the screen and kept space blue. Any Atmosphere in Lighting is
+	removed, and StarSky paints the whole sky: a flat day colour blended over black space with stars.
 
 	Sky: CelestialBodiesShown = false (ScaledSpace draws the sun; Roblox's sun/moon discs must not show). The star
 	skybox is fixed to universe axes, so in the pocket it is rotated by frame.refRotInv (universe -> pocket).
@@ -34,10 +36,9 @@
 	Studio, flip SKYBOX_USE_INVERSE (uses refRot instead of refRotInv); if they turn about the wrong axes, the
 	engine uses another Euler order and skyboxOrientationDegrees() must change.
 
-	CHANGED (Phase 2a feedback): space looks like space. Below SPACE_SKY_AIR (air factor) the Sky shows its normal
-	skybox under the Atmosphere; above, StarSky's black painted star faces (fixed to universe axes like before).
-	Flight pockets are now horizon-aligned low down (D31), so the Atmosphere's horizon, the sun and day/night
-	match the real planet instead of tilting with the rocket.
+	Sky blend (Phase 2a playtest): day = (sun above the real horizon) x (air left above you) x (not in a planet's
+	shadow); the day colour is blue, warming toward sunset. Flight pockets are horizon-aligned low down (D31), so
+	ctx.sunDirection.Y is the sun's true elevation there.
 
 	Lighting.Technology (Future) is set in the place file and never touched here.
 ]]
@@ -100,29 +101,22 @@ local GROUND_AMBIENT = Color3.fromRGB(40, 40, 44) -- sea level, daylight
 local GROUND_OUTDOOR_AMBIENT = Color3.fromRGB(128, 128, 132)
 local GROUND_BRIGHTNESS = 2.5
 
--- Atmosphere (values at sea level; all fade to 0 / space values at the atmosphere top)
-local ATMO_DENSITY_SEA = 0.3
-local ATMO_DENSITY_EXPONENT = 1.5 -- density = sea * (1 - altitude / top) ^ exponent
-local ATMO_OFFSET_SEA = 0.1
-local ATMO_OFFSET_TOP = 0.5
-local ATMO_HAZE_SEA = 1.2
-local ATMO_HAZE_LOW_SUN_BOOST = 0.8 -- extra haze factor when the sun is at the horizon
-local ATMO_GLARE_SEA = 0.3
-local ATMO_LOW_SUN_Y = 0.35 -- sunDirection.Y below which the sunset tint starts
-local ATMO_SUNSET_COLOR = Color3.fromRGB(255, 190, 140)
-local ATMO_SUNSET_DECAY = Color3.fromRGB(120, 90, 110)
-local ATMO_SUNSET_BLEND = 0.6 -- max sunset tint
-local ATMO_DEFAULT_COLOR = Color3.fromRGB(120, 170, 255) -- used if a body with an atmosphere has no colour
+-- Sky colour (StarSky): CHANGED (Phase 2a playtest)
+local SKY_DAY_COLOR = Color3.fromRGB(110, 165, 235) -- daylight sky, sun high
+local SKY_SUNSET_COLOR = Color3.fromRGB(235, 150, 110) -- sky colour with the sun at the horizon
+local SKY_SUNSET_SUN_Y = 0.3 -- sun elevation (sin) above which the sky is fully SKY_DAY_COLOR
+local SKY_NIGHT_SUN_Y = -0.08 -- sun elevation (sin) at or below which the sky is night (space)
+local SKY_FULL_DAY_SUN_Y = 0.1 -- ... and at or above which it is fully day
+local SKY_AIR_EXPONENT = 0.7 -- day factor *= air ^ this (air: 1 at sea level, 0 at the atmosphere top)
 
 -- Environment / sky
 local ENVIRONMENT_DIFFUSE_SCALE = 0.4
 local ENVIRONMENT_SPECULAR_SCALE = 0.6
 local FOG_END = 1e6
-local STAR_COUNT = 3000
+local STAR_COUNT = 0 -- CHANGED (Phase 2a playtest): Roblox's own night stars would turn with the pocket
 local MOON_ANGULAR_SIZE = 0.5 -- degrees; the disc is hidden anyway (CelestialBodiesShown = false)
 local SKYBOX_USE_INVERSE = false -- flip if the star sky rotates the wrong way in Studio
 local SKYBOX_WRITE_THRESHOLD_DEG = 0.05
-local SPACE_SKY_AIR = 0.5 -- air factor (1 at sea level, 0 at the atmosphere top) below which the star sky shows
 
 -- Write thresholds (avoid touching Lighting properties that did not really change)
 local NUMBER_EPSILON = 1e-3
@@ -148,7 +142,6 @@ local SkyLighting = {}
 
 local initialized = false
 local sky: Sky? = nil
-local atmosphere: Atmosphere? = nil
 local lastSkyboxRot: CFrame? = nil
 
 local physicalBodies = Bodies.physicalBodies()
@@ -477,20 +470,24 @@ function SkyLighting.init()
 	local newSky = adoptChild("Sky") :: Sky
 	newSky.Name = "SkyLightingSky"
 	newSky.CelestialBodiesShown = false
-	newSky.StarCount = STAR_COUNT
+	newSky.StarCount = STAR_COUNT -- 0: StarSky paints the stars
 	newSky.MoonTextureId = ""
 	newSky.MoonAngularSize = MOON_ANGULAR_SIZE
 	sky = newSky
 	lastSkyboxRot = nil
 	StarSky.init()
 
-	local newAtmosphere = adoptChild("Atmosphere") :: Atmosphere
-	newAtmosphere.Name = "SkyLightingAtmosphere"
-	newAtmosphere.Density = 0
-	newAtmosphere.Haze = 0
-	newAtmosphere.Glare = 0
-	newAtmosphere.Offset = ATMO_OFFSET_TOP
-	atmosphere = newAtmosphere
+	-- No Atmosphere at all (header): remove any the place or another script adds.
+	for _, child in Lighting:GetChildren() do
+		if child:IsA("Atmosphere") then
+			child:Destroy()
+		end
+	end
+	Lighting.ChildAdded:Connect(function(child: Instance)
+		if child:IsA("Atmosphere") then
+			task.defer(child.Destroy, child)
+		end
+	end)
 
 	Lighting.GlobalShadows = true
 	Lighting.EnvironmentDiffuseScale = ENVIRONMENT_DIFFUSE_SCALE
@@ -564,53 +561,6 @@ local function updateLighting(air: number, shadow: number)
 	end
 end
 
-local function updateAtmosphere(target: Atmosphere, bodyId: number, air: number, sunY: number)
-	if air <= 0 then
-		-- Space (or an airless body): no fog at all, or the scaled-space planets vanish.
-		if target.Density ~= 0 then
-			target.Density = 0
-		end
-		if target.Haze ~= 0 then
-			target.Haze = 0
-		end
-		if target.Glare ~= 0 then
-			target.Glare = 0
-		end
-		return
-	end
-	local body = Bodies.get(bodyId)
-	local skyColor = body.AtmosphereColor or ATMO_DEFAULT_COLOR
-	local lowSun = 1 - math.clamp(sunY / ATMO_LOW_SUN_Y, 0, 1)
-	local dayColor = Color3.new(1, 1, 1):Lerp(skyColor, 0.4)
-	local dayDecay = skyColor:Lerp(Color3.new(0, 0, 0), 0.3)
-	local color = dayColor:Lerp(ATMO_SUNSET_COLOR, lowSun * ATMO_SUNSET_BLEND)
-	local decay = dayDecay:Lerp(ATMO_SUNSET_DECAY, lowSun * ATMO_SUNSET_BLEND)
-
-	local density = ATMO_DENSITY_SEA * air ^ ATMO_DENSITY_EXPONENT
-	local offset = lerp(ATMO_OFFSET_TOP, ATMO_OFFSET_SEA, air)
-	local haze = ATMO_HAZE_SEA * air * (1 + ATMO_HAZE_LOW_SUN_BOOST * lowSun)
-	local glare = ATMO_GLARE_SEA * air
-
-	if numberChanged(target.Density, density) then
-		target.Density = density
-	end
-	if numberChanged(target.Offset, offset) then
-		target.Offset = offset
-	end
-	if numberChanged(target.Haze, haze) then
-		target.Haze = haze
-	end
-	if numberChanged(target.Glare, glare) then
-		target.Glare = glare
-	end
-	if colorChanged(target.Color, color) then
-		target.Color = color
-	end
-	if colorChanged(target.Decay, decay) then
-		target.Decay = decay
-	end
-end
-
 local function updateSkybox(target: Sky, frame: Frames.Frame)
 	local rot = if SKYBOX_USE_INVERSE then frame.refRot else frame.refRotInv
 	local last = lastSkyboxRot
@@ -632,14 +582,13 @@ function SkyLighting.update(ctx: RenderContext.RenderContext)
 	local shadow = math.max(horizonShadowFactor(ctx.sunDirection.Y), planetShadow(ctx))
 	updateLighting(air, shadow)
 
-	local currentAtmosphere = atmosphere
-	if currentAtmosphere then
-		updateAtmosphere(currentAtmosphere, ctx.dominantBodyId, air, ctx.sunDirection.Y)
-	end
 	local currentSky = sky
 	if currentSky then
 		updateSkybox(currentSky, ctx.frame)
-		StarSky.setSpace(currentSky, air < SPACE_SKY_AIR)
+		local sunY = ctx.sunDirection.Y
+		local day = smoothstep(SKY_NIGHT_SUN_Y, SKY_FULL_DAY_SUN_Y, sunY) * air ^ SKY_AIR_EXPONENT * (1 - shadow)
+		local dayColor = SKY_SUNSET_COLOR:Lerp(SKY_DAY_COLOR, smoothstep(0, SKY_SUNSET_SUN_Y, sunY))
+		StarSky.update(currentSky, day, dayColor)
 	end
 end
 

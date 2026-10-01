@@ -175,13 +175,32 @@ local function pocketFolders(): { Instance }
 	return if pockets then pockets:GetChildren() else {}
 end
 
+-- CHANGED (Phase 2a playtest): whatever ARRIVES in the shown pocket is un-hidden. A craft model re-parented from
+-- a hidden pocket into ours after we switched (S8: re-parents can lag the transfer event) kept its hidden state
+-- and flew invisible, with only its seat prompts showing.
+local shownRoots: { [Instance]: RBXScriptConnection } = {}
+
 local function refreshPocketVisibility()
 	for _, pocket in pocketFolders() do
 		local id = pocket:GetAttribute("PocketId")
 		if id == pocketId then
 			showTree(pocket)
+			if not shownRoots[pocket] then
+				shownRoots[pocket] = pocket.DescendantAdded:Connect(showInstance)
+			end
 		else
+			local connection = shownRoots[pocket]
+			if connection then
+				connection:Disconnect()
+				shownRoots[pocket] = nil
+			end
 			hideTree(pocket)
+		end
+	end
+	for root, connection in shownRoots do
+		if root.Parent == nil then
+			connection:Disconnect()
+			shownRoots[root] = nil
 		end
 	end
 end
