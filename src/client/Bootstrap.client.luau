@@ -19,6 +19,7 @@ local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime)
 --============================================================================
 local BOOT_ORDER = {
 	"DebugOverlay",
+	"SettingsController", -- CHANGED (Phase 11): loads / saves settings, sound groups (before anything reads them)
 	"BuildController", -- CHANGED (Phase 1): hangar builder
 	"RemoteCraftRenderer", -- CHANGED (Phase 2a): flight rendering and control
 	"RailsController", -- CHANGED (Phase 5): other crafts' rails and their SOI changes

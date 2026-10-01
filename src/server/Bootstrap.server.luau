@@ -17,6 +17,7 @@ local BOOT_ORDER = {
 	"PlotService",
 	"SaveService",
 	"BuildService", -- creates the remotes (Remotes.createAll) in Init
+	"SettingsService", -- CHANGED (Phase 11): player settings (needs the remotes and SaveService)
 	"CraftService",
 	"CrewService",
 	"FlightService", -- CHANGED (Phase 2a): launch, staging, pilot states, crashes

@@ -29,6 +29,19 @@
 	CHANGED (Phase 10): the own craft's effects go through Render/Effects: every frame the simulated craft is reported
 	(model, design, state, burning engines; source "Local", so it wins over the stream), and predicted staging and
 	crash reports call Effects.blockEvent (separation puffs, explosions) before the blocks are removed.
+
+	CHANGED (Phase 11): keys come from Settings/Keybinds (SettingsSchema "Flight" actions; the defaults are the keys
+	above, plus M map view and F2 HUD on / off). While piloting, ONE ContextActionService binding captures every
+	Flight action's key (so none, e.g. a map key moved to Space, can reach the default jump and throw the pilot out of
+	the seat) and is re-bound whenever the keybinds change. While UIState.isInputBlocked() (main menu or a dialog)
+	the binding ignores the keys (still sinking them, for the same reason) and held keys read as released, so the
+	throttle does not move either. The map key is handled here while piloting and by MapViewController otherwise;
+	ToggleHUD (flips Settings hudVisible; the HUD itself reads that setting) works for everyone aboard.
+	For clickable HUD controls and future touch buttons:
+	  FlightController.performAction(actionId) -> boolean  runs a discrete Flight action exactly like its key
+	                                                       (false for held or unknown actions); not blocked by UIState
+	  FlightController.setHeld(actionId, held) -> boolean  holds a held action (pitch / yaw / roll / throttle up and
+	                                                       down) like its key; released when piloting stops
 ]]
 
 local ContextActionService = game:GetService("ContextActionService")
@@ -55,6 +68,9 @@ local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local ChaseCamera = require(script.Parent.Parent.Render.ChaseCamera)
 local FlightHUD = require(script.Parent.Parent.UI.FlightHUD)
+local Keybinds = require(script.Parent.Parent.Settings.Keybinds) -- CHANGED (Phase 11)
+local Settings = require(script.Parent.Parent.Settings.Settings) -- CHANGED (Phase 11)
+local UIState = require(script.Parent.Parent.UI.UIState) -- CHANGED (Phase 11)
 local HudData = require(script.Parent.Parent.Render.HudData)
 local Effects = require(script.Parent.Parent.Render.Effects) -- CHANGED (Phase 10): replaces direct Plumes calls
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
@@ -84,32 +100,23 @@ local SOLAR_PLANE_NORMAL = Vector3.yAxis -- universe axes: every orbit lies in t
 local RAILS_IDLE_TIME = GameConfig.RAILS_IDLE_TIME
 local RAILS_RETRY_S = GameConfig.RAILS_RETRY_S
 local SOI_CHECK_INTERVAL = GameConfig.SOI_CHECK_INTERVAL
-local HELD_INPUT_KEYS = {
-	Enum.KeyCode.W,
-	Enum.KeyCode.A,
-	Enum.KeyCode.S,
-	Enum.KeyCode.D,
-	Enum.KeyCode.Q,
-	Enum.KeyCode.E,
-	Enum.KeyCode.LeftShift,
-	Enum.KeyCode.LeftControl,
+-- CHANGED (Phase 11): flight keys are SettingsSchema action ids now (keys from Keybinds)
+local ACTION_NAME = "SpaceDisastersFlight"
+local HELD_ACTIONS = { -- continuous actions: any of them held counts as pilot input (rails)
+	"PitchDown",
+	"PitchUp",
+	"YawLeft",
+	"YawRight",
+	"RollLeft",
+	"RollRight",
+	"ThrottleUp",
+	"ThrottleDown",
 }
-local FLIGHT_KEYS = {
-	Enum.KeyCode.W,
-	Enum.KeyCode.A,
-	Enum.KeyCode.S,
-	Enum.KeyCode.D,
-	Enum.KeyCode.Q,
-	Enum.KeyCode.E,
-	Enum.KeyCode.LeftShift,
-	Enum.KeyCode.LeftControl,
-	Enum.KeyCode.Z,
-	Enum.KeyCode.X,
-	Enum.KeyCode.T,
-	Enum.KeyCode.G, -- CHANGED (Phase 2a remodel): landing legs up / down
-	Enum.KeyCode.V,
-	Enum.KeyCode.F,
-	Enum.KeyCode.Space,
+local NO_PULSE_ACTIONS: { [string]: boolean } = { -- discrete actions that do not count as pilot input (rails)
+	ToggleCamera = true,
+	LeaveSeat = true,
+	MapView = true,
+	ToggleHUD = true,
 }
 --============================================================================
 
@@ -138,6 +145,7 @@ local idleTime = 0 -- s the craft has been eligible without input
 local railsRetryAt = 0 -- os.clock() before which no new rail is proposed
 local inputPulse = false -- a discrete flight key was pressed since the last simulation step
 local leaveRails: () -> () -- defined in the rails section below (stage() needs it first)
+local virtualHeld: { [string]: boolean } = {} -- CHANGED (Phase 11): held actions from setHeld (touch buttons)
 
 --============================================================================
 -- Seat detection
@@ -188,12 +196,21 @@ end
 -- Input
 --============================================================================
 
-local function axis(positive: Enum.KeyCode, negative: Enum.KeyCode): number
+-- CHANGED (Phase 11): a held action's key (Keybinds: released while UIState blocks input) or a setHeld hold.
+local function held(action: string): boolean
+	if virtualHeld[action] and not UIState.isInputBlocked() then
+		return true
+	end
+	return Keybinds.isDown(action)
+end
+
+-- CHANGED (Phase 11): actions instead of keys.
+local function axis(positive: string, negative: string): number
 	local value = 0
-	if UserInputService:IsKeyDown(positive) then
+	if held(positive) then
 		value += 1
 	end
-	if UserInputService:IsKeyDown(negative) then
+	if held(negative) then
 		value -= 1
 	end
 	return value
@@ -251,37 +268,67 @@ local function stage()
 	remotes.RequestStage:FireServer(seatInfo.craftId)
 end
 
+-- CHANGED (Phase 11): the discrete flight actions by id (keys, clickable HUD controls, future touch buttons).
+local function performAction(action: string): boolean
+	if action == "Stage" then
+		stage()
+	elseif action == "ToggleSAS" then
+		sasOn = not sasOn
+	elseif action == "ToggleGear" then
+		local craft = sim
+		if craft then
+			FlightModel.setGearUp(craft, not FlightModel.isGearUp(craft.state.flags))
+		end
+	elseif action == "ThrottleFull" then
+		throttle = 1
+	elseif action == "ThrottleCut" then
+		throttle = 0
+	elseif action == "ToggleCamera" then
+		chaseEnabled = not chaseEnabled
+	elseif action == "LeaveSeat" then
+		remotes.LeaveSeat:FireServer()
+	elseif action == "MapView" then
+		MapViewController.toggle()
+	elseif action == "ToggleHUD" then
+		Settings.set("hudVisible", not Settings.current().hudVisible)
+	else
+		return false
+	end
+	if not NO_PULSE_ACTIONS[action] then
+		inputPulse = true -- CHANGED (Phase 5): pilot input ends rails and restarts the idle timer
+	end
+	return true
+end
+
 local function onAction(
 	_actionName: string,
 	inputState: Enum.UserInputState,
 	input: InputObject
 ): Enum.ContextActionResult
-	if inputState ~= Enum.UserInputState.Begin then
+	-- CHANGED (Phase 11): ignored while a menu or dialog is open, but still sunk (Pass would hand Space to the
+	-- default jump action, which throws the pilot out of the seat)
+	if inputState ~= Enum.UserInputState.Begin or UIState.isInputBlocked() then
 		return Enum.ContextActionResult.Sink
 	end
-	local key = input.KeyCode
-	if key ~= Enum.KeyCode.V and key ~= Enum.KeyCode.F then
-		inputPulse = true -- CHANGED (Phase 5): pilot input ends rails and restarts the idle timer
-	end
-	if key == Enum.KeyCode.Space then
-		stage()
-	elseif key == Enum.KeyCode.T then
-		sasOn = not sasOn
-	elseif key == Enum.KeyCode.G then
-		local craft = sim
-		if craft then
-			FlightModel.setGearUp(craft, not FlightModel.isGearUp(craft.state.flags))
-		end
-	elseif key == Enum.KeyCode.Z then
-		throttle = 1
-	elseif key == Enum.KeyCode.X then
-		throttle = 0
-	elseif key == Enum.KeyCode.V then
-		chaseEnabled = not chaseEnabled
-	elseif key == Enum.KeyCode.F then
-		remotes.LeaveSeat:FireServer()
+	-- CHANGED (Phase 11): the key's Flight action from Keybinds
+	local action = Keybinds.actionFor("Flight", input.KeyCode)
+	if action and table.find(HELD_ACTIONS, action) then
+		inputPulse = true -- CHANGED (Phase 5): pilot input ends rails (a tap shorter than a frame still counts)
+	elseif action then
+		performAction(action)
 	end
 	return Enum.ContextActionResult.Sink
+end
+
+-- CHANGED (Phase 11): every Flight action's current key.
+local function bindAction()
+	ContextActionService:BindActionAtPriority(
+		ACTION_NAME,
+		onAction,
+		false,
+		ACTION_PRIORITY,
+		table.unpack(Keybinds.keysFor("Flight"))
+	)
 end
 
 local function bindKeys(enable: boolean)
@@ -289,16 +336,12 @@ local function bindKeys(enable: boolean)
 		return
 	end
 	bound = enable
+	MapViewController.setPilotBinding(enable) -- CHANGED (Phase 11): the map key comes through onAction meanwhile
 	if enable then
-		ContextActionService:BindActionAtPriority(
-			"SpaceDisastersFlight",
-			onAction,
-			false,
-			ACTION_PRIORITY,
-			table.unpack(FLIGHT_KEYS)
-		)
+		bindAction()
 	else
-		ContextActionService:UnbindAction("SpaceDisastersFlight")
+		ContextActionService:UnbindAction(ACTION_NAME)
+		table.clear(virtualHeld) -- CHANGED (Phase 11): touch holds end with piloting
 	end
 end
 
@@ -308,13 +351,13 @@ end
 
 local function applyControls(craft: Craft, dt: number, piloting: boolean)
 	if piloting and not UserInputService:GetFocusedTextBox() then
-		throttle =
-			math.clamp(throttle + axis(Enum.KeyCode.LeftShift, Enum.KeyCode.LeftControl) * THROTTLE_RATE * dt, 0, 1)
+		-- CHANGED (Phase 11): actions (SettingsSchema explains the directions: W = pitch down, E = roll left)
+		throttle = math.clamp(throttle + axis("ThrottleUp", "ThrottleDown") * THROTTLE_RATE * dt, 0, 1)
 		FlightModel.setControls(
 			craft,
-			axis(Enum.KeyCode.W, Enum.KeyCode.S),
-			axis(Enum.KeyCode.D, Enum.KeyCode.A),
-			axis(Enum.KeyCode.E, Enum.KeyCode.Q),
+			axis("PitchDown", "PitchUp"),
+			axis("YawRight", "YawLeft"),
+			axis("RollLeft", "RollRight"),
 			throttle,
 			sasOn
 		)
@@ -362,8 +405,8 @@ local function heldInput(piloting: boolean): boolean
 	if not piloting or UserInputService:GetFocusedTextBox() then
 		return false
 	end
-	for _, key in HELD_INPUT_KEYS do
-		if UserInputService:IsKeyDown(key) then
+	for _, action in HELD_ACTIONS do -- CHANGED (Phase 11): actions (Keybinds) instead of fixed keys
+		if held(action) then
 			return true
 		end
 	end
@@ -975,6 +1018,23 @@ function FlightController.Start()
 	Remotes.event("FlightEnd").OnClientEvent:Connect(onFlightEnd) -- CHANGED (Phase 3)
 	Remotes.event("CraftRails").OnClientEvent:Connect(onCraftRails) -- CHANGED (Phase 5)
 	Remotes.event("CraftOffRails").OnClientEvent:Connect(onCraftOffRails)
+	-- CHANGED (Phase 11): a rebind takes effect at once while piloting
+	Keybinds.onChanged(function()
+		if bound then
+			ContextActionService:UnbindAction(ACTION_NAME)
+			bindAction()
+		end
+	end)
+	-- CHANGED (Phase 11): ToggleHUD for passengers (the pilot's binding handles it while piloting)
+	UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+		if gameProcessed or bound or UIState.isInputBlocked() or currentSeat() == nil then
+			return
+		end
+		local key = Keybinds.key("ToggleHUD")
+		if key ~= Keybinds.UNBOUND and input.KeyCode == key then
+			performAction("ToggleHUD")
+		end
+	end)
 
 	RunService.PreSimulation:Connect(function(dt: number)
 		local t0 = os.clock()
@@ -1010,6 +1070,30 @@ end
 -- The craft this client simulates (pilot), or nil.
 function FlightController.simulatedCraft(): (number?, Craft?)
 	return craftId, sim
+end
+
+-- CHANGED (Phase 11): runs a discrete Flight action (SettingsSchema id) exactly like its key: Stage, ToggleSAS,
+-- ToggleGear, ThrottleFull, ThrottleCut, ToggleCamera, LeaveSeat, MapView, ToggleHUD. Returns false for held or
+-- unknown actions. Not blocked by UIState (the caller is an explicit control); callers show pilot controls only to
+-- the pilot (HudData.isPilot).
+function FlightController.performAction(actionId: string): boolean
+	return performAction(actionId)
+end
+
+-- CHANGED (Phase 11): holds or releases a held Flight action (PitchDown, PitchUp, YawLeft, YawRight, RollLeft,
+-- RollRight, ThrottleUp, ThrottleDown) like its key, for touch buttons. Released automatically when piloting stops;
+-- reads as released while UIState blocks input. Returns false for any other action.
+function FlightController.setHeld(actionId: string, isHeld: boolean): boolean
+	if not table.find(HELD_ACTIONS, actionId) then
+		return false
+	end
+	if isHeld then
+		virtualHeld[actionId] = true
+		inputPulse = true -- like the key press (ends rails)
+	else
+		virtualHeld[actionId] = nil
+	end
+	return true
 end
 
 return FlightController

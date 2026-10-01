@@ -13,6 +13,11 @@
 
 	Tools: Build (B), Paint (P), Delete (X). R yaw 90, T pitch 90. Symmetry: 1 / 2 / 4 = off / radial 2 / radial 4
 	around the plot's vertical centre axis; M cycles mirror X -> mirror Z -> mirror X+Z -> off. Ctrl+Z undo (50).
+
+	CHANGED (Phase 11): those keys are the defaults of the SettingsSchema "Build" actions and come from
+	Settings/Keybinds (Ctrl+Z stays fixed). While UIState.isInputBlocked() (main menu or a dialog) keys and clicks
+	are ignored and no ghost or hover highlight is shown. BuildController.performAction(actionId) runs any Build
+	action (or "Undo") exactly like its key, for touch buttons.
 ]]
 
 local Players = game:GetService("Players")
@@ -31,6 +36,8 @@ local MassProps = require(ReplicatedStorage.Shared.Craft.MassProps)
 local Paint = require(ReplicatedStorage.Shared.Config.Paint)
 local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
 local BuildUI = require(script.Parent.Parent.UI.BuildUI)
+local Keybinds = require(script.Parent.Parent.Settings.Keybinds) -- CHANGED (Phase 11)
+local UIState = require(script.Parent.Parent.UI.UIState) -- CHANGED (Phase 11)
 
 type Block = CraftDesign.Block
 type Design = CraftDesign.Design
@@ -366,7 +373,8 @@ end
 
 local function updateGhosts()
 	local info = plotInfo
-	if not active or tool ~= "Build" or info == nil then
+	-- CHANGED (Phase 11): no ghost while a menu or dialog is open
+	if not active or tool ~= "Build" or info == nil or UIState.isInputBlocked() then
 		hideGhosts()
 		return
 	end
@@ -392,7 +400,7 @@ local function updateGhosts()
 end
 
 local function updateHover()
-	if not active or tool == "Build" then
+	if not active or tool == "Build" or UIState.isInputBlocked() then -- CHANGED (Phase 11): or a menu / dialog
 		hoverBox.Adornee = nil
 		return
 	end
@@ -541,6 +549,36 @@ local function rotate(by: CFrame)
 	ui.setRotationText(rotationText())
 end
 
+-- CHANGED (Phase 11): every Build action by SettingsSchema id (plus "Undo"), for keys and future touch buttons.
+-- Returns false for an unknown action.
+function BuildController.performAction(actionId: string): boolean
+	if actionId == "RotateY" then
+		rotate(CFrame.Angles(0, math.pi / 2, 0))
+	elseif actionId == "RotateX" then
+		rotate(CFrame.Angles(math.pi / 2, 0, 0))
+	elseif actionId == "ToolBuild" then
+		setTool("Build")
+	elseif actionId == "ToolPaint" then
+		setTool("Paint")
+	elseif actionId == "ToolDelete" then
+		setTool(if tool == "Delete" then "Build" else "Delete")
+	elseif actionId == "SymmetryOff" then
+		setSymmetry("Off")
+	elseif actionId == "SymmetryRadial2" then
+		setSymmetry("Radial2")
+	elseif actionId == "SymmetryRadial4" then
+		setSymmetry("Radial4")
+	elseif actionId == "SymmetryMirror" then
+		local index = table.find(MIRROR_CYCLE, symmetry) or 0
+		setSymmetry(MIRROR_CYCLE[index % #MIRROR_CYCLE + 1])
+	elseif actionId == "Undo" then
+		undo()
+	else
+		return false
+	end
+	return true
+end
+
 --============================================================================
 -- Plot detection
 --============================================================================
@@ -686,7 +724,8 @@ function BuildController.Start()
 	onBoardingChanged()
 
 	UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
-		if gameProcessed or not active then
+		-- CHANGED (Phase 11): menus and dialogs block building (keys and clicks)
+		if gameProcessed or not active or UIState.isInputBlocked() then
 			return
 		end
 		if input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -704,25 +743,12 @@ function BuildController.Start()
 			or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
 		if key == Enum.KeyCode.Z and ctrl then
 			undo()
-		elseif key == Enum.KeyCode.R then
-			rotate(CFrame.Angles(0, math.pi / 2, 0))
-		elseif key == Enum.KeyCode.T then
-			rotate(CFrame.Angles(math.pi / 2, 0, 0))
-		elseif key == Enum.KeyCode.B then
-			setTool("Build")
-		elseif key == Enum.KeyCode.P then
-			setTool("Paint")
-		elseif key == Enum.KeyCode.X then
-			setTool(if tool == "Delete" then "Build" else "Delete")
-		elseif key == Enum.KeyCode.One then
-			setSymmetry("Off")
-		elseif key == Enum.KeyCode.Two then
-			setSymmetry("Radial2")
-		elseif key == Enum.KeyCode.Four then
-			setSymmetry("Radial4")
-		elseif key == Enum.KeyCode.M then
-			local index = table.find(MIRROR_CYCLE, symmetry) or 0
-			setSymmetry(MIRROR_CYCLE[index % #MIRROR_CYCLE + 1])
+		else
+			-- CHANGED (Phase 11): the key's Build action from Keybinds
+			local action = Keybinds.actionFor("Build", key)
+			if action then
+				BuildController.performAction(action)
+			end
 		end
 	end)
 

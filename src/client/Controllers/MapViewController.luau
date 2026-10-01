@@ -27,6 +27,12 @@
 	  * BillboardGui markers (in PlayerGui so they are clickable): every craft, every body, apoapsis / periapsis
 	    of the tracked craft (with the time to each), periapsis inside the next SOI.
 	The tracked craft is the focused craft, else the craft this client flies (or rides).
+
+	CHANGED (Phase 11): the map key comes from Settings/Keybinds ("MapView", default M; Escape stays fixed). While
+	the local player pilots, FlightController's key binding captures it and calls toggle() (setPilotBinding), so the
+	key is handled exactly once. Drag uses the mouseSensitivity and invertY settings. While UIState.isInputBlocked()
+	(main menu or a dialog) every map input is ignored and a drag in progress ends.
+	API additions: MapViewController.toggle(), MapViewController.setPilotBinding(active).
 ]]
 
 local GuiService = game:GetService("GuiService")
@@ -45,6 +51,9 @@ local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local DebugOverlay = require(script.Parent.DebugOverlay)
+local Keybinds = require(script.Parent.Parent.Settings.Keybinds) -- CHANGED (Phase 11)
+local Settings = require(script.Parent.Parent.Settings.Settings) -- CHANGED (Phase 11)
+local UIState = require(script.Parent.Parent.UI.UIState) -- CHANGED (Phase 11)
 local PocketController = require(script.Parent.PocketController)
 local RemoteCraftRenderer = require(script.Parent.RemoteCraftRenderer)
 local UniverseRenderer = require(script.Parent.UniverseRenderer)
@@ -72,7 +81,7 @@ local FIELD_OF_VIEW = 70
 local CUBE_MARGIN = 120 -- studs between the map extent and the star box
 local CUBE_DRAW_FRACTION = 0.75 -- the star box never exceeds this fraction of the draw distance
 local HIGH_SLOT_Y = 6000 -- slots above this put the map below them (keeps |y| <= 12,000)
-local ROTATE_SENSITIVITY = math.rad(0.3) -- rad per pixel of drag
+local ROTATE_SENSITIVITY = math.rad(0.3) -- rad per pixel of drag (times Settings mouseSensitivity, Phase 11)
 local PITCH_LIMIT = math.rad(88)
 local DEFAULT_YAW = math.rad(35)
 local DEFAULT_PITCH = math.rad(50) -- looking down on the orbit plane
@@ -186,6 +195,7 @@ local scaleLabel: TextLabel
 
 local dragging: Enum.UserInputType? = nil
 local dragDistance = 0
+local pilotBinding = false -- CHANGED (Phase 11): FlightController's binding handles the map key meanwhile
 local cachedOwnId: number? = nil -- own craft, resolved once per frame
 local cachedOwnState: State? = nil
 
@@ -964,7 +974,18 @@ local function pick()
 	end
 end
 
+-- CHANGED (Phase 11): ends a drag in progress (gives the mouse back).
+local function endDrag()
+	if dragging == Enum.UserInputType.MouseButton2 then
+		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+	end
+	dragging = nil
+end
+
 local function onInputBegan(input: InputObject, processed: boolean)
+	if UIState.isInputBlocked() then
+		return -- CHANGED (Phase 11): menus and dialogs own the input
+	end
 	if input.KeyCode == Enum.KeyCode.Escape and isOpen then
 		MapViewController.close()
 		return
@@ -972,11 +993,11 @@ local function onInputBegan(input: InputObject, processed: boolean)
 	if processed then
 		return
 	end
-	if input.KeyCode == Enum.KeyCode.M then
-		if isOpen then
-			MapViewController.close()
-		else
-			MapViewController.open()
+	-- CHANGED (Phase 11): the map key from Keybinds (FlightController handles it while piloting)
+	local mapKey = Keybinds.key("MapView")
+	if mapKey ~= Keybinds.UNBOUND and input.KeyCode == mapKey then
+		if not pilotBinding then
+			MapViewController.toggle()
 		end
 		return
 	end
@@ -994,15 +1015,19 @@ local function onInputBegan(input: InputObject, processed: boolean)
 end
 
 local function onInputChanged(input: InputObject, processed: boolean)
-	if not isOpen then
+	if not isOpen or UIState.isInputBlocked() then -- CHANGED (Phase 11): blocked while a menu or dialog is open
 		return
 	end
 	local kind = input.UserInputType
 	if kind == Enum.UserInputType.MouseMovement and dragging then
 		local delta = input.Delta
 		dragDistance += math.abs(delta.X) + math.abs(delta.Y)
-		yaw -= delta.X * ROTATE_SENSITIVITY
-		pitch = math.clamp(pitch + delta.Y * ROTATE_SENSITIVITY, -PITCH_LIMIT, PITCH_LIMIT)
+		-- CHANGED (Phase 11): mouse sensitivity and invert Y from the settings
+		local values = Settings.current()
+		local sensitivity = ROTATE_SENSITIVITY * values.mouseSensitivity
+		local pitchSign = if values.invertY then -1 else 1
+		yaw -= delta.X * sensitivity
+		pitch = math.clamp(pitch + delta.Y * sensitivity * pitchSign, -PITCH_LIMIT, PITCH_LIMIT)
 	elseif kind == Enum.UserInputType.MouseWheel and not processed then
 		local notches = input.Position.Z
 		scale = math.clamp(scale * ZOOM_STEP ^ notches, SCALE_MIN, SCALE_MAX)
@@ -1061,6 +1086,21 @@ function MapViewController.open()
 	RunService:BindToRenderStep(RENDER_STEP_NAME, RENDER_PRIORITY, step)
 end
 
+-- CHANGED (Phase 11): the map key's action (also FlightController.performAction("MapView")).
+function MapViewController.toggle()
+	if isOpen then
+		MapViewController.close()
+	else
+		MapViewController.open()
+	end
+end
+
+-- CHANGED (Phase 11): FlightController sets this while its pilot key binding is active; the binding then delivers
+-- the map key (through toggle) and this controller's own key listener ignores it.
+function MapViewController.setPilotBinding(active: boolean)
+	pilotBinding = active
+end
+
 function MapViewController.close()
 	if not isOpen then
 		return
@@ -1080,10 +1120,7 @@ function MapViewController.close()
 	for _, visual in bodyVisuals do
 		visual.gui.Enabled = false
 	end
-	if dragging == Enum.UserInputType.MouseButton2 then
-		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-	end
-	dragging = nil
+	endDrag() -- CHANGED (Phase 11): shared with the input block
 	local camera = Workspace.CurrentCamera
 	if camera then
 		camera.FieldOfView = savedFieldOfView
@@ -1128,6 +1165,12 @@ function MapViewController.Start()
 	PocketController.onPocketChanged(function(id: number)
 		if id == 0 then
 			MapViewController.close()
+		end
+	end)
+	-- CHANGED (Phase 11): a menu or dialog opening ends a drag (frees the mouse)
+	UIState.onInputBlockedChanged(function(blocked: boolean)
+		if blocked then
+			endDrag()
 		end
 	end)
 end

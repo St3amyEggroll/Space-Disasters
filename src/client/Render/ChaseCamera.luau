@@ -20,6 +20,12 @@
 	so blending between gravity-up and the solar plane never jumps. Rotation is applied instantly; only the orbit
 	centre follows the target smoothly, and snaps when the target jumps far (teleport / rebase). No occlusion
 	handling: the camera simply orbits.
+
+	CHANGED (Phase 11): player settings. Drag speed is MOUSE_SENSITIVITY times Settings mouseSensitivity, invertY flips
+	the pitch of the drag and of the right stick, and cameraSmoothing scales FOLLOW_SMOOTHING and ZOOM_SMOOTHING
+	(0.5 = exactly those rates, 0 = SMOOTHING_SNAPPY_FACTOR times them, 1 = SMOOTHING_SMOOTH_FACTOR times them,
+	log-linear in between). While UIState.isInputBlocked() (main menu or a dialog) drag, wheel, stick and DPad zoom
+	are ignored and a drag in progress ends (the cursor is freed).
 ]]
 
 local Players = game:GetService("Players")
@@ -29,21 +35,26 @@ local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
+local Settings = require(script.Parent.Parent.Settings.Settings) -- CHANGED (Phase 11)
+local UIState = require(script.Parent.Parent.UI.UIState) -- CHANGED (Phase 11)
 
 --============================================================================
 -- Tunables
 --============================================================================
 local RENDER_STEP_NAME = "ChaseCamera"
 local RENDER_PRIORITY = Enum.RenderPriority.Camera.Value + 1
-local MOUSE_SENSITIVITY = math.rad(0.35) -- rad per pixel of mouse drag
+local MOUSE_SENSITIVITY = math.rad(0.35) -- rad per pixel of mouse drag (times Settings mouseSensitivity)
 local GAMEPAD_SPEED = math.rad(160) -- rad/s at full right-stick deflection
 local GAMEPAD_DEADZONE = 0.15
 local GAMEPAD_ZOOM_RATE = 1.2 -- ln(zoom) per second while a DPad zoom button is held
 local PITCH_LIMIT = math.rad(85)
 local DEFAULT_PITCH = math.rad(15) -- camera slightly above the craft
 local ZOOM_STEP = 1.15 -- zoom factor per mouse-wheel notch
-local ZOOM_SMOOTHING = 12 -- 1/s, exponential approach of the displayed zoom to the target zoom
-local FOLLOW_SMOOTHING = 15 -- 1/s, exponential approach of the orbit centre to the target
+local ZOOM_SMOOTHING = 12 -- 1/s, exponential approach of the displayed zoom to the target zoom (at smoothing 0.5)
+local FOLLOW_SMOOTHING = 15 -- 1/s, exponential approach of the orbit centre to the target (at smoothing 0.5)
+-- CHANGED (Phase 11): rate multipliers at Settings cameraSmoothing 0 and 1 (follow 40/s and 4/s)
+local SMOOTHING_SNAPPY_FACTOR = 40 / 15
+local SMOOTHING_SMOOTH_FACTOR = 4 / 15
 local SNAP_DISTANCE = 500 -- studs; a target jump larger than this is snapped to instead of smoothed
 --============================================================================
 
@@ -86,9 +97,18 @@ local function setDragging(on: boolean)
 	UserInputService.MouseBehavior = if on then Enum.MouseBehavior.LockCurrentPosition else Enum.MouseBehavior.Default
 end
 
+-- CHANGED (Phase 11): multiplier for both smoothing rates from Settings cameraSmoothing (exactly 1 at 0.5).
+local function smoothingFactor(smoothing: number): number
+	local s = math.clamp(smoothing, 0, 1)
+	if s <= 0.5 then
+		return SMOOTHING_SNAPPY_FACTOR ^ ((0.5 - s) * 2)
+	end
+	return SMOOTHING_SMOOTH_FACTOR ^ ((s - 0.5) * 2)
+end
+
 local function onInputBegan(input: InputObject, gameProcessed: boolean)
 	if input.UserInputType == Enum.UserInputType.MouseButton2 then
-		if not gameProcessed then
+		if not gameProcessed and not UIState.isInputBlocked() then -- CHANGED (Phase 11)
 			setDragging(true)
 		end
 	elseif input.KeyCode == Enum.KeyCode.DPadUp then
@@ -113,12 +133,12 @@ end
 local function onInputChanged(input: InputObject, gameProcessed: boolean)
 	local inputType = input.UserInputType
 	if inputType == Enum.UserInputType.MouseMovement then
-		if dragging then
+		if dragging and not UIState.isInputBlocked() then -- CHANGED (Phase 11)
 			local delta = input.Delta
 			pendingDelta += Vector2.new(delta.X, delta.Y)
 		end
 	elseif inputType == Enum.UserInputType.MouseWheel then
-		if not gameProcessed then
+		if not gameProcessed and not UIState.isInputBlocked() then -- CHANGED (Phase 11)
 			local notches = input.Position.Z
 			targetZoom = clampZoom(targetZoom * ZOOM_STEP ^ -notches)
 		end
@@ -158,6 +178,12 @@ local function horizontal(v: Vector3, up: Vector3): Vector3
 end
 
 local function step(dt: number)
+	-- CHANGED (Phase 11): a menu or dialog frees the mouse and stops camera input
+	local blocked = UIState.isInputBlocked()
+	if blocked and dragging then
+		setDragging(false)
+		pendingDelta = Vector2.zero
+	end
 	local camera = Workspace.CurrentCamera
 	if not camera then
 		return
@@ -180,13 +206,19 @@ local function step(dt: number)
 	end
 	local up = lastUp
 
+	-- CHANGED (Phase 11): player settings
+	local values = Settings.current()
+	local sensitivity = MOUSE_SENSITIVITY * values.mouseSensitivity
+	local pitchSign = if values.invertY then -1 else 1
+	local rateFactor = smoothingFactor(values.cameraSmoothing)
+
 	-- Orbit angles: applied immediately. Mouse right = orbit to the right around the target, like Roblox.
-	local yawDelta = -pendingDelta.X * MOUSE_SENSITIVITY
-	pitch += pendingDelta.Y * MOUSE_SENSITIVITY
+	local yawDelta = -pendingDelta.X * sensitivity
+	pitch += pendingDelta.Y * sensitivity * pitchSign
 	pendingDelta = Vector2.zero
-	if stick ~= Vector2.zero then
+	if stick ~= Vector2.zero and not blocked then
 		yawDelta -= stick.X * GAMEPAD_SPEED * dt
-		pitch -= stick.Y * GAMEPAD_SPEED * dt
+		pitch -= stick.Y * GAMEPAD_SPEED * dt * pitchSign
 	end
 	pitch = math.clamp(pitch, -PITCH_LIMIT, PITCH_LIMIT)
 	back = horizontal(back, up)
@@ -195,18 +227,18 @@ local function step(dt: number)
 	end
 
 	-- Zoom: exponential approach in log space so every step feels the same at any distance
-	if zoomIn ~= zoomOut then
+	if zoomIn ~= zoomOut and not blocked then
 		local direction = if zoomIn then -1 else 1
 		targetZoom = clampZoom(targetZoom * math.exp(direction * GAMEPAD_ZOOM_RATE * dt))
 	end
-	local zoomAlpha = 1 - math.exp(-ZOOM_SMOOTHING * dt)
+	local zoomAlpha = 1 - math.exp(-ZOOM_SMOOTHING * rateFactor * dt) -- CHANGED (Phase 11): rateFactor
 	zoom = math.exp(math.log(zoom) + (math.log(targetZoom) - math.log(zoom)) * zoomAlpha)
 
 	-- Orbit centre: smooth follow, snap on big jumps
 	local previous = focus
 	local current: Vector3 = target
 	if previous and (target - previous).Magnitude <= SNAP_DISTANCE then
-		current = previous:Lerp(target, 1 - math.exp(-FOLLOW_SMOOTHING * dt))
+		current = previous:Lerp(target, 1 - math.exp(-FOLLOW_SMOOTHING * rateFactor * dt)) -- CHANGED (Phase 11)
 	end
 	focus = current
 

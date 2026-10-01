@@ -64,6 +64,10 @@ local DEFINITIONS: { [string]: Kind } = {
 	BuildAck = "Reliable", -- (seq, kind: "place" | "remove" | "paint", partId, gx, gy, gz, rot, color: number)
 	--   color: the block's colour (0 = default); for "paint" it is the colour BEFORE the change (for undo)
 	--   sent only for ACCEPTED operations that carried a seq > 0; the client builds its undo stack from these
+	-- CHANGED (Phase 11): player settings (SettingsSchema JSON, stored by SettingsService through SaveService)
+	RequestSettings = "Reliable", -- client -> server () asks for the saved settings; answered with SettingsData
+	SettingsData = "Reliable", -- server -> client (json: string?) the saved settings re-sanitized, nil = none saved
+	SaveSettings = "Reliable", -- client -> server (json: string) SettingsSchema.encode output, <= MAX_JSON_BYTES
 }
 
 local Remotes = {}

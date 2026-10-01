@@ -5,6 +5,9 @@
 	  { version = 1, slots = { ["1"] .. ["10"] = <design JSON> }, current = <design JSON>? }
 	`slots` are the player's 10 save slots. `current` (addition, see DECISIONS D12) is the hangar contents,
 	saved on leave and restored on the next join.
+	CHANGED (Phase 11): `settings` = <settings JSON>? is the player's settings (SettingsSchema JSON, sanitized by
+	SettingsService before it is stored), written on leave / shutdown like `current`. Optional, so DATA_VERSION
+	stays 1. Leave hooks (addLeaveHook) run before a leaving player's data is flushed.
 
 	Data is loaded on join, cached in memory, and written with UpdateAsync on explicit saves, on leave and on
 	shutdown, with retries and exponential backoff. If DataStores are unavailable (e.g. Studio without API
@@ -16,6 +19,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
+local SettingsSchema = require(ReplicatedStorage.Shared.Config.SettingsSchema) -- CHANGED (Phase 11)
 
 --============================================================================
 -- Tunables
@@ -31,6 +35,7 @@ export type SaveData = {
 	version: number,
 	slots: { [string]: string },
 	current: string?,
+	settings: string?, -- CHANGED (Phase 11): SettingsSchema JSON
 }
 
 type Entry = {
@@ -49,9 +54,10 @@ local entries: { [Player]: Entry } = {}
 local pendingWrites = 0
 local memory: { [number]: SaveData } = {} -- session-only copy used when DataStores are unavailable
 local shutdownHooks: { () -> () } = {}
+local leaveHooks: { (player: Player) -> () } = {} -- CHANGED (Phase 11)
 
 local function emptyData(): SaveData
-	return { version = DATA_VERSION, slots = {}, current = nil }
+	return { version = DATA_VERSION, slots = {}, current = nil, settings = nil } -- CHANGED (Phase 11): settings
 end
 
 local function key(userId: number): string
@@ -73,6 +79,10 @@ local function sanitize(raw: any): SaveData
 	end
 	if type(raw.current) == "string" then
 		data.current = raw.current
+	end
+	-- CHANGED (Phase 11): keep the settings JSON (SettingsService re-sanitizes it before use)
+	if type(raw.settings) == "string" and #raw.settings <= SettingsSchema.MAX_JSON_BYTES then
+		data.settings = raw.settings
 	end
 	return data
 end
@@ -162,7 +172,16 @@ local function write(userId: number, data: SaveData): boolean
 				merged.slots[slotKey] = json
 			end
 			merged.current = data.current
-			return { version = DATA_VERSION, slots = merged.slots, current = merged.current }
+			-- CHANGED (Phase 11): settings too (kept from the store when this session has none)
+			if data.settings ~= nil then
+				merged.settings = data.settings
+			end
+			return {
+				version = DATA_VERSION,
+				slots = merged.slots,
+				current = merged.current,
+				settings = merged.settings,
+			}
 		end)
 		return true
 	end)
@@ -202,6 +221,15 @@ function SaveService.Start()
 		end
 	end
 	Players.PlayerRemoving:Connect(function(player: Player)
+		-- CHANGED (Phase 11): pending writes (e.g. a rate-limited settings save) are handed in before the flush
+		for _, hook in leaveHooks do
+			local ok, err = xpcall(function()
+				hook(player)
+			end, debug.traceback)
+			if not ok then
+				warn(`[SaveService] leave hook failed: {err}`)
+			end
+		end
 		flush(player)
 		local entry = entries[player]
 		entries[player] = nil
@@ -297,9 +325,34 @@ function SaveService.setCurrent(player: Player, json: string?)
 	end
 end
 
+-- CHANGED (Phase 11): the player's settings JSON, or nil when none is stored.
+function SaveService.getSettings(player: Player): string?
+	local entry = entries[player]
+	return if entry then entry.data.settings else nil
+end
+
+-- CHANGED (Phase 11): remembers the player's settings JSON (already sanitized by the caller); written on leave /
+-- shutdown (not immediately). Returns false when the player's saves are not loaded.
+function SaveService.setSettings(player: Player, json: string): boolean
+	local entry = entries[player]
+	if entry == nil or not entry.loaded or #json > SettingsSchema.MAX_JSON_BYTES then
+		return false
+	end
+	if entry.data.settings ~= json then
+		entry.data.settings = json
+		entry.dirty = true
+	end
+	return true
+end
+
 -- Runs before the final flush on server shutdown (e.g. to capture hangar contents into `current`).
 function SaveService.addShutdownHook(hook: () -> ())
 	table.insert(shutdownHooks, hook)
+end
+
+-- CHANGED (Phase 11): runs (must not yield) when a player leaves, before their data is flushed.
+function SaveService.addLeaveHook(hook: (player: Player) -> ())
+	table.insert(leaveHooks, hook)
 end
 
 -- True when saves persist beyond this server session.
