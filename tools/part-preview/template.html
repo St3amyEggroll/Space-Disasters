@@ -1,0 +1,415 @@
+<title>Space Disasters Part Hangar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+/* Layout: a hangar workbench. Part list rail on the left, one big turntable stage; on phones the rail becomes a
+   scrolling strip above the stage. Single dark look on purpose (a lit hangar at night), colors set explicitly. */
+:root {
+  color-scheme: dark;
+  --bg: #12151a;          /* hangar floor at night */
+  --panel: #1a1f26;       /* rail and toolbar */
+  --line: #2a313b;        /* hairlines */
+  --ink: #e6e9ee;         /* main text */
+  --muted: #8d97a5;       /* secondary text */
+  --hazard: #f2a531;      /* Oopsie Point hazard orange: the one accent */
+  --new: #8fd3a4;         /* "new" label */
+  --display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", monospace;
+}
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.45 var(--body); }
+.app { height: 100%; display: grid; grid-template-columns: 236px minmax(0, 1fr); }
+.rail { background: var(--panel); border-right: 1px solid var(--line); overflow-y: auto; padding-block: 16px; }
+.brand { padding: 0 16px 14px; border-bottom: 1px solid var(--line); }
+.brand h1 { font: 700 18px/1.15 var(--display); letter-spacing: .02em; margin: 0; text-wrap: balance; }
+.brand p { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; }
+.group { padding: 12px 8px 0; }
+.group h2 { font: 500 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 0 8px 6px; }
+.part-btn { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; width: 100%; border: 0; background: none;
+  color: var(--ink); font: 500 13.5px/1.2 var(--body); text-align: left; padding: 7px 8px; border-radius: 6px; cursor: pointer; }
+.part-btn small { color: var(--muted); font: 500 11px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.part-btn:hover { background: #222833; }
+.part-btn[aria-pressed="true"] { background: #2b2418; box-shadow: inset 2px 0 0 var(--hazard); }
+.part-btn:focus-visible, .seg button:focus-visible { outline: 2px solid var(--hazard); outline-offset: 1px; }
+.stage { position: relative; min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.toolbar .title { font: 700 20px/1.1 var(--display); margin-right: auto; min-width: 0; }
+.toolbar .title small { display: block; font: 500 11.5px/1.4 var(--mono); color: var(--muted); letter-spacing: .04em; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.seg button { border: 0; background: transparent; color: var(--muted); font: 500 12.5px var(--body); padding: 7px 12px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--hazard); color: #1a1206; }
+.viewport { position: relative; min-height: 0; }
+canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+canvas:active { cursor: grabbing; }
+.tag { position: absolute; top: 12px; font: 500 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; padding: 6px 8px;
+  border-radius: 4px; background: rgba(18,21,26,.8); border: 1px solid var(--line); pointer-events: none; }
+.tag.cur { color: var(--muted); }
+.tag.new { color: var(--new); }
+.cell-label { position: absolute; font: 500 12px/1.2 var(--body); color: var(--ink); pointer-events: none; text-align: center; transform: translateX(-50%); white-space: nowrap; }
+.cell-label small { display: block; color: var(--muted); font: 500 10.5px var(--mono); }
+.foot { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 9px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12.5px; }
+.foot b { color: var(--ink); font-weight: 600; }
+@media (max-width: 720px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .rail { border-right: 0; border-bottom: 1px solid var(--line); display: flex; overflow-x: auto; overflow-y: hidden; padding: 8px 16px; gap: 4px; }
+  .brand, .group h2 { display: none; }
+  .group { display: contents; }
+  .part-btn { width: auto; white-space: nowrap; }
+  .part-btn small { display: none; }
+  .stage { min-height: 70vh; }
+}
+@media (prefers-reduced-motion: reduce) { canvas { scroll-behavior: auto; } }
+</style>
+
+<div class="app">
+  <nav class="rail" id="rail" aria-label="Parts">
+    <div class="brand">
+      <h1>Part Hangar</h1>
+      <p>Every Space Disasters part, built by the game's own code. Drag to turn, scroll to zoom.</p>
+    </div>
+  </nav>
+  <section class="stage">
+    <div class="toolbar">
+      <div class="title" id="title">All parts<small id="subtitle"></small></div>
+      <div class="seg" role="group" aria-label="View">
+        <button id="v-compare" aria-pressed="true">Side by side</button>
+        <button id="v-current" aria-pressed="false">Current</button>
+        <button id="v-new" aria-pressed="false">New</button>
+      </div>
+    </div>
+    <div class="viewport" id="viewport">
+      <canvas id="c" aria-label="3D view of the selected parts"></canvas>
+      <div id="labels"></div>
+    </div>
+    <div class="foot" id="foot"></div>
+  </section>
+</div>
+
+<script id="data-current" type="application/json">__CURRENT__</script>
+<script id="data-new" type="application/json">__NEW__</script>
+<script src="__THREE__"></script>
+<script>
+(() => {
+  const CURRENT = JSON.parse(document.getElementById('data-current').textContent);
+  const NEXT = JSON.parse(document.getElementById('data-new').textContent) || CURRENT;
+  const CATEGORY_ORDER = ['Command', 'FuelTank', 'Engine', 'Coupling', 'Aero', 'Utility', 'Structural'];
+  const CATEGORY_NAME = { Command: 'Command', FuelTank: 'Fuel tanks', Engine: 'Engines', Coupling: 'Coupling', Aero: 'Aero', Utility: 'Utility', Structural: 'Structure' };
+  const byId = (data) => Object.fromEntries(data.parts.map(p => [p.id, p]));
+  const cur = byId(CURRENT), nxt = byId(NEXT);
+  const ids = CURRENT.parts.map(p => p.id);
+
+  // ---------- state ----------
+  const params = new URLSearchParams(location.hash.slice(1));
+  const state = {
+    part: params.get('part') || 'all',
+    view: params.get('view') || (NEXT.parts === CURRENT.parts ? 'current' : 'compare'),
+    yaw: parseFloat(params.get('yaw') || '-0.65'),
+    pitch: parseFloat(params.get('pitch') || '0.38'),
+    zoom: parseFloat(params.get('zoom') || '1'),
+    spin: params.get('spin') !== '0',
+  };
+
+  // ---------- three setup ----------
+  const canvas = document.getElementById('c');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.setScissorTest(true);
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
+
+  const MATERIAL = {
+    SmoothPlastic: [0.38, 0.0], Plastic: [0.6, 0.0], Metal: [0.38, 0.45], DiamondPlate: [0.42, 0.4], Foil: [0.3, 0.5],
+    CorrodedMetal: [0.75, 0.35], Fabric: [0.95, 0.0], Concrete: [0.95, 0.0], Slate: [0.9, 0.0], Granite: [0.8, 0.0],
+    Marble: [0.35, 0.0], Wood: [0.8, 0.0], WoodPlanks: [0.8, 0.0], Brick: [0.9, 0.0], Pebble: [0.9, 0.0],
+    Cobblestone: [0.9, 0.0], Ice: [0.12, 0.0], Sand: [0.95, 0.0], Grass: [0.95, 0.0], Rubber: [0.9, 0.0],
+  };
+  const materialCache = new Map();
+  function material(prim) {
+    const key = prim.material + prim.color.join(',') + prim.transparency;
+    if (materialCache.has(key)) return materialCache.get(key);
+    const color = new THREE.Color().setStyle(`rgb(${prim.color.join(',')})`);
+    let m;
+    if (prim.material === 'Neon') {
+      m = new THREE.MeshBasicMaterial({ color: color.clone().multiplyScalar(1.6) });
+    } else if (prim.material === 'Glass') {
+      m = new THREE.MeshStandardMaterial({ color, roughness: 0.05, metalness: 0.2, transparent: true, opacity: Math.min(0.85, 1 - prim.transparency) });
+    } else if (prim.material === 'ForceField') {
+      m = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.35 });
+    } else {
+      const [roughness, metalness] = MATERIAL[prim.material] || [0.6, 0.0];
+      m = new THREE.MeshStandardMaterial({ color, roughness, metalness, transparent: prim.transparency > 0, opacity: 1 - prim.transparency });
+    }
+    materialCache.set(key, m);
+    return m;
+  }
+
+  // Roblox WedgePart: bottom (-Y) and back (+Z) faces are full; the slope runs from the top-back edge to the bottom-front edge.
+  function wedgeGeometry(sx, sy, sz) {
+    const x = sx / 2, y = sy / 2, z = sz / 2;
+    const v = [
+      [-x, -y, -z], [x, -y, -z], [x, -y, z], [-x, -y, z], // bottom
+      [-x, y, z], [x, y, z],                              // top-back edge
+    ];
+    const tri = [
+      [0, 2, 1], [0, 3, 2],  // bottom (facing -Y)
+      [3, 5, 2], [3, 4, 5],  // back (+Z)
+      [0, 1, 5], [0, 5, 4],  // slope
+      [0, 4, 3],             // left (-X)
+      [1, 2, 5],             // right (+X)
+    ];
+    const pos = [];
+    for (const t of tri) for (const i of t) pos.push(...v[i]);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.computeVertexNormals();
+    return g;
+  }
+
+  function primMesh(prim) {
+    const [sx, sy, sz] = prim.size;
+    let g;
+    if (prim.kind === 'Cylinder') {
+      const d = Math.min(sy, sz);
+      g = new THREE.CylinderGeometry(d / 2, d / 2, sx, 40, 1);
+      g.rotateZ(-Math.PI / 2); // three's Y axis -> Roblox's X axis
+    } else if (prim.kind === 'Ball') {
+      g = new THREE.SphereGeometry(Math.min(sx, sy, sz) / 2, 32, 20);
+    } else if (prim.kind === 'WedgePart' || prim.kind === 'Wedge') {
+      g = wedgeGeometry(sx, sy, sz);
+    } else {
+      g = new THREE.BoxGeometry(sx, sy, sz);
+    }
+    const mesh = new THREE.Mesh(g, material(prim));
+    const c = prim.cf;
+    const m = new THREE.Matrix4().set(c[3], c[4], c[5], c[0], c[6], c[7], c[8], c[1], c[9], c[10], c[11], c[2], 0, 0, 0, 1);
+    mesh.matrixAutoUpdate = false;
+    mesh.matrix.copy(m);
+    const neon = prim.material === 'Neon';
+    mesh.castShadow = !neon && prim.transparency < 0.5;
+    mesh.receiveShadow = !neon;
+    return mesh;
+  }
+
+  function partGroup(part) {
+    const group = new THREE.Group();
+    for (const prim of part.prims) group.add(primMesh(prim));
+    return group;
+  }
+
+  // One scene per (part, dataset); built lazily.
+  const sceneCache = new Map();
+  function sceneFor(part) {
+    const key = part.__key;
+    if (sceneCache.has(key)) return sceneCache.get(key);
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color('#12151a');
+    const hemi = new THREE.HemisphereLight(0xdfe8ff, 0x2a2622, 1.25);
+    scene.add(hemi);
+    const sun = new THREE.DirectionalLight(0xfff3e2, 2.4);
+    const s = Math.max(...part.size);
+    sun.position.set(s * 1.6, s * 2.6, s * 1.2);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(1024, 1024);
+    const r = s * 1.6;
+    Object.assign(sun.shadow.camera, { left: -r, right: r, top: r, bottom: -r, near: 0.1, far: s * 8 });
+    sun.shadow.bias = -0.0005;
+    scene.add(sun);
+    const fill = new THREE.DirectionalLight(0x9fb8ff, 0.55);
+    fill.position.set(-s * 2, s * 0.8, -s * 1.5);
+    scene.add(fill);
+    const floor = new THREE.Mesh(new THREE.CircleGeometry(s * 1.3, 48), new THREE.MeshStandardMaterial({ color: 0x1d232b, roughness: 0.95 }));
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = -part.size[1] / 2 - 0.02;
+    floor.receiveShadow = true;
+    scene.add(floor);
+    const grid = new THREE.GridHelper(Math.ceil(s * 2.4 / CURRENT.grid) * CURRENT.grid, Math.ceil(s * 2.4 / CURRENT.grid), 0x3a4350, 0x262d36);
+    grid.position.y = floor.position.y + 0.01;
+    scene.add(grid);
+    const model = partGroup(part);
+    scene.add(model);
+    const entry = { scene, model, size: Math.hypot(...part.size) / 2 };
+    sceneCache.set(key, entry);
+    return entry;
+  }
+  CURRENT.parts.forEach(p => p.__key = 'c:' + p.id);
+  NEXT.parts.forEach(p => p.__key = (NEXT.parts === CURRENT.parts ? 'c:' : 'n:') + p.id);
+
+  const camera = new THREE.PerspectiveCamera(32, 1, 0.05, 2000);
+  function aimCamera(size, aspect, zoomExtra) {
+    camera.aspect = aspect;
+    const fit = size / Math.sin(THREE.MathUtils.degToRad(camera.fov) / 2) * 1.08;
+    const dist = fit / state.zoom * (zoomExtra || 1) * Math.max(1, 1 / aspect);
+    camera.position.set(
+      Math.sin(state.yaw) * Math.cos(state.pitch) * dist,
+      Math.sin(state.pitch) * dist,
+      Math.cos(state.yaw) * Math.cos(state.pitch) * dist,
+    );
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+  }
+
+  // ---------- UI ----------
+  const rail = document.getElementById('rail');
+  const allGroup = document.createElement('div');
+  allGroup.className = 'group';
+  allGroup.innerHTML = '<h2>Overview</h2>';
+  const allBtn = document.createElement('button');
+  allBtn.className = 'part-btn';
+  allBtn.dataset.part = 'all';
+  allBtn.innerHTML = `All ${ids.length} parts<small>grid</small>`;
+  allGroup.appendChild(allBtn);
+  rail.appendChild(allGroup);
+  for (const cat of CATEGORY_ORDER) {
+    const parts = CURRENT.parts.filter(p => p.category === cat);
+    if (!parts.length) continue;
+    const g = document.createElement('div');
+    g.className = 'group';
+    g.innerHTML = `<h2>${CATEGORY_NAME[cat] || cat}</h2>`;
+    for (const p of parts) {
+      const b = document.createElement('button');
+      b.className = 'part-btn';
+      b.dataset.part = p.id;
+      const sz = p.size.map(v => v / CURRENT.grid).join('×');
+      b.innerHTML = `${p.name}<small>${sz}</small>`;
+      g.appendChild(b);
+    }
+    rail.appendChild(g);
+  }
+  rail.addEventListener('click', (e) => {
+    const b = e.target.closest('.part-btn');
+    if (!b) return;
+    state.part = b.dataset.part;
+    state.zoom = 1;
+    refreshUi();
+  });
+  for (const v of ['compare', 'current', 'new']) {
+    document.getElementById('v-' + v).addEventListener('click', () => { state.view = v; refreshUi(); });
+  }
+  if (NEXT.parts === CURRENT.parts) {
+    document.querySelector('.seg').hidden = true;
+  }
+
+  const labels = document.getElementById('labels');
+  function refreshUi() {
+    for (const b of rail.querySelectorAll('.part-btn')) b.setAttribute('aria-pressed', String(b.dataset.part === state.part));
+    for (const v of ['compare', 'current', 'new']) document.getElementById('v-' + v).setAttribute('aria-pressed', String(state.view === v));
+    const title = document.getElementById('title');
+    const sub = document.getElementById('subtitle');
+    const foot = document.getElementById('foot');
+    const count = (set, id) => set[id] ? set[id].prims.length : 0;
+    if (state.part === 'all') {
+      title.firstChild.textContent = 'All parts';
+      const c = ids.reduce((n, id) => n + count(cur, id), 0), n = ids.reduce((s, id) => s + count(nxt, id), 0);
+      sub.textContent = `${ids.length} parts · 1 block = ${CURRENT.grid} studs`;
+      foot.innerHTML = NEXT.parts === CURRENT.parts
+        ? `<span><b>${c}</b> building pieces in total</span>`
+        : `<span>Current: <b>${c}</b> pieces</span><span>New: <b>${n}</b> pieces</span><span>Pieces are the Roblox parts each block is built from.</span>`;
+    } else {
+      const p = cur[state.part];
+      title.firstChild.textContent = p.name;
+      sub.textContent = `${p.size.map(v => v / CURRENT.grid).join(' × ')} blocks · ${p.size.join(' × ')} studs · ${CATEGORY_NAME[p.category] || p.category}`;
+      foot.innerHTML = NEXT.parts === CURRENT.parts
+        ? `<span><b>${count(cur, p.id)}</b> pieces</span>`
+        : `<span>Current: <b>${count(cur, p.id)}</b> pieces</span><span>New: <b>${count(nxt, p.id)}</b> pieces</span>`;
+    }
+    labels.innerHTML = '';
+  }
+
+  // ---------- input: drag to orbit, wheel / pinch to zoom ----------
+  let drag = null;
+  canvas.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); state.spin = false; });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    state.yaw -= (e.clientX - drag.x) * 0.008;
+    state.pitch = Math.max(-0.2, Math.min(1.35, state.pitch + (e.clientY - drag.y) * 0.006));
+    drag = { x: e.clientX, y: e.clientY };
+  });
+  canvas.addEventListener('pointerup', () => { drag = null; });
+  canvas.addEventListener('wheel', (e) => { e.preventDefault(); state.zoom = Math.max(0.4, Math.min(4, state.zoom * Math.exp(-e.deltaY * 0.0015))); }, { passive: false });
+
+  // ---------- render ----------
+  const viewport = document.getElementById('viewport');
+  function resize() {
+    const w = viewport.clientWidth, h = viewport.clientHeight;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(w, h, false);
+  }
+  window.addEventListener('resize', resize);
+
+  function drawCell(part, x, y, w, h, zoomExtra) {
+    const H = viewport.clientHeight;
+    renderer.setViewport(x, H - y - h, w, h);
+    renderer.setScissor(x, H - y - h, w, h);
+    const entry = sceneFor(part);
+    aimCamera(entry.size, w / h, zoomExtra);
+    renderer.render(entry.scene, camera);
+  }
+
+  function tag(text, cls, left) {
+    const t = document.createElement('div');
+    t.className = 'tag ' + cls;
+    t.textContent = text;
+    t.style.left = left + 'px';
+    labels.appendChild(t);
+  }
+
+  let lastLabelsKey = '';
+  function frame(time) {
+    const W = viewport.clientWidth, H = viewport.clientHeight;
+    if (canvas.width !== Math.round(W * renderer.getPixelRatio()) || canvas.height !== Math.round(H * renderer.getPixelRatio())) resize();
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (state.spin && !reduce) state.yaw += 0.004;
+    renderer.setScissor(0, 0, W, H);
+    renderer.setViewport(0, 0, W, H);
+    renderer.setClearColor(0x12151a, 1);
+    renderer.clear();
+    const sets = state.view === 'compare' ? [cur, nxt] : state.view === 'new' ? [nxt] : [cur];
+    const labelsKey = `${state.part}|${state.view}|${W}x${H}`;
+    const makeLabels = labelsKey !== lastLabelsKey;
+    if (makeLabels) { labels.innerHTML = ''; lastLabelsKey = labelsKey; }
+    if (state.part === 'all') {
+      const n = ids.length;
+      const cols = Math.max(2, Math.round(Math.sqrt(n * W / Math.max(H, 1) * (sets.length > 1 ? 0.5 : 1))));
+      const rows = Math.ceil(n / cols);
+      const cellW = W / cols, cellH = H / rows;
+      ids.forEach((id, i) => {
+        const cx = (i % cols) * cellW, cy = Math.floor(i / cols) * cellH;
+        const labelH = 26;
+        sets.forEach((set, k) => {
+          const w = cellW / sets.length;
+          drawCell(set[id], cx + k * w, cy, w, cellH - labelH, 1.0);
+        });
+        if (makeLabels) {
+          const l = document.createElement('div');
+          l.className = 'cell-label';
+          l.style.left = (cx + cellW / 2) + 'px';
+          l.style.top = (cy + cellH - labelH + 2) + 'px';
+          l.textContent = cur[id].name;
+          labels.appendChild(l);
+        }
+      });
+      if (makeLabels && sets.length > 1) {
+        const note = document.createElement('div');
+        note.className = 'tag new';
+        note.style.right = '12px';
+        note.textContent = 'Left: current · Right: new';
+        labels.appendChild(note);
+      }
+    } else {
+      sets.forEach((set, k) => {
+        const w = W / sets.length;
+        drawCell(set[state.part], k * w, 0, w, H, 1);
+        if (makeLabels) tag(sets.length > 1 ? (k === 0 ? 'Current' : 'New') : (set === cur ? 'Current' : 'New'), set === cur ? 'cur' : 'new', k * w + 12);
+      });
+    }
+    requestAnimationFrame(frame);
+  }
+  refreshUi();
+  resize();
+  requestAnimationFrame(frame);
+  window.__ready = true;
+})();
+</script>
