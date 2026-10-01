@@ -67,6 +67,24 @@ return function(t: TestKit.Context)
 		t.expectEqual(seen, 25)
 	end)
 
+	-- CHANGED (Phase 3): the per-client relay packs blocks encoded once per tick
+	t.test("packed state blocks match encodeStates byte for byte", function()
+		local entries = {}
+		local blocks = {}
+		for i = 1, 23 do
+			table.insert(entries, { craftId = i, state = sample(i) })
+			table.insert(blocks, Protocol.encodeState(i, sample(i)))
+		end
+		local encoded = Protocol.encodeStates(entries)
+		local packed = Protocol.packStateBlocks(blocks)
+		t.expectEqual(#packed, #encoded)
+		for index, packet in packed do
+			t.expectEqual(buffer.tostring(packet), buffer.tostring(encoded[index]))
+			t.expectTrue(buffer.len(packet) <= 900, "packet size " .. buffer.len(packet))
+		end
+		t.expectEqual(#Protocol.packStateBlocks({}), 0)
+	end)
+
 	t.test("malformed packets are rejected", function()
 		t.expectTrue((Protocol.decodeState(buffer.create(10))) == nil)
 		t.expectTrue((Protocol.decodePilotState("nope")) == nil)

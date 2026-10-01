@@ -48,7 +48,7 @@ local GameConfig = {
 	SAS_KD = 3.0, -- attitude-hold derivative gain (1/s)
 	MAX_ANGULAR_SPEED = 3.0, -- rad/s clamp so a tiny craft cannot spin itself apart numerically
 	DEBRIS_SIM_RATE = 30, -- Hz for server-simulated uncrewed crafts (substeps still apply near the surface)
-	CRAFT_STATE_RATE = 20, -- Hz the server relays craft states to clients (Phase 3 adds interest management)
+	CRAFT_STATE_RATE = 20, -- Hz relay tick; CHANGED (Phase 3): per-client rates come from interest management
 	CRASH_REPORT_MARGIN = 5, -- m/s slack when the server checks a reported crash for plausibility
 
 	--========================================================================
@@ -103,6 +103,12 @@ local GameConfig = {
 	INTERP_DELAY = 0.1, -- s
 	EXTRAPOLATE_MAX = 0.25, -- s
 	PUPPET_DISTANCE = 300,
+	-- CHANGED (Phase 3): interest management, LOD markers, puppets, snapshots
+	CRAFT_STATES_BUDGET = 18000, -- bytes/s of CraftStates payload per client (the rest of NET_BUDGET is headroom)
+	EXTRAPOLATE_MAX_SLOW = 2.5, -- s; extrapolation limit for slow (2 Hz / 0.5 Hz) streams and map markers
+	COPY_MAX_DISTANCE = 30000, -- m; cosmetic copies farther than this become markers (Phase 4 adds scaled copies)
+	PUPPET_ABOARD_RADIUS = 40, -- m beyond a craft's own radius where a standing character still counts as aboard
+	SNAPSHOT_COOLDOWN_S = 5, -- s between two join snapshots for the same player
 
 	--========================================================================
 	-- Orbits and debris

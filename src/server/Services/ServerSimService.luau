@@ -5,6 +5,8 @@
 	pocket emptied (spec 7.4, 7.8). Uses the same FlightModel as the pilots' clients, kept in step with Universal
 	Time. Impacts destroy blocks through FlightService.applyDestruction. Debris that has come to rest is removed
 	after a while, and so is very old debris (MAX_DEBRIS is enforced when debris is created).
+	CHANGED (Phase 3): FlightService hands a craft over here when its pilot leaves the seat in flight, dies or
+	disconnects (zero input, throttle cut to zero), and back to a client when someone sits in its pilot seat.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")

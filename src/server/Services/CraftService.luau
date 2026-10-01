@@ -14,6 +14,10 @@
 
 	Craft models (crewed crafts only): Workspace.Pockets.Pocket_<id>.Crafts.Craft_<id>, attributes CraftId,
 	OwnerUserId, Boarding, State.
+
+	CHANGED (Phase 3): rolled-out crafts on their pads are announced too (CraftSpawned with info.prelaunch), so
+	players in other pockets get a cosmetic copy of them. A client asks for the join snapshot (RequestSnapshot)
+	once its handlers are connected, and gets one CraftSpawned per craft.
 ]]
 
 local Players = game:GetService("Players")
@@ -24,6 +28,9 @@ local CraftBuilder = require(ReplicatedStorage.Shared.Craft.CraftBuilder)
 local CraftDesign = require(ReplicatedStorage.Shared.Craft.CraftDesign)
 local CraftGraph = require(ReplicatedStorage.Shared.Craft.CraftGraph)
 local FlightModel = require(ReplicatedStorage.Shared.Sim.FlightModel)
+local Frames = require(ReplicatedStorage.Shared.Math.Frames) -- CHANGED (Phase 3): prelaunch announce
+local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime) -- CHANGED (Phase 3): prelaunch announce
+local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d) -- CHANGED (Phase 3): prelaunch announce
 local Protocol = require(ReplicatedStorage.Shared.Net.Protocol)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
@@ -42,6 +49,7 @@ local BOARDING_MODES = { Private = true, Friends = true, Public = true }
 local BOARDING_ATTRIBUTE = "Boarding"
 local PAD_CLEAR_MARGIN = 4 -- studs; characters standing where the craft appears are moved off the pad
 local MAX_DEBRIS = GameConfig.MAX_DEBRIS
+local SNAPSHOT_COOLDOWN_S = GameConfig.SNAPSHOT_COOLDOWN_S -- CHANGED (Phase 3)
 --============================================================================
 
 export type CraftState = "Prelaunch" | "Flying" | "Landed" | "OnRails" | "Destroyed"
@@ -74,6 +82,8 @@ local padOfCraft: { [number]: number } = {} -- craft id -> pad index
 local nextCraftId = 1
 local lastRollout: { [Player]: number } = {}
 local rolledOutListeners: { (player: Player, record: CraftRecord) -> () } = {}
+local announcedIds: { [number]: boolean } = {} -- CHANGED (Phase 3): crafts clients know about (CraftRemoved owed)
+local lastSnapshot: { [Player]: number } = {} -- CHANGED (Phase 3)
 
 local function removeCraft(id: number)
 	local record = crafts[id]
@@ -93,7 +103,9 @@ local function removeCraft(id: number)
 	if record.model then
 		record.model:Destroy()
 	end
-	if record.sim then
+	-- CHANGED (Phase 3): announced prelaunch crafts (no sim) are removed on clients too
+	if record.sim or announcedIds[id] then
+		announcedIds[id] = nil
 		Remotes.event("CraftRemoved"):FireAllClients(id)
 	end
 end
@@ -205,6 +217,7 @@ local function onRollOut(player: Player)
 	padOfCraft[id] = padIndex
 	model:SetAttribute("PadIndex", padIndex)
 	BuildService.notify(player, `Rolled out "{design.name}" to launch pad {padIndex}`)
+	CraftService.announce(crafts[id]) -- CHANGED (Phase 3): players in other pockets see it on the pad
 	-- CHANGED (Phase 2a feedback): CrewService puts the owner straight into the pilot seat
 	for _, listener in rolledOutListeners do
 		task.spawn(listener, player, crafts[id])
@@ -240,8 +253,19 @@ function CraftService.Start()
 		onPlayerAdded(player)
 	end
 
+	-- CHANGED (Phase 3): join snapshot, requested by the client once its CraftSpawned handler is connected
+	Remotes.event("RequestSnapshot").OnServerEvent:Connect(function(player: Player)
+		local now = os.clock()
+		if lastSnapshot[player] and now - lastSnapshot[player] < SNAPSHOT_COOLDOWN_S then
+			return
+		end
+		lastSnapshot[player] = now
+		CraftService.snapshot(player)
+	end)
+
 	Players.PlayerRemoving:Connect(function(player: Player)
 		lastRollout[player] = nil
+		lastSnapshot[player] = nil -- CHANGED (Phase 3)
 		local userId = player.UserId
 		task.delay(DESPAWN_GRACE_S, function()
 			if Players:GetPlayerByUserId(userId) then
@@ -296,20 +320,86 @@ local function activeList(sim: FlightModel.Craft): { number }
 	return list
 end
 
--- Announces a flying craft to one player (join snapshot) or everyone.
+-- CHANGED (Phase 3): the true state of a Prelaunch craft where its real model stands in the base pocket.
+local function prelaunchState(record: CraftRecord): FlightModel.CraftState?
+	local root = CraftDesign.rootBlock(record.design)
+	if root == nil then
+		return nil
+	end
+	local rootWorld = record.origin * CFrame.new(CraftDesign.blockCenter(root) * CraftDesign.GRID)
+	local baseFrame = PocketService.baseFrame()
+	local pos, rot = Frames.cframeFromWorkspace(baseFrame, rootWorld)
+	return {
+		bodyId = baseFrame.refBodyId,
+		pos = pos,
+		vel = Vec3d.zero(),
+		rot = rot,
+		angVel = Vector3.zero,
+		throttle = 0,
+		flags = 0,
+		ut = UniverseTime.now(),
+	}
+end
+
+local function ownerNameOf(record: CraftRecord): string
+	local owner = Players:GetPlayerByUserId(record.ownerUserId)
+	if owner then
+		return owner.DisplayName
+	end
+	local model = record.model
+	local stored = if model then model:GetAttribute("OwnerName") else nil
+	return if type(stored) == "string" then stored else ""
+end
+
+--[[
+	Announces a craft to one player (join snapshot) or everyone: crafts in flight, and (CHANGED Phase 3) rolled-out
+	crafts standing on their pads (info.prelaunch; clients in the base pocket see the real model instead).
+]]
 function CraftService.announce(record: CraftRecord, toPlayer: Player?)
 	local sim = record.sim
-	if sim == nil then
+	local designBuffer: buffer
+	local stateBuffer: buffer
+	local active: { number }
+	local prelaunch = false
+	if sim then
+		designBuffer = CraftDesign.toBuffer(sim.physics.design)
+		stateBuffer = Protocol.encodeState(record.id, sim.state)
+		active = activeList(sim)
+	elseif record.state == "Prelaunch" and record.model then
+		local state = prelaunchState(record)
+		if state == nil then
+			return
+		end
+		designBuffer = CraftDesign.toBuffer(record.design)
+		stateBuffer = Protocol.encodeState(record.id, state)
+		active = {}
+		prelaunch = true
+	else
 		return
 	end
+	announcedIds[record.id] = true
 	local remote = Remotes.event("CraftSpawned")
-	local designBuffer = CraftDesign.toBuffer(sim.physics.design)
-	local stateBuffer = Protocol.encodeState(record.id, sim.state)
-	local info = { ownerUserId = record.ownerUserId, pocketId = record.pocketId or 0, active = activeList(sim) }
+	local info = {
+		ownerUserId = record.ownerUserId,
+		pocketId = record.pocketId or 0,
+		active = active,
+		-- CHANGED (Phase 3): marker labels and render rules
+		name = record.design.name,
+		ownerName = ownerNameOf(record),
+		isDebris = record.isDebris,
+		prelaunch = prelaunch,
+	}
 	if toPlayer then
 		remote:FireClient(toPlayer, record.id, designBuffer, stateBuffer, info)
 	else
 		remote:FireAllClients(record.id, designBuffer, stateBuffer, info)
+	end
+end
+
+-- CHANGED (Phase 3): the join snapshot: every craft the player's client should know about (spec 7.7 Snapshot).
+function CraftService.snapshot(player: Player)
+	for _, record in crafts do
+		CraftService.announce(record, player)
 	end
 end
 

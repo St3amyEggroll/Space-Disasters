@@ -12,7 +12,10 @@
 	  (Fallback: if the craft is still "Prelaunch", Space asks the server to start the flight.)
 	  In flight: the server's FlightStart hands this client the simulation. Controls: W/S pitch, A/D yaw,
 	  Q/E roll, Shift/Ctrl throttle up/down, Z full, X cut, Space stage, T SAS, V camera, F leave seat.
-	The simulation keeps running while this client owns it, even if the pilot stands up (controls go to zero).
+	CHANGED (Phase 3): the simulation runs while this client is the craft's pilot. When the pilot leaves the seat in
+	flight (or dies) the server takes the craft over and sends FlightEnd: this client stops simulating, seeds the
+	stream buffer with its last local state, and from then on follows the craft like any passenger. Sitting back in
+	the pilot seat hands it back (FlightStart with a `resume` table: the current design, stages, engines and fuel).
 	Passengers get a HUD from the streamed state.
 ]]
 
@@ -526,7 +529,61 @@ end
 -- Network
 --============================================================================
 
-local function onFlightStart(id: unknown, stateBuffer: unknown, stagesFired: unknown, designBuffer: unknown)
+-- CHANGED (Phase 3): a list of numbers from the network, or nil if malformed.
+local function numberList(value: unknown): { number }?
+	if type(value) ~= "table" then
+		return nil
+	end
+	local list = {}
+	for _, item in value :: { any } do
+		if type(item) ~= "number" then
+			return nil
+		end
+		table.insert(list, item)
+	end
+	return list
+end
+
+-- CHANGED (Phase 3): rebuilds a craft already in flight from the server's resume table (pilot hand-back).
+local function resumeCraft(design: CraftDesign.Design, state: State, resume: { [string]: any }): Craft?
+	local stageIndex = resume.stageIndex
+	if type(stageIndex) ~= "number" or type(resume.stages) ~= "table" or type(resume.fuel) ~= "table" then
+		return nil
+	end
+	local stages: { CraftGraph.Stage } = {}
+	for _, stage in resume.stages :: { any } do
+		if type(stage) ~= "table" then
+			return nil
+		end
+		local ignite, decouple, deploy = numberList(stage.ignite), numberList(stage.decouple), numberList(stage.deploy)
+		if ignite == nil or decouple == nil or deploy == nil then
+			return nil
+		end
+		table.insert(stages, { ignite = ignite, decouple = decouple, deploy = deploy })
+	end
+	local fuel: { [number]: number } = {}
+	for _, pair in resume.fuel :: { any } do
+		if type(pair) == "table" and type(pair[1]) == "number" and type(pair[2]) == "number" then
+			fuel[pair[1]] = pair[2]
+		end
+	end
+	local craft = FlightModel.newCraft(design, state, fuel, stages, stageIndex)
+	local active: { number } = numberList(resume.active) or {}
+	for _, engineId in active do
+		if craft.physics.blockPos[engineId] then
+			craft.active[engineId] = true
+		end
+	end
+	return craft
+end
+
+local function onFlightStart(
+	id: unknown,
+	stateBuffer: unknown,
+	stagesFired: unknown,
+	designBuffer: unknown,
+	resume: unknown
+)
 	if type(id) ~= "number" or typeof(designBuffer) ~= "buffer" then
 		return
 	end
@@ -535,9 +592,19 @@ local function onFlightStart(id: unknown, stateBuffer: unknown, stagesFired: unk
 	if state == nil or design == nil then
 		return
 	end
-	local craft = FlightModel.newCraft(design, state :: any)
-	for _ = 1, if type(stagesFired) == "number" then stagesFired else 0 do
-		FlightModel.stage(craft)
+	local craft: Craft
+	if type(resume) == "table" then
+		-- CHANGED (Phase 3): taking over a craft already in flight
+		local resumed = resumeCraft(design, state :: any, resume :: { [string]: any })
+		if resumed == nil then
+			return
+		end
+		craft = resumed
+	else
+		craft = FlightModel.newCraft(design, state :: any)
+		for _ = 1, if type(stagesFired) == "number" then stagesFired else 0 do
+			FlightModel.stage(craft)
+		end
 	end
 	throttle = state.throttle
 	sasOn = false
@@ -622,6 +689,18 @@ local function onRemoved(id: unknown)
 	end
 end
 
+-- CHANGED (Phase 3): the server took our craft over (we left the pilot seat in flight, or died).
+local function onFlightEnd(id: unknown)
+	local craft = sim
+	if craft == nil or id ~= craftId then
+		return
+	end
+	RemoteCraftRenderer.seedState(id :: number, craft.state)
+	sim = nil
+	craftId = nil
+	sasOn = false
+end
+
 --============================================================================
 -- Lifecycle
 --============================================================================
@@ -662,6 +741,7 @@ function FlightController.Start()
 	Remotes.event("CraftStaged").OnClientEvent:Connect(onStaged)
 	Remotes.event("PartsDestroyed").OnClientEvent:Connect(onDestroyed)
 	Remotes.event("CraftRemoved").OnClientEvent:Connect(onRemoved)
+	Remotes.event("FlightEnd").OnClientEvent:Connect(onFlightEnd) -- CHANGED (Phase 3)
 
 	RunService.PreSimulation:Connect(function(dt: number)
 		local t0 = os.clock()

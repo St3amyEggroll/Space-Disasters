@@ -7,8 +7,24 @@
 	cosmetic copies (invariant I6): CraftBuilder "Cosmetic" models with one anchored root and welded, massless
 	children, moved by setting the root CFrame once per frame through the current pocket frame.
 
-	Also used by PocketController: passengers take their CRAFT_ALIGNED frame from sampleState() of the primary.
+	Also used by PocketController: passengers take their flight-pocket frame from sampleState() of the primary.
 	Phase 2a draws copies at true scale out to COPY_MAX_DISTANCE; scaled-space copies arrive in Phase 4.
+
+	CHANGED (Phase 3):
+	  * Sampling lives in Shared/Net/StateBuffer: interpolation, extrapolation with velocity for up to
+	    EXTRAPOLATE_MAX (0.25 s) on a 20 Hz stream, then freeze. Slow interest tiers (2 Hz / 0.5 Hz) extrapolate up
+	    to about one packet interval (EXTRAPOLATE_MAX_SLOW at most) before freezing.
+	  * LOD markers (Render/CraftMarkers): a craft beyond COPY_MAX_DISTANCE, or smaller on screen than
+	    CRAFT_MARKER_ANGLE_DEG, shows a name/owner/distance marker instead of its copy (with hysteresis; never for
+	    debris; hidden when a planet blocks the line of sight). Distances and directions are computed from true
+	    positions in doubles after subtracting the camera's true position (I1).
+	  * Puppets (Render/Puppets): crews of crafts in other pockets, posed inside the copies.
+	  * Rolled-out crafts on their pads are announced too (info.prelaunch): players in the base see the real model,
+	    everyone else a copy.
+	  * The join snapshot is requested once the handlers are connected (RequestSnapshot).
+	  * F3 shows the CraftStates bytes/s this client receives, and copy / marker / puppet counts.
+	  * seedState(): the former pilot's last local state, so its pocket frame continues smoothly when the server
+	    takes the craft over.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -18,13 +34,18 @@ local CraftBuilder = require(ReplicatedStorage.Shared.Craft.CraftBuilder)
 local CraftDesign = require(ReplicatedStorage.Shared.Craft.CraftDesign)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
+local LineOfSight = require(ReplicatedStorage.Shared.Sim.LineOfSight)
 local Parts = require(ReplicatedStorage.Shared.Config.Parts)
 local Protocol = require(ReplicatedStorage.Shared.Net.Protocol)
 local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
+local StateBuffer = require(ReplicatedStorage.Shared.Net.StateBuffer)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
+local CraftMarkers = require(script.Parent.Parent.Render.CraftMarkers)
+local DebugOverlay = require(script.Parent.DebugOverlay)
 local Plumes = require(script.Parent.Parent.Render.Plumes)
 local Gear = require(script.Parent.Parent.Render.Gear)
+local Puppets = require(script.Parent.Parent.Render.Puppets)
 local RenderContext = require(script.Parent.Parent.Render.RenderContext)
 
 type State = Protocol.State
@@ -34,10 +55,15 @@ type Design = CraftDesign.Design
 -- Tunables
 --============================================================================
 local INTERP_DELAY = GameConfig.INTERP_DELAY
-local EXTRAPOLATE_MAX = GameConfig.EXTRAPOLATE_MAX
-local BUFFER_SIZE = 40
-local COPY_MAX_DISTANCE = 30000 -- studs from the camera; farther copies are hidden (Phase 4 adds scaled copies)
+local BUFFER_SIZE = StateBuffer.DEFAULT_CAPACITY
+local COPY_MAX_DISTANCE = GameConfig.COPY_MAX_DISTANCE -- CHANGED (Phase 3): moved to GameConfig
+local MARKER_ANGLE = math.rad(GameConfig.CRAFT_MARKER_ANGLE_DEG) -- CHANGED (Phase 3): smaller -> marker
+local LOD_HYSTERESIS = 0.1 -- CHANGED (Phase 3): +-10% around both switch points
+local MIN_RADIUS = 2 -- m; a craft's apparent size never counts as smaller than this
+local STREAM_NAME = "CraftStates" -- CHANGED (Phase 3): DebugOverlay byte counter
 --============================================================================
+
+type Lod = "None" | "Copy" | "Marker"
 
 type Entry = {
 	id: number,
@@ -50,79 +76,38 @@ type Entry = {
 	root: BasePart?,
 	gear: { Gear.GearPart }, -- CHANGED (Phase 2a remodel): landing-leg parts (anchored, posed by Gear)
 	gearFraction: number,
+	-- CHANGED (Phase 3)
+	name: string,
+	ownerName: string,
+	isDebris: boolean,
+	prelaunch: boolean, -- rolled out, standing on its pad in the base pocket
+	radius: number, -- m, farthest block corner from the reference point
+	lod: Lod,
 }
 
 local RemoteCraftRenderer = {}
 
 local entries: { [number]: Entry } = {}
 local folder: Folder
+local copies: { [number]: Puppets.CopyInfo } = {} -- CHANGED (Phase 3): copies drawn this frame (for puppets)
+local frameStats = { copies = 0, markers = 0, frozen = 0 }
 
 --============================================================================
--- Interpolation
+-- Interpolation (CHANGED Phase 3: Shared/Net/StateBuffer)
 --============================================================================
 
 local function pushState(entry: Entry, state: State)
-	local states = entry.states
-	local last = states[#states]
-	if last and state.ut <= last.ut then
-		return -- older than what we already have (unreliable packets may reorder)
-	end
-	table.insert(states, state)
-	if #states > BUFFER_SIZE then
-		table.remove(states, 1)
-	end
+	StateBuffer.push(entry.states, state, BUFFER_SIZE)
 end
 
-local function lerpState(a: State, b: State, t: number): State
-	return {
-		bodyId = a.bodyId,
-		pos = Vec3d.lerp(a.pos, b.pos, t),
-		vel = Vec3d.lerp(a.vel, b.vel, t),
-		rot = a.rot:Lerp(b.rot, t),
-		angVel = a.angVel:Lerp(b.angVel, t),
-		throttle = a.throttle + (b.throttle - a.throttle) * t,
-		flags = if t < 0.5 then a.flags else b.flags,
-		ut = a.ut + (b.ut - a.ut) * t,
-	}
-end
-
-local function extrapolate(s: State, dt: number): State
-	local angle = s.angVel.Magnitude * dt
-	local rot = if angle > 1e-9 then CFrame.fromAxisAngle(s.angVel.Unit, angle) * s.rot else s.rot
-	return {
-		bodyId = s.bodyId,
-		pos = Vec3d.addScaled(s.pos, s.vel, dt),
-		vel = s.vel,
-		rot = rot,
-		angVel = s.angVel,
-		throttle = s.throttle,
-		flags = s.flags,
-		ut = s.ut + dt,
-	}
-end
-
--- Interpolated (or briefly extrapolated) state of a craft at a UT, or nil if unknown.
+-- Interpolated (or briefly extrapolated, then frozen) state of a craft at a UT, or nil if unknown.
 function RemoteCraftRenderer.sampleState(craftId: number, ut: number): State?
 	local entry = entries[craftId]
-	if entry == nil or #entry.states == 0 then
+	if entry == nil then
 		return nil
 	end
-	local states = entry.states
-	if ut <= states[1].ut then
-		return states[1]
-	end
-	for index = #states - 1, 1, -1 do
-		local a, b = states[index], states[index + 1]
-		if ut >= a.ut and ut <= b.ut then
-			if a.bodyId ~= b.bodyId then
-				return b
-			end
-			local span = b.ut - a.ut
-			return lerpState(a, b, if span > 0 then (ut - a.ut) / span else 1)
-		end
-	end
-	local newest = states[#states]
-	return extrapolate(newest, math.clamp(ut - newest.ut, 0, EXTRAPOLATE_MAX))
+	local state = StateBuffer.sample(entry.states, ut)
+	return state
 end
 
 -- The latest streamed state (no interpolation), or nil.
@@ -143,6 +128,27 @@ end
 
 function RemoteCraftRenderer.interpolationDelay(): number
 	return INTERP_DELAY
+end
+
+-- CHANGED (Phase 3): restarts a craft's buffer from a known state. Used when this client stops simulating its craft
+-- (the server took it over): the stream does not carry a pilot's own craft, so the buffer would be stale.
+function RemoteCraftRenderer.seedState(craftId: number, state: State)
+	local entry = entries[craftId]
+	if entry == nil then
+		return
+	end
+	entry.states = {
+		{
+			bodyId = state.bodyId,
+			pos = Vec3d.clone(state.pos),
+			vel = Vec3d.clone(state.vel),
+			rot = state.rot,
+			angVel = state.angVel,
+			throttle = state.throttle,
+			flags = state.flags,
+			ut = state.ut,
+		},
+	}
 end
 
 --============================================================================
@@ -171,6 +177,20 @@ local function referenceCenter(design: Design): Vector3
 		end
 	end
 	return if reference then CraftDesign.blockCenter(reference) * CraftDesign.GRID else Vector3.zero
+end
+
+-- CHANGED (Phase 3): the farthest block corner from the craft reference point (m), for the marker LOD.
+local function craftRadius(design: Design): number
+	if #design.blocks == 0 then
+		return MIN_RADIUS
+	end
+	local center = referenceCenter(design)
+	local minV, maxV = CraftDesign.bounds(design)
+	local lo, hi = minV * CraftDesign.GRID - center, maxV * CraftDesign.GRID - center
+	local x = math.max(math.abs(lo.X), math.abs(hi.X))
+	local y = math.max(math.abs(lo.Y), math.abs(hi.Y))
+	local z = math.max(math.abs(lo.Z), math.abs(hi.Z))
+	return math.max(math.sqrt(x * x + y * y + z * z), MIN_RADIUS)
 end
 
 -- Builds the cosmetic copy with its craft-local origin (reference block centre) at the model root.
@@ -205,6 +225,13 @@ local function buildModel(entry: Entry): Model
 	return model
 end
 
+local function hideModel(entry: Entry)
+	local model = entry.model
+	if model and model.Parent ~= nil then
+		model.Parent = nil
+	end
+end
+
 local function removeBlocks(entry: Entry, ids: { number })
 	local lookup: { [number]: boolean } = {}
 	for _, id in ids do
@@ -225,63 +252,126 @@ local function removeBlocks(entry: Entry, ids: { number })
 		end
 	end
 	entry.design.blocks = kept
+	entry.radius = craftRadius(entry.design) -- CHANGED (Phase 3)
 end
 
 --============================================================================
 -- Rendering (called by UniverseRenderer every frame, after the pocket frame is updated)
 --============================================================================
 
+-- CHANGED (Phase 3): copy or marker, with hysteresis around COPY_MAX_DISTANCE and the marker angle.
+local function chooseLod(entry: Entry, distance: number): Lod
+	local angular = entry.radius / math.max(distance, 1e-3)
+	local copy: boolean
+	if entry.lod == "Copy" then
+		copy = distance <= COPY_MAX_DISTANCE * (1 + LOD_HYSTERESIS) and angular >= MARKER_ANGLE * (1 - LOD_HYSTERESIS)
+	else
+		copy = distance < COPY_MAX_DISTANCE * (1 - LOD_HYSTERESIS) and angular > MARKER_ANGLE * (1 + LOD_HYSTERESIS)
+	end
+	return if copy then "Copy" else "Marker"
+end
+
+local function poseCopy(entry: Entry, s: State, target: CFrame, dt: number)
+	local model = entry.model or buildModel(entry)
+	if model.Parent ~= folder then
+		model.Parent = folder
+	end
+	local root = entry.root :: BasePart
+	root.CFrame = target
+	if #entry.gear > 0 then
+		entry.gearFraction = Gear.approach(entry.gearFraction, Gear.target(s.flags), dt)
+		Gear.pose(entry.gear, target, entry.gearFraction)
+	end
+
+	local burning: { [number]: number } = {}
+	if bit32.band(s.flags, 2) ~= 0 then
+		for engineId in entry.active do
+			local block = nil
+			for _, b in entry.design.blocks do
+				if b.id == engineId then
+					block = b
+					break
+				end
+			end
+			if block then
+				local engine = Parts.get(block.type).Engine
+				-- CHANGED (Phase 2a feedback): no minimum flame, a throttled-down liquid engine is out
+				burning[engineId] = if engine and not engine.Throttleable then 1 else s.throttle
+			end
+		end
+	end
+	Plumes.update(model, burning)
+end
+
+local function markerTitle(entry: Entry): string
+	if entry.ownerName ~= "" then
+		return `{entry.name} ({entry.ownerName})`
+	end
+	return entry.name
+end
+
 function RemoteCraftRenderer.render(ctx: RenderContext.RenderContext)
 	local renderUT = ctx.ut - INTERP_DELAY
 	local cameraPos = ctx.camera.Position
+	local cameraAbs = ctx.cameraAbs
+	local refBodyId = ctx.frame.refBodyId
+	table.clear(copies)
+	frameStats.copies, frameStats.markers, frameStats.frozen = 0, 0, 0
 	for id, entry in entries do
-		local inMyPocket = entry.pocketId ~= 0 and entry.pocketId == ctx.pocketId
-		local state = if inMyPocket then nil else RemoteCraftRenderer.sampleState(id, renderUT)
-		if state == nil or #entry.design.blocks == 0 then
-			if entry.model then
-				(entry.model :: Model).Parent = nil
+		-- CHANGED (Phase 3): a craft on its pad belongs to the base pocket (its real model is shown there)
+		local inMyPocket = if entry.prelaunch
+			then ctx.pocketId == 0
+			else entry.pocketId ~= 0 and entry.pocketId == ctx.pocketId
+		local state: State? = nil
+		if not inMyPocket and #entry.design.blocks > 0 then
+			local sampled, mode = StateBuffer.sample(entry.states, renderUT)
+			state = sampled
+			if mode == "Frozen" then
+				frameStats.frozen += 1
 			end
+		end
+		if state == nil then
+			hideModel(entry)
+			CraftMarkers.hide(id)
+			entry.lod = "None"
 			continue
 		end
 		local s = state :: State
-		local bodyOffset = if s.bodyId ~= ctx.frame.refBodyId
-			then Universe.bodyOffset(s.bodyId, ctx.frame.refBodyId, ctx.ut)
-			else nil
-		local target = Frames.cframeToWorkspace(ctx.frame, s.pos, s.rot, bodyOffset)
-		if (target.Position - cameraPos).Magnitude > COPY_MAX_DISTANCE then
-			if entry.model then
-				(entry.model :: Model).Parent = nil
-			end
-			continue
-		end
-		local model = entry.model or buildModel(entry)
-		model.Parent = folder
-		local root = entry.root :: BasePart
-		root.CFrame = target
-		if #entry.gear > 0 then
-			entry.gearFraction = Gear.approach(entry.gearFraction, Gear.target(s.flags), ctx.dt)
-			Gear.pose(entry.gear, target, entry.gearFraction)
-		end
+		local bodyOffset = if s.bodyId ~= refBodyId then Universe.bodyOffset(s.bodyId, refBodyId, ctx.ut) else nil
 
-		local burning: { [number]: number } = {}
-		if bit32.band(s.flags, 2) ~= 0 then
-			for engineId in entry.active do
-				local block = nil
-				for _, b in entry.design.blocks do
-					if b.id == engineId then
-						block = b
-						break
-					end
-				end
-				if block then
-					local engine = Parts.get(block.type).Engine
-					-- CHANGED (Phase 2a feedback): no minimum flame, a throttled-down liquid engine is out
-					burning[engineId] = if engine and not engine.Throttleable then 1 else s.throttle
-				end
+		-- CHANGED (Phase 3): true camera -> craft offset in doubles (I1), relative to the pocket's reference body
+		local px, py, pz = s.pos.x, s.pos.y, s.pos.z
+		if bodyOffset then
+			px, py, pz = px + bodyOffset.x, py + bodyOffset.y, pz + bodyOffset.z
+		end
+		local dx, dy, dz = px - cameraAbs.x, py - cameraAbs.y, pz - cameraAbs.z
+		local distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+		local lod: Lod = chooseLod(entry, distance)
+		entry.lod = lod
+
+		if lod == "Copy" then
+			CraftMarkers.hide(id)
+			local target = Frames.cframeToWorkspace(ctx.frame, s.pos, s.rot, bodyOffset)
+			poseCopy(entry, s, target, ctx.dt)
+			copies[id] = { root = entry.root :: BasePart, distance = distance, radius = entry.radius }
+			frameStats.copies += 1
+		else
+			hideModel(entry)
+			local blocked = entry.isDebris
+				or distance < 1e-3
+				or LineOfSight.blocked(refBodyId, cameraAbs, Vec3d.new(px, py, pz), ctx.ut)
+			if blocked then
+				CraftMarkers.hide(id)
+			else
+				local inv = 1 / distance
+				local direction = Frames.vectorToWorkspace(ctx.frame, Vec3d.new(dx * inv, dy * inv, dz * inv))
+				CraftMarkers.show(id, cameraPos, direction, distance, markerTitle(entry), entry.ownerUserId)
+				frameStats.markers += 1
 			end
 		end
-		Plumes.update(model, burning)
 	end
+	-- CHANGED (Phase 3): crews of crafts in other pockets, inside the copies just posed
+	Puppets.update(ctx.pocketId, renderUT, copies, RemoteCraftRenderer.sampleState)
 end
 
 --============================================================================
@@ -300,18 +390,27 @@ local function onSpawned(craftId: unknown, designBuffer: unknown, stateBuffer: u
 	local existing = entries[craftId]
 	if existing then
 		destroyModel(existing)
+		CraftMarkers.remove(craftId) -- CHANGED (Phase 3): rebuilt with the new label
 	end
+	local prelaunch = data.prelaunch == true
 	local entry: Entry = {
 		id = craftId,
 		design = design,
 		ownerUserId = if type(data.ownerUserId) == "number" then data.ownerUserId else 0,
 		pocketId = if type(data.pocketId) == "number" then data.pocketId else 0,
 		active = {},
-		states = if existing then existing.states else {},
+		-- CHANGED (Phase 3): a pad craft's state is not part of a flight stream; start a new buffer either way
+		states = if existing and not existing.prelaunch and not prelaunch then existing.states else {},
 		model = nil,
 		root = nil,
 		gear = {},
 		gearFraction = 1,
+		name = if type(data.name) == "string" then data.name else design.name,
+		ownerName = if type(data.ownerName) == "string" then data.ownerName else "",
+		isDebris = data.isDebris == true,
+		prelaunch = prelaunch,
+		radius = craftRadius(design),
+		lod = "None" :: Lod,
 	}
 	if type(data.active) == "table" then
 		for _, id in data.active do
@@ -336,6 +435,7 @@ local function onRemoved(craftId: unknown)
 		destroyModel(entry)
 		entries[craftId] = nil
 	end
+	CraftMarkers.remove(craftId) -- CHANGED (Phase 3)
 end
 
 local function onStaged(
@@ -391,6 +491,24 @@ function RemoteCraftRenderer.Init()
 	folder = Instance.new("Folder")
 	folder.Name = "RemoteCrafts"
 	folder.Parent = Workspace
+	-- CHANGED (Phase 3): markers and puppets live in this client-only folder too
+	CraftMarkers.init(folder)
+	Puppets.init(folder)
+	DebugOverlay.addLine("remoteCrafts", 23, function()
+		local known = 0
+		for _ in entries do
+			known += 1
+		end
+		return string.format(
+			"Remote crafts: %d known  %d copies  %d markers  %d puppets  %d frozen  (CraftStates %.2f KB/s)",
+			known,
+			frameStats.copies,
+			frameStats.markers,
+			Puppets.shownCount(),
+			frameStats.frozen,
+			DebugOverlay.streamBytesPerSecond(STREAM_NAME) / 1000
+		)
+	end)
 end
 
 function RemoteCraftRenderer.Start()
@@ -399,6 +517,9 @@ function RemoteCraftRenderer.Start()
 	Remotes.event("CraftStaged").OnClientEvent:Connect(onStaged)
 	Remotes.event("PartsDestroyed").OnClientEvent:Connect(onDestroyed)
 	Remotes.unreliable("CraftStates").OnClientEvent:Connect(function(packet: unknown)
+		if typeof(packet) == "buffer" then
+			DebugOverlay.countBytes(STREAM_NAME, buffer.len(packet :: buffer)) -- CHANGED (Phase 3)
+		end
 		for _, item in Protocol.decodeStates(packet) do
 			local entry = entries[item.craftId]
 			if entry then
@@ -406,6 +527,8 @@ function RemoteCraftRenderer.Start()
 			end
 		end
 	end)
+	-- CHANGED (Phase 3): the join snapshot, now that every handler above is connected
+	Remotes.event("RequestSnapshot"):FireServer()
 end
 
 return RemoteCraftRenderer

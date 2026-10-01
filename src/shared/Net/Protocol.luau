@@ -8,6 +8,7 @@
 	PilotState (client -> server, 81 bytes) = state block + activeFuel f32 (total fuel left, kg).
 	CraftStates (server -> client) = u8 count + count state blocks (at most MAX_STATES_PER_PACKET per packet).
 	A lone state (inside reliable messages) = one state block.
+	CHANGED (Phase 3): packStateBlocks builds CraftStates packets from blocks encoded once per tick (per-client relay).
 
 	Positions stay f64 (invariant I1); velocities and rotations are small and fine as f32.
 ]]
@@ -161,6 +162,25 @@ function Protocol.encodeStates(entries: { Entry }): { buffer }
 		for k = 0, count - 1 do
 			local entry = entries[index + k]
 			writeState(b, 1 + k * STATE_BYTES, entry.craftId, entry.state)
+		end
+		table.insert(packets, b)
+		index += count
+	end
+	return packets
+end
+
+-- CHANGED (Phase 3): packs pre-encoded state blocks (Protocol.encodeState results, one per craft, encoded once per
+-- relay tick and shared by every client) into CraftStates packets, at most MAX_PER_PACKET blocks each. The bytes are
+-- identical to encodeStates for the same states.
+function Protocol.packStateBlocks(blocks: { buffer }): { buffer }
+	local packets: { buffer } = {}
+	local index = 1
+	while index <= #blocks do
+		local count = math.min(MAX_PER_PACKET, #blocks - index + 1)
+		local b = buffer.create(1 + count * STATE_BYTES)
+		buffer.writeu8(b, 0, count)
+		for k = 0, count - 1 do
+			buffer.copy(b, 1 + k * STATE_BYTES, blocks[index + k], 0, STATE_BYTES)
 		end
 		table.insert(packets, b)
 		index += count

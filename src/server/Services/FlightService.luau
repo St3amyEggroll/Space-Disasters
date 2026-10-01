@@ -17,10 +17,22 @@
 	server-simulated debris (CraftService.spawnDebris), their block models are removed from the real model, and
 	every client is told (CraftStaged / PartsDestroyed). If the pilot leaves or dies, the server takes over the
 	simulation (ServerSimService).
+
+	CHANGED (Phase 3): pilot hand-over.
+	  * The pilot leaving the pilot seat (F, another seat, death, disconnect) after ignition hands the craft to the
+	    server: ServerSimService continues uncrewed physics with ZERO input and the throttle CUT TO ZERO (safety:
+	    an abandoned rocket must not keep accelerating; solid boosters still burn out, as in KSP). The former pilot's
+	    client is told with FlightEnd and from then on follows the craft through the CraftStates stream, like
+	    every passenger. Before ignition, leaving still returns the craft to the pad.
+	  * Anyone (boarding permission already checked by CrewService) who sits down in the pilot seat of a flying,
+	    server-simulated craft takes it back: FlightStart carries the current state plus a `resume` table (stage
+	    list and index, ignited engines, fuel left) so the client continues exactly where the server was.
+	  * The join snapshot moved to CraftService (RequestSnapshot).
 ]]
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace") -- CHANGED (Phase 3): crew detection raycast
 
 local BaseLayout = require(ReplicatedStorage.Shared.Config.BaseLayout)
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
@@ -46,6 +58,7 @@ type CraftRecord = CraftService.CraftRecord
 --============================================================================
 local ACK_TIMEOUT_S = GameConfig.POCKET_TRANSFER_ACK_TIMEOUT
 local CREW_BOUNDS_MARGIN = 4 -- studs around a craft's bounding box that count as "aboard"
+local CREW_STAND_RAY = 8 -- CHANGED (Phase 3): studs below the root a standing crew member's craft must be
 local POSITION_TOLERANCE = 50 -- m: |dpos - vel*dt| allowed between pilot states
 local MAX_ACCEL = 250 -- m/s^2 of velocity change allowed between pilot states (generous)
 local VELOCITY_SLACK = 2 -- m/s
@@ -63,6 +76,7 @@ type Strikes = { count: number, since: number }
 type PendingTransfer = { player: Player, m: CFrame, deadline: number }
 
 local launching: { [number]: boolean } = {}
+local returning: { [number]: boolean } = {} -- CHANGED (Phase 3): re-entrancy guard for returnToPad
 local lastValid: { [number]: { state: FlightModel.CraftState, fuel: number } } = {}
 local strikes: { [number]: Strikes } = {}
 local pendingTransfers: { [number]: PendingTransfer } = {}
@@ -106,10 +120,15 @@ local function pilotSeatCraft(player: Player): CraftRecord?
 end
 
 -- Players aboard a real craft model: seated in it, or standing inside its bounding box.
+-- CHANGED (Phase 3): standing = inside the box AND on the craft (a short ray down hits it), so a bystander next
+-- to the pad is no longer pulled into the flight pocket with the crew.
 local function crewOf(model: Model): { Player }
 	local crew = {}
 	local cf, size = model:GetBoundingBox()
 	local half = size / 2 + Vector3.one * CREW_BOUNDS_MARGIN
+	local standParams = RaycastParams.new()
+	standParams.FilterType = Enum.RaycastFilterType.Include
+	standParams.FilterDescendantsInstances = { model }
 	for _, player in Players:GetPlayers() do
 		local character = player.Character
 		local humanoid = humanoidOf(player)
@@ -119,7 +138,10 @@ local function crewOf(model: Model): { Player }
 			local aboard = seat ~= nil and seat:IsDescendantOf(model)
 			if not aboard then
 				local p = cf:PointToObjectSpace(root.Position)
-				aboard = math.abs(p.X) <= half.X and math.abs(p.Y) <= half.Y and math.abs(p.Z) <= half.Z
+				aboard = math.abs(p.X) <= half.X
+					and math.abs(p.Y) <= half.Y
+					and math.abs(p.Z) <= half.Z
+					and Workspace:Raycast(root.Position, Vector3.new(0, -CREW_STAND_RAY, 0), standParams) ~= nil
 			end
 			if aboard then
 				table.insert(crew, player)
@@ -195,6 +217,9 @@ local function bumpPoseEpoch(model: Model)
 end
 
 local function sendTransfer(player: Player, source: number, dest: number, m: CFrame, epoch: number)
+	if player.Parent == nil then
+		return -- CHANGED (Phase 3): the player already left
+	end
 	local id = nextTransferId
 	nextTransferId += 1
 	player:SetAttribute("PocketId", dest)
@@ -349,14 +374,17 @@ end
 
 -- CHANGED (Phase 2a feedback): the pilot stood up before ignition. Moves the craft (where it stands now, even if
 -- it tipped over) and its crew back into the base pocket as a Prelaunch craft, and releases the flight pocket.
-local function returnToPad(record: CraftRecord, pilot: Player)
+-- CHANGED (Phase 3): `pilot` is nil when the pilot is not to be stood beside the pad (they left the game, or moved
+-- to another seat of the same craft and ride back with it like the rest of the crew).
+local function returnToPad(record: CraftRecord, pilot: Player?)
 	local sim = record.sim :: FlightModel.Craft
 	local model = record.model :: Model
 	local pocketId = record.pocketId :: number
 	local pocket = PocketService.flightPocket(pocketId)
-	if pocket == nil then
+	if pocket == nil or returning[record.id] then
 		return
 	end
+	returning[record.id] = true
 	local crew = crewOf(model)
 	for _, player in PocketService.playersIn(pocketId) do
 		if not table.find(crew, player) then
@@ -382,7 +410,7 @@ local function returnToPad(record: CraftRecord, pilot: Player)
 
 	-- The pilot stands up first and is placed directly beside the pad by the server, so their transfer below
 	-- carries the identity transform (the client must not move an unseated character by M a second time).
-	local pilotHumanoid = humanoidOf(pilot)
+	local pilotHumanoid = if pilot then humanoidOf(pilot) else nil
 	if pilotHumanoid then
 		unseat(pilotHumanoid)
 	end
@@ -401,8 +429,9 @@ local function returnToPad(record: CraftRecord, pilot: Player)
 	lastValid[record.id] = nil
 	strikes[record.id] = nil
 	remotes.CraftRemoved:FireAllClients(record.id)
+	CraftService.announce(record) -- CHANGED (Phase 3): back on the pad, still visible from other pockets
 
-	local character = pilot.Character
+	local character = if pilot then pilot.Character else nil
 	if pilotHumanoid and character then
 		local cf, size = model:GetBoundingBox()
 		local padIndex = CraftService.padOf(record.id)
@@ -414,10 +443,91 @@ local function returnToPad(record: CraftRecord, pilot: Player)
 	for _, member in crew do
 		sendTransfer(member, pocketId, 0, if member == pilot then CFrame.identity else m, 0)
 	end
-	if not table.find(crew, pilot) then
+	if pilot and not table.find(crew, pilot) then
 		sendTransfer(pilot, pocketId, 0, CFrame.identity, 0)
 	end
 	PocketService.releaseFlightPocket(pocketId)
+	returning[record.id] = nil
+end
+
+--============================================================================
+-- CHANGED (Phase 3): pilot hand-over between a client and the server simulation
+--============================================================================
+
+-- The server simulates the craft from now on: zero input, throttle cut (see the header). `notify` tells the former
+-- pilot's client to stop simulating (FlightEnd).
+local function takeOver(record: CraftRecord, notify: boolean)
+	local sim = record.sim
+	local former = record.pilot
+	record.pilot = nil
+	record.serverSim = true
+	if sim == nil then
+		return
+	end
+	FlightModel.setControls(sim, 0, 0, 0, 0, false)
+	sim.sasTarget = nil
+	lastValid[record.id] = { state = FlightModel.copyState(sim.state), fuel = FlightModel.totalFuel(sim) }
+	strikes[record.id] = nil
+	if notify and former and former.Parent ~= nil then
+		remotes.FlightEnd:FireClient(former, record.id)
+	end
+end
+
+-- A player sat down in the pilot seat of a craft already in flight: hand the simulation to their client.
+local function handBack(player: Player, record: CraftRecord)
+	local sim = record.sim
+	if sim == nil or record.state ~= "Flying" or record.pilot ~= nil then
+		return
+	end
+	record.pilot = player
+	record.serverSim = false
+	sim.sasTarget = nil
+	lastValid[record.id] = { state = FlightModel.copyState(sim.state), fuel = FlightModel.totalFuel(sim) }
+	strikes[record.id] = nil
+	local fuel = {}
+	for blockId, kg in sim.fuel do
+		table.insert(fuel, { blockId, kg })
+	end
+	local active = {}
+	for blockId in sim.active do
+		table.insert(active, blockId)
+	end
+	local resume = { stageIndex = sim.stageIndex, stages = sim.stages, active = active, fuel = fuel }
+	remotes.FlightStart:FireClient(
+		player,
+		record.id,
+		Protocol.encodeState(record.id, sim.state),
+		sim.stageIndex - 1,
+		CraftDesign.toBuffer(sim.physics.design),
+		resume
+	)
+end
+
+-- The pilot of `record` is no longer in its pilot seat. `gone` = they left the game.
+local function pilotLeft(record: CraftRecord, player: Player, gone: boolean)
+	if record.pilot ~= player or returning[record.id] then
+		return
+	end
+	if canReturnToPad(record) then
+		-- before ignition the craft goes back to the pad; a pilot who moved to another seat of the same craft
+		-- rides back with it instead of being stood beside the pad
+		local humanoid = humanoidOf(player)
+		local seat = if humanoid then humanoid.SeatPart else nil
+		local model = record.model
+		local stillAboard = seat ~= nil and model ~= nil and seat:IsDescendantOf(model)
+		returnToPad(record, if gone or stillAboard then nil else player)
+	else
+		takeOver(record, not gone)
+	end
+end
+
+-- Checks every craft the player pilots against the seat they are in now (seat changes, deaths, leaving).
+local function checkPilotSeat(player: Player, gone: boolean)
+	for _, record in CraftService.all() do
+		if record.pilot == player and (gone or pilotSeatCraft(player) ~= record) then
+			pilotLeft(record, player, gone)
+		end
+	end
 end
 
 --============================================================================
@@ -557,6 +667,8 @@ local function onLeaveSeat(player: Player)
 	if humanoid then
 		unseat(humanoid)
 	end
+	-- CHANGED (Phase 3): after ignition the server takes the craft over
+	checkPilotSeat(player, false)
 end
 
 -- CHANGED (Phase 2a feedback): a pilot sitting down in a Prelaunch craft starts its flight (physics on the pad).
@@ -569,6 +681,8 @@ local function onSeated(player: Player, seat: Seat)
 	local record = pilotSeatCraft(player)
 	if record and record.state == "Prelaunch" then
 		FlightService.startFlight(player, record)
+	elseif record and record.state == "Flying" and record.pilot == nil then
+		handBack(player, record) -- CHANGED (Phase 3): a pilot took a server-simulated craft back
 	end
 end
 
@@ -583,13 +697,9 @@ local function onTransferAck(player: Player, transferId: unknown)
 end
 
 -- Hands a player's piloted crafts to the server simulation (pilot left, died, or lost the craft).
-local function releasePilot(player: Player)
-	for _, record in CraftService.all() do
-		if record.pilot == player then
-			record.pilot = nil
-			record.serverSim = true
-		end
-	end
+-- CHANGED (Phase 3): through pilotLeft (cut throttle, FlightEnd; before ignition: back to the pad).
+local function releasePilot(player: Player, gone: boolean)
+	checkPilotSeat(player, gone)
 end
 
 --============================================================================
@@ -609,6 +719,7 @@ function FlightService.Init()
 			"PocketTransfer",
 			"PocketTransferAck",
 			"Notify",
+			"FlightEnd", -- CHANGED (Phase 3)
 		}
 	do
 		remotes[name] = Remotes.event(name)
@@ -623,12 +734,19 @@ function FlightService.Start()
 	remotes.PocketTransferAck.OnServerEvent:Connect(onTransferAck)
 	Remotes.unreliable("PilotState").OnServerEvent:Connect(onPilotState)
 
-	Players.PlayerRemoving:Connect(releasePilot)
+	Players.PlayerRemoving:Connect(function(player: Player)
+		releasePilot(player, true)
+	end)
 	local function watchCharacter(player: Player, character: Model)
 		local humanoid = character:WaitForChild("Humanoid", 10)
 		if humanoid and humanoid:IsA("Humanoid") then
 			humanoid.Died:Connect(function()
-				releasePilot(player)
+				releasePilot(player, false)
+			end)
+			-- CHANGED (Phase 3): any way of leaving the pilot seat hands the craft over (deferred, so the code that
+			-- unseated the pilot finishes first, e.g. returnToPad)
+			humanoid:GetPropertyChangedSignal("SeatPart"):Connect(function()
+				task.defer(checkPilotSeat, player, false)
 			end)
 		end
 	end
@@ -639,12 +757,7 @@ function FlightService.Start()
 		if player.Character then
 			task.spawn(watchCharacter, player, player.Character)
 		end
-		-- join snapshot: every craft already in flight
-		for _, record in CraftService.all() do
-			if record.sim then
-				CraftService.announce(record, player)
-			end
-		end
+		-- CHANGED (Phase 3): the join snapshot is sent by CraftService when the client asks (RequestSnapshot)
 	end
 	Players.PlayerAdded:Connect(onPlayer)
 	for _, player in Players:GetPlayers() do
@@ -662,8 +775,7 @@ function FlightService.Start()
 			record.model = nil
 		end
 		record.pocketId = nil
-		record.pilot = nil
-		record.serverSim = true
+		takeOver(record, true) -- CHANGED (Phase 3): uncrewed: zero input, throttle cut
 		CraftService.announce(record)
 	end)
 

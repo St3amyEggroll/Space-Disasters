@@ -5,6 +5,7 @@
 
 		DebugOverlay.addLine("pocket", 30, function() return "Pocket: 3 CRAFT_ALIGNED epoch 7" end)
 		DebugOverlay.recordTiming("Universe", elapsedMs)   -- shown as a smoothed average
+		DebugOverlay.countBytes("CraftStates", bytes)      -- CHANGED (Phase 3): received bytes/s per stream
 
 	Built-in lines: UT, warp rate, FPS / frame time, ping, network in/out, memory, part counts, character position.
 	Line order is by the `order` number (lower first). Built-ins use 0-19; systems should use 20+.
@@ -33,6 +34,8 @@ local BACKGROUND = Color3.fromRGB(10, 12, 18)
 local BACKGROUND_TRANSPARENCY = 0.35
 local TEXT_COLOR = Color3.fromRGB(220, 255, 220)
 local CLIENT_UNIVERSE_NAME = "ClientUniverse" -- render folder created by UniverseRenderer (Phase 2)
+local STREAM_WINDOW_S = 1 -- CHANGED (Phase 3): byte counters are averaged over this window
+local NET_BUDGET_KB = GameConfig.NET_BUDGET_BYTES_PER_S / 1000 -- CHANGED (Phase 3): shown next to stream rates
 --============================================================================
 
 type LineProvider = () -> string
@@ -53,6 +56,17 @@ local gui: ScreenGui? = nil
 local label: TextLabel? = nil
 
 local smoothedFrameMs = 16.7
+
+-- CHANGED (Phase 3): per-stream received byte counters (e.g. CraftStates), shown as bytes/s
+type StreamCounter = {
+	bytes: number,
+	packets: number,
+	windowStart: number,
+	bytesPerSecond: number,
+	packetsPerSecond: number,
+}
+local streams: { [string]: StreamCounter } = {}
+local streamOrder: { string } = {}
 local partCount = 0
 local universePartCount = 0
 local lastPartCount = -math.huge
@@ -98,6 +112,42 @@ function DebugOverlay.recordTiming(name: string, ms: number)
 	else
 		timings[name] = previous + (ms - previous) * SMOOTHING
 	end
+end
+
+local function rollStream(counter: StreamCounter, now: number)
+	local span = now - counter.windowStart
+	if span >= STREAM_WINDOW_S then
+		counter.bytesPerSecond = counter.bytes / span
+		counter.packetsPerSecond = counter.packets / span
+		counter.bytes = 0
+		counter.packets = 0
+		counter.windowStart = now
+	end
+end
+
+-- CHANGED (Phase 3): counts one received packet of `bytes` payload bytes on a named stream (shown per second).
+function DebugOverlay.countBytes(name: string, bytes: number)
+	local now = os.clock()
+	local counter = streams[name]
+	if counter == nil then
+		counter = { bytes = 0, packets = 0, windowStart = now, bytesPerSecond = 0, packetsPerSecond = 0 }
+		streams[name] = counter
+		table.insert(streamOrder, name)
+		table.sort(streamOrder)
+	end
+	rollStream(counter, now)
+	counter.bytes += bytes
+	counter.packets += 1
+end
+
+-- CHANGED (Phase 3): bytes per second received on a named stream over the last full window.
+function DebugOverlay.streamBytesPerSecond(name: string): number
+	local counter = streams[name]
+	if counter == nil then
+		return 0
+	end
+	rollStream(counter, os.clock())
+	return counter.bytesPerSecond
 end
 
 function DebugOverlay.isVisible(): boolean
@@ -202,6 +252,22 @@ local function addBuiltInLines()
 			Stats.DataSendKbps,
 			ping
 		)
+	end)
+	-- CHANGED (Phase 3): per-stream receive rates (this client), against the per-client network budget
+	DebugOverlay.addLine("streams", 4.5, function()
+		if #streamOrder == 0 then
+			return string.format("Streams: none yet  (budget %.0f KB/s)", NET_BUDGET_KB)
+		end
+		local parts = {}
+		for _, name in streamOrder do
+			local counter = streams[name]
+			rollStream(counter, os.clock())
+			table.insert(
+				parts,
+				string.format("%s %.2f KB/s %.0f pkt/s", name, counter.bytesPerSecond / 1000, counter.packetsPerSecond)
+			)
+		end
+		return `Streams in: {table.concat(parts, "  ")}  (budget {NET_BUDGET_KB} KB/s)`
 	end)
 	DebugOverlay.addLine("memory", 5, function()
 		return string.format("Memory %.0f MB", Stats:GetTotalMemoryUsageMb())

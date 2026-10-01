@@ -38,9 +38,17 @@ local DEFINITIONS: { [string]: Kind } = {
 	RequestStage = "Reliable", -- (craftId) pilot pressed Space: launch from the pad, or fire the next stage
 	LeaveSeat = "Reliable", -- () pilot/passenger pressed F
 	ReportPartsDestroyed = "Reliable", -- (craftId, blockIds: {number}, ut) pilot's sim saw impacts
-	FlightStart = "Reliable", -- server -> pilot (craftId, stateBuffer, stagesFired, designBuffer) start simulating
+	FlightStart = "Reliable", -- server -> pilot (craftId, stateBuffer, stagesFired, designBuffer, resume?) start simulating
+	--   CHANGED (Phase 3): resume (a pilot taking over a craft already in flight) = { stageIndex: number,
+	--   stages: { CraftGraph.Stage }, active: { number }, fuel: { { blockId, kg } } }; designBuffer is then the
+	--   craft's CURRENT design (stages fired, parts lost)
+	FlightEnd = "Reliable", -- CHANGED (Phase 3): server -> former pilot (craftId) the server simulates the craft now
 	FlightOverride = "Reliable", -- server -> pilot (craftId, stateBuffer?, refuel: boolean) debug / reset
 	CraftSpawned = "Reliable", -- (craftId, designBuffer, stateBuffer, info: {ownerUserId, pocketId, active: {number}})
+	--   CHANGED (Phase 3): info also has name, ownerName, isDebris, prelaunch (a rolled-out craft on its pad in the base
+	--   pocket, announced so players in other pockets see it; pocketId is then 0 = base)
+	RequestSnapshot = "Reliable", -- CHANGED (Phase 3): client -> server () once its handlers are connected; the server
+	--   answers with one CraftSpawned per known craft (join snapshot, spec 7.7)
 	CraftRemoved = "Reliable", -- (craftId)
 	CraftStaged = "Reliable", -- (craftId, stageIndex, ut, ignited: {number}, decoupled: {number}, debris: {{craftId, blockIds}})
 	PartsDestroyed = "Reliable", -- (craftId, blockIds: {number}, ut, pieces: {{craftId, blockIds}})
