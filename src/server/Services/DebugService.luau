@@ -23,6 +23,7 @@ local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local CraftService = require(script.Parent.CraftService)
 local PlotService = require(script.Parent.PlotService)
+local RailsService = require(script.Parent.RailsService) -- CHANGED (Phase 5)
 
 --============================================================================
 -- Tunables
@@ -57,6 +58,8 @@ end
 
 -- Pushes a new state to whoever simulates the craft.
 local function setState(record: CraftService.CraftRecord, state: FlightModel.CraftState)
+	-- CHANGED (Phase 5): leave rails first; the craft goes back on rails after RAILS_IDLE_TIME without input
+	RailsService.takeOffRails(record)
 	local sim = record.sim :: FlightModel.Craft
 	sim.state = state
 	sim.sasTarget = nil

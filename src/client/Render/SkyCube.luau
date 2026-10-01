@@ -25,6 +25,8 @@
 	API:
 		SkyCube.init(parent)                                  -- parent: workspace.ClientUniverse
 		SkyCube.update(ctx, surfaceMode, handoverAltitude)    -- every frame, after ScaledSpace
+		SkyCube.setOverride(opacity?, halfSize?)              -- CHANGED (Phase 5): fixed opacity / size (map view);
+		                                                      -- nil restores the automatic behaviour
 ]]
 
 local AssetService = game:GetService("AssetService")
@@ -58,6 +60,10 @@ local PANEL_OVERLAP = 0.01 -- panels are 1% larger than their grid cell so no ha
 --============================================================================
 
 local SkyCube = {}
+
+-- CHANGED (Phase 5): the map view draws inside a fully opaque cube of a fixed size
+type Override = { opacity: number, halfSize: number }
+local override: Override? = nil
 
 type Panel = { part: Part, background: Frame, stars: ImageLabel, localCFrame: CFrame }
 
@@ -261,12 +267,23 @@ local function spaceOpacity(ctx: RenderContext.RenderContext, surfaceMode: boole
 	return smoothstep(handover, atmosphere.Top, ctx.altitude)
 end
 
+-- CHANGED (Phase 5): forces the opacity and half-size (studs) until called with nil.
+function SkyCube.setOverride(value: number?, halfSize: number?)
+	if value == nil then
+		override = nil
+	else
+		override =
+			{ opacity = math.clamp(value, 0, 1), halfSize = math.clamp(halfSize or HALF_SIZE_MIN, 50, HALF_SIZE_MAX) }
+	end
+end
+
 function SkyCube.update(ctx: RenderContext.RenderContext, surfaceMode: boolean, handover: number)
 	local f = folder
 	if f == nil then
 		return
 	end
-	local target = spaceOpacity(ctx, surfaceMode, handover)
+	local forced = override
+	local target = if forced then forced.opacity else spaceOpacity(ctx, surfaceMode, handover)
 	if target <= 0 then
 		if shown then
 			shown = false
@@ -281,7 +298,9 @@ function SkyCube.update(ctx: RenderContext.RenderContext, surfaceMode: boolean, 
 	if math.abs(target - opacity) > OPACITY_STEP or (target >= 1 and opacity < 1) then
 		setOpacity(target)
 	end
-	local h = math.clamp(ctx.drawDistance * HALF_SIZE_FRACTION, HALF_SIZE_MIN, HALF_SIZE_MAX)
+	local h = if forced
+		then forced.halfSize
+		else math.clamp(ctx.drawDistance * HALF_SIZE_FRACTION, HALF_SIZE_MIN, HALF_SIZE_MAX)
 	if math.abs(h - halfSize) > RESIZE_THRESHOLD * halfSize then
 		layout(h)
 	end

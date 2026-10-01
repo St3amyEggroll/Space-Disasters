@@ -44,9 +44,10 @@ local DEFINITIONS: { [string]: Kind } = {
 	--   craft's CURRENT design (stages fired, parts lost)
 	FlightEnd = "Reliable", -- CHANGED (Phase 3): server -> former pilot (craftId) the server simulates the craft now
 	FlightOverride = "Reliable", -- server -> pilot (craftId, stateBuffer?, refuel: boolean) debug / reset
-	CraftSpawned = "Reliable", -- (craftId, designBuffer, stateBuffer, info: {ownerUserId, pocketId, active: {number}})
+	CraftSpawned = "Reliable", -- (craftId, designBuffer, stateBuffer, info: {ownerUserId, pocketId, active: {number}, rails: buffer?})
 	--   CHANGED (Phase 3): info also has name, ownerName, isDebris, prelaunch (a rolled-out craft on its pad in the base
 	--   pocket, announced so players in other pockets see it; pocketId is then 0 = base)
+	--   CHANGED (Phase 5): info.rails = Protocol.encodeRails when the craft is on rails (join snapshot included)
 	RequestSnapshot = "Reliable", -- CHANGED (Phase 3): client -> server () once its handlers are connected; the server
 	--   answers with one CraftSpawned per known craft (join snapshot, spec 7.7)
 	CraftRemoved = "Reliable", -- (craftId)
@@ -56,6 +57,10 @@ local DEFINITIONS: { [string]: Kind } = {
 	PocketTransferAck = "Reliable", -- (transferId)
 	PilotState = "Unreliable", -- client -> server, Protocol.encodePilotState (20 Hz)
 	CraftStates = "Unreliable", -- server -> client, Protocol.encodeStates batches
+	-- CHANGED (Phase 5): rails (spec 7.8)
+	CraftRails = "Reliable", -- server -> client (railsBuffer) Protocol.encodeRails: the craft is on rails (new epoch)
+	CraftOffRails = "Reliable", -- server -> client (craftId, ut) the craft left rails; its state stream resumes
+	RequestRails = "Reliable", -- pilot -> server (railsBuffer) proposes rails for the piloted craft
 	BuildAck = "Reliable", -- (seq, kind: "place" | "remove" | "paint", partId, gx, gy, gz, rot, color: number)
 	--   color: the block's colour (0 = default); for "paint" it is the colour BEFORE the change (for undo)
 	--   sent only for ACCEPTED operations that carried a seq > 0; the client builds its undo stack from these

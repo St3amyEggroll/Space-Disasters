@@ -9,6 +9,9 @@
 	CraftStates (server -> client) = u8 count + count state blocks (at most MAX_STATES_PER_PACKET per packet).
 	A lone state (inside reliable messages) = one state block.
 	CHANGED (Phase 3): packStateBlocks builds CraftStates packets from blocks encoded once per tick (per-client relay).
+	CHANGED (Phase 5): Rails (CraftRails, CraftSpawned info.rails, RequestRails; 101 bytes): craftId u16, bodyId u8,
+	epochUT f64, r0 3 x f64, v0 3 x f64, rot quaternion 4 x f32, angVel 3 x f32, com 3 x f32, throttle u8, flags u8.
+	r0 AND v0 are doubles: the rail is propagated analytically for hours, so velocity rounding would grow.
 
 	Positions stay f64 (invariant I1); velocities and rotations are small and fine as f32.
 ]]
@@ -22,6 +25,7 @@ local Vec3d = require(script.Parent.Parent.Math.Vec3d)
 local STATE_BYTES = 77
 local PILOT_BYTES = STATE_BYTES + 4
 local MAX_PER_PACKET = GameConfig.MAX_STATES_PER_PACKET
+local RAILS_BYTES = 101 -- CHANGED (Phase 5)
 --============================================================================
 
 -- Structurally identical to FlightModel.CraftState (kept here so Net does not depend on Sim).
@@ -38,11 +42,25 @@ export type State = {
 
 export type Entry = { craftId: number, state: State }
 
+-- CHANGED (Phase 5): the wire part of Rails.Rails (Shared/Sim/Rails rebuilds the derived fields).
+export type RailsData = {
+	bodyId: number,
+	epochUT: number,
+	r0: Vec3d.Vec3d,
+	v0: Vec3d.Vec3d,
+	rot: CFrame,
+	angVel: Vector3,
+	com: Vector3,
+	throttle: number,
+	flags: number,
+}
+
 local Protocol = {}
 
 Protocol.STATE_BYTES = STATE_BYTES
 Protocol.PILOT_BYTES = PILOT_BYTES
 Protocol.MAX_PER_PACKET = MAX_PER_PACKET
+Protocol.RAILS_BYTES = RAILS_BYTES
 
 local function toQuaternion(cf: CFrame): (number, number, number, number)
 	local axis, angle = cf:ToAxisAngle()
@@ -209,6 +227,72 @@ function Protocol.decodeStates(b: unknown): { Entry }
 		end
 	end
 	return result
+end
+
+--============================================================================
+-- CHANGED (Phase 5): rails
+--============================================================================
+
+function Protocol.encodeRails(craftId: number, rails: RailsData): buffer
+	local b = buffer.create(RAILS_BYTES)
+	buffer.writeu16(b, 0, craftId)
+	buffer.writeu8(b, 2, rails.bodyId)
+	buffer.writef64(b, 3, rails.epochUT)
+	buffer.writef64(b, 11, rails.r0.x)
+	buffer.writef64(b, 19, rails.r0.y)
+	buffer.writef64(b, 27, rails.r0.z)
+	buffer.writef64(b, 35, rails.v0.x)
+	buffer.writef64(b, 43, rails.v0.y)
+	buffer.writef64(b, 51, rails.v0.z)
+	local qx, qy, qz, qw = toQuaternion(rails.rot)
+	buffer.writef32(b, 59, qx)
+	buffer.writef32(b, 63, qy)
+	buffer.writef32(b, 67, qz)
+	buffer.writef32(b, 71, qw)
+	buffer.writef32(b, 75, rails.angVel.X)
+	buffer.writef32(b, 79, rails.angVel.Y)
+	buffer.writef32(b, 83, rails.angVel.Z)
+	buffer.writef32(b, 87, rails.com.X)
+	buffer.writef32(b, 91, rails.com.Y)
+	buffer.writef32(b, 95, rails.com.Z)
+	buffer.writeu8(b, 99, math.clamp(math.round(rails.throttle * 255), 0, 255))
+	buffer.writeu8(b, 100, bit32.band(rails.flags, 255))
+	return b
+end
+
+-- Returns nil for anything malformed (wrong size, non-finite numbers).
+function Protocol.decodeRails(b: unknown): (number?, RailsData?)
+	if typeof(b) ~= "buffer" or buffer.len(b :: buffer) ~= RAILS_BYTES then
+		return nil, nil
+	end
+	local data = b :: buffer
+	local craftId = buffer.readu16(data, 0)
+	local r0 = Vec3d.new(buffer.readf64(data, 11), buffer.readf64(data, 19), buffer.readf64(data, 27))
+	local v0 = Vec3d.new(buffer.readf64(data, 35), buffer.readf64(data, 43), buffer.readf64(data, 51))
+	local epochUT = buffer.readf64(data, 3)
+	local numbers = table.create(13)
+	for offset = 59, 95, 4 do
+		local n = buffer.readf32(data, offset)
+		if not finite(n) then
+			return nil, nil
+		end
+		table.insert(numbers, n)
+	end
+	if not (finite(epochUT) and Vec3d.isFinite(r0) and Vec3d.isFinite(v0)) then
+		return nil, nil
+	end
+	return craftId,
+		{
+			bodyId = buffer.readu8(data, 2),
+			epochUT = epochUT,
+			r0 = r0,
+			v0 = v0,
+			rot = fromQuaternion(numbers[1], numbers[2], numbers[3], numbers[4]),
+			angVel = Vector3.new(numbers[5], numbers[6], numbers[7]),
+			com = Vector3.new(numbers[8], numbers[9], numbers[10]),
+			throttle = buffer.readu8(data, 99) / 255,
+			flags = buffer.readu8(data, 100),
+		}
 end
 
 return table.freeze(Protocol)

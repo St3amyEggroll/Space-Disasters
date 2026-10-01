@@ -10,6 +10,11 @@
 	  RemoteCraftRenderer  other crafts in this pocket (interpolated stream)
 
 	All layers live under workspace.ClientUniverse, which exists only on this client.
+
+	CHANGED (Phase 5): map mode (setMapMode, driven by MapViewController). The flight layers are hidden (the
+	ScaledSpace and Surface folders and the RemoteCrafts copies are unparented and not updated) and the SkyCube
+	becomes a fully opaque starry box of a fixed size around the map camera, in universe axes. SkyLighting keeps
+	lighting the pocket as seen from the craft.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -64,6 +69,13 @@ local drawDistance = DEFAULT_DRAW_DISTANCE
 local qualityTimer = math.huge
 local lastSummary = "Universe: waiting for first frame"
 
+-- CHANGED (Phase 5): map mode
+local mapMode = false
+local mapFrame = Frames.new(Bodies.HOMEWORLD, Vec3d.zero(), CFrame.identity, Vector3.zero, 0) -- map axes = universe
+local layerRoot: Folder? = nil
+local hiddenLayers: { Instance } = {}
+local hiddenParents: { Instance? } = {}
+
 local ctx: RenderContext = {
 	frame = PocketController.frame(),
 	ut = 0,
@@ -117,7 +129,8 @@ local function step(dt: number)
 
 	local frame = PocketController.frame()
 	local ut = PocketController.renderUT()
-	local cameraCF = camera.CFrame
+	-- CHANGED (Phase 5): in map mode the universe is evaluated at the craft (the camera is at the map)
+	local cameraCF = if mapMode then CFrame.new(frame.slotOrigin) else camera.CFrame
 	local cameraAbs = Frames.pointFromWorkspace(frame, cameraCF.Position, ctx.cameraAbs)
 	local dominantId, cameraDominant = dominantBody(frame.refBodyId, cameraAbs, ut)
 
@@ -132,6 +145,19 @@ local function step(dt: number)
 	ctx.pocketId = PocketController.pocketId()
 	ctx.drawDistance = drawDistance
 	ctx.dt = dt
+
+	-- CHANGED (Phase 5): map mode: only the star box (around the map camera) and the pocket's lighting
+	if mapMode then
+		local mapCtx = table.clone(ctx)
+		mapCtx.frame = mapFrame
+		mapCtx.camera = camera.CFrame
+		SkyCube.update(mapCtx, false, 0)
+		timed("SkyLighting", function()
+			SkyLighting.update(ctx)
+		end)
+		lastSummary = "Universe: map view"
+		return
+	end
 
 	timed("ScaledSpace", function()
 		ScaledSpace.update(ctx)
@@ -158,6 +184,49 @@ local function step(dt: number)
 	)
 end
 
+--[[
+	CHANGED (Phase 5): enters / leaves map mode. `cubeHalfSize` is the star box's half-size in studs while mapping.
+]]
+function UniverseRenderer.setMapMode(enabled: boolean, cubeHalfSize: number?)
+	if enabled == mapMode then
+		return
+	end
+	mapMode = enabled
+	if enabled then
+		table.clear(hiddenLayers)
+		table.clear(hiddenParents)
+		local candidates: { Instance? } = {
+			if layerRoot then layerRoot:FindFirstChild("ScaledSpace") else nil,
+			if layerRoot then layerRoot:FindFirstChild("Surface") else nil,
+			Workspace:FindFirstChild("RemoteCrafts"),
+		}
+		for _, layer in candidates do
+			if layer then
+				table.insert(hiddenLayers, layer)
+				table.insert(hiddenParents, layer.Parent)
+				layer.Parent = nil
+			end
+		end
+		SkyCube.setOverride(1, cubeHalfSize)
+	else
+		for index, layer in hiddenLayers do
+			layer.Parent = hiddenParents[index]
+		end
+		table.clear(hiddenLayers)
+		table.clear(hiddenParents)
+		SkyCube.setOverride(nil)
+	end
+end
+
+function UniverseRenderer.isMapMode(): boolean
+	return mapMode
+end
+
+-- CHANGED (Phase 5): draw distance (studs) at the current quality level, for the map view.
+function UniverseRenderer.drawDistance(): number
+	return drawDistance
+end
+
 --============================================================================
 -- Lifecycle
 --============================================================================
@@ -176,6 +245,7 @@ function UniverseRenderer.Init()
 	surfaceFolder.Name = "Surface"
 	surfaceFolder.Parent = root
 	root.Parent = Workspace
+	layerRoot = root -- CHANGED (Phase 5)
 
 	SkyLighting.init()
 	Surface.init(surfaceFolder)

@@ -21,6 +21,7 @@ local BOOT_ORDER = {
 	"CrewService",
 	"FlightService", -- CHANGED (Phase 2a): launch, staging, pilot states, crashes
 	"ServerSimService",
+	"RailsService", -- CHANGED (Phase 5): crafts on rails, SOI transitions, debris cleanup
 	"FlightRelayService",
 	"DebugService",
 }

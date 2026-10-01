@@ -318,6 +318,66 @@ The flight camera no longer turns with the rocket.
 - **Tests:** every primitive, in both the deployed and stowed pose, must stay inside its part's box. Old saves with removed parts still load.
 - **Preview:** `tools/export-parts.luau` and `tools/part-preview` render the parts offline (the "Part Hangar" page).
 
+### D35. Phase 3 (multiplayer crafts) decisions
+- **Interest management** (`Shared/Net/Interest`):
+  - **Rates:** craft in your pocket 20 Hz; within 50 km 20 Hz; same SOI 2 Hz; anything else 0.5 Hz.
+  - **Budget:** enforced per client at `CRAFT_STATES_BUDGET` (18 KB/s of payload).
+    - Your own pocket always keeps 20 Hz.
+    - Everything else first drops to 0.5 Hz. Rate is given back to crafts before debris, then by tier, nearest first.
+  - **Send credits:** each (client, craft) pair keeps a send credit.
+  - **Your own craft:** a pilot is never sent its own craft.
+  - The budget counts payload only. F3's "Net in" line shows the real total.
+- **Snapshot:** the client asks for it (`RequestSnapshot`) once its handlers are connected, rather than the server pushing it on join. Pad (Prelaunch) crafts are announced too, so other pockets see them.
+- **Starved streams** (`Shared/Net/StateBuffer`):
+  - 20 Hz streams extrapolate 0.25 s, then freeze (spec).
+  - Slow streams extrapolate up to 1.25 × their interval (at most 2.5 s).
+  - Never blends across an SOI change.
+- **Markers** (`Render/CraftMarkers`):
+  - "Name (Owner)" and distance, at most 200 studs from the camera, drawn on top.
+  - Hidden behind planets by a line-of-sight test in doubles. Lines that pass less than 300 m below the surface don't count as blocked.
+  - No markers for debris.
+  - Copy or marker is chosen with ±10% hysteresis.
+- **Puppets** (`Render/Puppets`):
+  - Appearance clones built from each player's HumanoidDescription. If that fails, a blocky stand-in is used, and the real look is retried every 30 s.
+  - **Seated:** pose = seat × SeatWeld C0·C1⁻¹, relative to the real model's craft frame.
+  - **Standing:** the interpolated stream (D31: the server model never turns).
+  - Only within `PUPPET_DISTANCE`.
+- **Hand-over:**
+  - Leaving the pilot seat after ignition, dying or disconnecting hands the craft to the server (`FlightEnd`), with zero input and the throttle cut to 0. SRBs keep burning.
+  - This also fixed the server copy keeping its launch throttle of 1.
+  - Anyone allowed to board who sits in the pilot seat of a server-flown craft takes it back (`FlightStart` with `resume` data). That works on rails too (D36).
+- **`crewOf`:** a standing character must be inside the craft's box **and** above part of it (a short downward ray), so bystanders aren't pulled into a launching craft's pocket.
+
+### D36. Phase 5 (orbits, rails, map, navball) decisions
+- **`Shared/Sim/Kepler`:**
+  - Universal-variable propagation for elliptic, parabolic, hyperbolic and radial orbits.
+  - Robust elements, apsides with the time to each, and conic points for the map.
+  - SOI crossing search with bounded steps plus bisection to 0.01 s.
+  - Placed in `Sim/`, not the spec's `Math/`.
+- **`Shared/Sim/Rails`:**
+  - A rail is `{bodyId, epochUT, r0, v0, rot, angVel, com, throttle, flags}`. The centre of mass follows the conic and the root turns around it, as FlightModel does.
+  - With SAS on, attitude is frozen (after settling below 0.05 rad/s). Otherwise the angular velocity is held.
+  - **Rails floor:** max(atmosphere top, 500 m) + 100 m hysteresis. `exitUT` is precomputed, which also stops crafts sinking into airless Dent.
+- **Authority:**
+  - **Server crafts and debris:** `RailsService` puts them on rails after 0.5 s eligible.
+  - **Piloted crafts:** the pilot proposes with `RequestRails`. The server validates against its last valid state, then broadcasts `CraftRails`.
+  - **Leaving rails:** any pilot input or thrust ends rails. The pilot resumes PilotState, and the first newer state takes the server off rails. `CraftOffRails` carries UT.
+  - **Streaming:** no CraftStates or PilotState while on rails.
+  - **SOI changes on rails:** RailsService checks every 1 s and bisects the crossing; clients mirror SOI changes for display.
+- **Debris:** suborbital debris more than 30 km from every occupied pocket is deleted every 1 s. Orbital debris persists.
+- **Navball:** a ViewportFrame ball built from primitives.
+  - Screen up = craft +Z, right = craft +X. The horizon frame is the true radial up, not the sun-tilted pocket up.
+  - Prograde/retrograde markers and N/E/S/W are 2D overlays.
+- **Map view:**
+  - `MAP_SCALE` 0.002 studs/m, around a map origin at the slot origin ± 2000 studs Y. Zoom changes the scale (the camera stays 160 studs away), so everything stays inside draw distance.
+  - The SkyCube becomes an opaque star box around the map camera.
+  - Orbit lines are Beams. BillboardGui markers live in PlayerGui so they can be clicked.
+- **Merge note:** both phases were built in parallel and merged. On rails the relay skips the craft (Phase 3's `shouldStream` only streams "Flying"), and `RemoteCraftRenderer.sampleState` reads rails first.
+
+### D37. Two new phases (Steamy)
+- **Phase 10: Effects.** Better effects for rockets and everything else: plumes, smoke, explosions, separation, re-entry heat and the rest.
+- **Phase 11: UI renovation.** A new look for the builder, flight HUD, map and menus.
+
 ---
 
 ## Phase 0 spike results

@@ -21,9 +21,11 @@ local BOOT_ORDER = {
 	"DebugOverlay",
 	"BuildController", -- CHANGED (Phase 1): hangar builder
 	"RemoteCraftRenderer", -- CHANGED (Phase 2a): flight rendering and control
+	"RailsController", -- CHANGED (Phase 5): other crafts' rails and their SOI changes
 	"PocketController",
 	"FlightController",
 	"UniverseRenderer",
+	"MapViewController", -- CHANGED (Phase 5): map view (M)
 }
 --============================================================================
 

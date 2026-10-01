@@ -37,6 +37,7 @@ local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 local LineOfSight = require(ReplicatedStorage.Shared.Sim.LineOfSight)
 local Parts = require(ReplicatedStorage.Shared.Config.Parts)
 local Protocol = require(ReplicatedStorage.Shared.Net.Protocol)
+local Rails = require(ReplicatedStorage.Shared.Sim.Rails) -- CHANGED (Phase 5)
 local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
 local StateBuffer = require(ReplicatedStorage.Shared.Net.StateBuffer)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
@@ -91,6 +92,9 @@ local entries: { [number]: Entry } = {}
 local folder: Folder
 local copies: { [number]: Puppets.CopyInfo } = {} -- CHANGED (Phase 3): copies drawn this frame (for puppets)
 local frameStats = { copies = 0, markers = 0, frozen = 0 }
+-- CHANGED (Phase 5): crafts on rails, sampled analytically instead of from the state buffer (RailsController
+-- fills this from CraftRails / CraftOffRails / CraftSpawned and mirrors SOI changes).
+local railsById: { [number]: Rails.Rails } = {}
 
 --============================================================================
 -- Interpolation (CHANGED Phase 3: Shared/Net/StateBuffer)
@@ -102,6 +106,10 @@ end
 
 -- Interpolated (or briefly extrapolated, then frozen) state of a craft at a UT, or nil if unknown.
 function RemoteCraftRenderer.sampleState(craftId: number, ut: number): State?
+	local onRails = railsById[craftId] -- CHANGED (Phase 5)
+	if onRails then
+		return Rails.stateAt(onRails, ut)
+	end
 	local entry = entries[craftId]
 	if entry == nil then
 		return nil
@@ -114,6 +122,39 @@ end
 function RemoteCraftRenderer.latestState(craftId: number): State?
 	local entry = entries[craftId]
 	return if entry then entry.states[#entry.states] else nil
+end
+
+--[[
+	CHANGED (Phase 5): sets (or clears, with nil) the rail a craft is sampled from. Clearing seeds the state
+	buffer with the rail's states at `ut - INTERP_DELAY` and `ut`, so interpolation carries on smoothly from the
+	rail until the resumed CraftStates stream arrives.
+]]
+function RemoteCraftRenderer.setRails(craftId: number, rails: Rails.Rails?, ut: number)
+	local previous = railsById[craftId]
+	if rails then
+		railsById[craftId] = rails
+	else
+		railsById[craftId] = nil
+	end
+	local entry = entries[craftId]
+	if rails == nil and previous and entry then
+		pushState(entry, Rails.stateAt(previous, ut - INTERP_DELAY))
+		pushState(entry, Rails.stateAt(previous, ut))
+	end
+end
+
+function RemoteCraftRenderer.railsOf(craftId: number): Rails.Rails?
+	return railsById[craftId]
+end
+
+-- CHANGED (Phase 5): ids of every known craft (map view).
+function RemoteCraftRenderer.craftIds(): { number }
+	local ids = {}
+	for id in entries do
+		table.insert(ids, id)
+	end
+	table.sort(ids)
+	return ids
 end
 
 function RemoteCraftRenderer.design(craftId: number): Design?
@@ -436,6 +477,7 @@ local function onRemoved(craftId: unknown)
 		entries[craftId] = nil
 	end
 	CraftMarkers.remove(craftId) -- CHANGED (Phase 3)
+	railsById[craftId] = nil -- CHANGED (Phase 5)
 end
 
 local function onStaged(

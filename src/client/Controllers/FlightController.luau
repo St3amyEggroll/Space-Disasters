@@ -17,6 +17,14 @@
 	stream buffer with its last local state, and from then on follows the craft like any passenger. Sitting back in
 	the pilot seat hands it back (FlightStart with a `resume` table: the current design, stages, engines and fuel).
 	Passengers get a HUD from the streamed state.
+
+	CHANGED (Phase 5): rails (spec 7.8). After RAILS_IDLE_TIME without input while Rails.eligible (out of the air,
+	no thrust, no contact, SAS settled), this client proposes a rail (RequestRails) and immediately follows it
+	analytically: no integration and NO PilotState packets. Every SOI_CHECK_INTERVAL it mirrors SOI changes
+	(Rails.advance); the server's CraftRails replaces the local rail. Any flight key, thrust, staging or reaching
+	the rail's exitUT leaves rails at once: the simulation resumes from the rail's state and the next PilotState
+	(newer than the rail's epoch) tells the server. A refusal (CraftOffRails) makes it wait RAILS_RETRY_S.
+	The HUD also gets apoapsis / periapsis (Kepler) and the navball attitude.
 ]]
 
 local ContextActionService = game:GetService("ContextActionService")
@@ -32,6 +40,8 @@ local CraftGraph = require(ReplicatedStorage.Shared.Craft.CraftGraph)
 local CraftDesign = require(ReplicatedStorage.Shared.Craft.CraftDesign)
 local FlightModel = require(ReplicatedStorage.Shared.Sim.FlightModel)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
+local Kepler = require(ReplicatedStorage.Shared.Sim.Kepler) -- CHANGED (Phase 5)
+local Rails = require(ReplicatedStorage.Shared.Sim.Rails) -- CHANGED (Phase 5)
 local MassProps = require(ReplicatedStorage.Shared.Craft.MassProps)
 local Parts = require(ReplicatedStorage.Shared.Config.Parts)
 local Protocol = require(ReplicatedStorage.Shared.Net.Protocol)
@@ -45,6 +55,7 @@ local HudData = require(script.Parent.Parent.Render.HudData)
 local Plumes = require(script.Parent.Parent.Render.Plumes)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local DebugOverlay = require(script.Parent.DebugOverlay)
+local MapViewController = require(script.Parent.MapViewController) -- CHANGED (Phase 5)
 local PocketController = require(script.Parent.PocketController)
 local RemoteCraftRenderer = require(script.Parent.RemoteCraftRenderer)
 
@@ -65,6 +76,20 @@ local ACTION_PRIORITY = Enum.ContextActionPriority.High.Value + 10
 local CAMERA_GRAVITY_UP_MIN_ALT = 2000 -- m; gravity up below max(this, atmosphere top)
 local CAMERA_UP_BLEND_HEIGHT = 3000 -- m above that over which up blends to the solar-plane normal
 local SOLAR_PLANE_NORMAL = Vector3.yAxis -- universe axes: every orbit lies in the XZ plane
+-- CHANGED (Phase 5): rails
+local RAILS_IDLE_TIME = GameConfig.RAILS_IDLE_TIME
+local RAILS_RETRY_S = GameConfig.RAILS_RETRY_S
+local SOI_CHECK_INTERVAL = GameConfig.SOI_CHECK_INTERVAL
+local HELD_INPUT_KEYS = {
+	Enum.KeyCode.W,
+	Enum.KeyCode.A,
+	Enum.KeyCode.S,
+	Enum.KeyCode.D,
+	Enum.KeyCode.Q,
+	Enum.KeyCode.E,
+	Enum.KeyCode.LeftShift,
+	Enum.KeyCode.LeftControl,
+}
 local FLIGHT_KEYS = {
 	Enum.KeyCode.W,
 	Enum.KeyCode.A,
@@ -102,6 +127,13 @@ local bound = false
 local stageStatsTimer = 0
 local stageStatsCache: { MassProps.StageStat } = {}
 local predictedHidden: { [number]: boolean } = {} -- blocks hidden locally until the server removes them
+-- CHANGED (Phase 5): rails
+local rails: Rails.Rails? = nil -- non-nil while the own craft follows a rail (proposed or confirmed)
+local railsCheckUT = 0 -- UT of the last local SOI check on the rail
+local idleTime = 0 -- s the craft has been eligible without input
+local railsRetryAt = 0 -- os.clock() before which no new rail is proposed
+local inputPulse = false -- a discrete flight key was pressed since the last simulation step
+local leaveRails: () -> () -- defined in the rails section below (stage() needs it first)
 
 --============================================================================
 -- Seat detection
@@ -192,6 +224,7 @@ local function stage()
 	if craft == nil or craftId ~= seatInfo.craftId then
 		return
 	end
+	leaveRails() -- CHANGED (Phase 5): staging ends rails (the server does the same on RequestStage)
 	-- predict locally; the server repeats the same deterministic stage and confirms with CraftStaged
 	local result = FlightModel.stage(craft)
 	if result then
@@ -212,6 +245,9 @@ local function onAction(
 		return Enum.ContextActionResult.Sink
 	end
 	local key = input.KeyCode
+	if key ~= Enum.KeyCode.V and key ~= Enum.KeyCode.F then
+		inputPulse = true -- CHANGED (Phase 5): pilot input ends rails and restarts the idle timer
+	end
 	if key == Enum.KeyCode.Space then
 		stage()
 	elseif key == Enum.KeyCode.T then
@@ -272,6 +308,79 @@ local function applyControls(craft: Craft, dt: number, piloting: boolean)
 	end
 end
 
+--============================================================================
+-- CHANGED (Phase 5): rails
+--============================================================================
+
+-- Leaves rails now: the simulation continues from the rail's state (no-op when not on rails).
+leaveRails = function()
+	local current = rails
+	local craft = sim
+	rails = nil
+	idleTime = 0
+	if current == nil or craft == nil then
+		return
+	end
+	local now = UniverseTime.now()
+	local s = Rails.stateAt(current, now)
+	s.throttle = craft.state.throttle
+	s.flags = craft.state.flags
+	craft.state = s
+	craft.sasTarget = nil
+	accumulator = 0
+	sendTimer = SEND_INTERVAL -- report right away: the server learns we left rails from the next PilotState
+end
+
+local function enterRails(craft: Craft)
+	local id = craftId
+	if id == nil then
+		return
+	end
+	local proposal = Rails.fromState(FlightModel.copyState(craft.state), craft.physics.com, craft.controls.sas)
+	rails = proposal
+	railsCheckUT = proposal.epochUT
+	idleTime = 0
+	remotes.RequestRails:FireServer(Protocol.encodeRails(id :: number, proposal))
+end
+
+local function heldInput(piloting: boolean): boolean
+	if not piloting or UserInputService:GetFocusedTextBox() then
+		return false
+	end
+	for _, key in HELD_INPUT_KEYS do
+		if UserInputService:IsKeyDown(key) then
+			return true
+		end
+	end
+	return false
+end
+
+-- One frame on rails: returns false when the craft just left rails (the caller then simulates normally).
+local function stepRails(craft: Craft, piloting: boolean, dt: number): boolean
+	local current = rails :: Rails.Rails
+	applyControls(craft, dt, piloting)
+	local now = UniverseTime.now()
+	local input = inputPulse or heldInput(piloting)
+	inputPulse = false
+	if input or Rails.wouldThrust(craft) or now >= current.exitUT then
+		leaveRails()
+		return false
+	end
+	if now - railsCheckUT >= SOI_CHECK_INTERVAL then
+		local changed = Rails.advance(current, railsCheckUT, now)
+		railsCheckUT = now
+		if changed then
+			current = changed
+			rails = changed
+		end
+	end
+	local s = Rails.stateAt(current, now)
+	s.throttle = craft.state.throttle
+	s.flags = bit32.band(craft.state.flags, bit32.bnot(bit32.bor(FlightModel.FLAG_BURNING, FlightModel.FLAG_CONTACT)))
+	craft.state = s
+	return true
+end
+
 local function reportDestroyed(craft: Craft)
 	if #craft.destroyed == 0 or craftId == nil then
 		return
@@ -293,6 +402,10 @@ local function stepSimulation(dt: number)
 	end
 	local seatInfo = currentSeat()
 	local piloting = seatInfo ~= nil and seatInfo.isPilot and seatInfo.craftId == craftId
+	-- CHANGED (Phase 5): on rails nothing is integrated or sent
+	if rails and stepRails(craft, piloting, dt) then
+		return
+	end
 	accumulator += dt
 	local steps = 0
 	while accumulator >= STEP and steps < MAX_STEPS_PER_FRAME do
@@ -312,6 +425,18 @@ local function stepSimulation(dt: number)
 	local now = UniverseTime.now()
 	if math.abs(craft.state.ut - now) > UT_RESYNC_THRESHOLD then
 		craft.state.ut = now
+	end
+	-- CHANGED (Phase 5): propose rails after RAILS_IDLE_TIME of eligible coasting without input
+	local input = inputPulse or heldInput(piloting)
+	inputPulse = false
+	if not input and Rails.eligible(craft) then
+		idleTime += dt
+	else
+		idleTime = 0
+	end
+	if idleTime >= RAILS_IDLE_TIME and os.clock() >= railsRetryAt then
+		enterRails(craft)
+		return
 	end
 	sendTimer += dt
 	if sendTimer >= SEND_INTERVAL and craftId then
@@ -338,7 +463,26 @@ local function refreshStageStats(craft: Craft)
 	stageStatsCache = stats
 end
 
-local function hudFromState(state: Protocol.State, name: string, isPilot: boolean, craft: Craft?): HudData.HudData
+-- CHANGED (Phase 5): apoapsis / periapsis and navball inputs from a state.
+local function orbitInfo(state: Protocol.State): (number?, number?, number?, number?, CFrame)
+	local body = Bodies.get(state.bodyId)
+	local horizon = Frames.surfaceRotation(state.pos)
+	local landed = bit32.band(state.flags, FlightModel.FLAG_CONTACT) ~= 0 or Vec3d.length(state.vel) < 1
+	if landed then
+		return nil, nil, nil, nil, horizon
+	end
+	local el = Kepler.elements(body.Mu, state.pos, state.vel)
+	local apoapsis = if el.kind == "Elliptic" then el.apoapsis - body.Radius else nil
+	return apoapsis, el.periapsis - body.Radius, el.timeToApoapsis, el.timeToPeriapsis, horizon
+end
+
+local function hudFromState(
+	state: Protocol.State,
+	name: string,
+	isPilot: boolean,
+	craft: Craft?,
+	onRails: boolean
+): HudData.HudData
 	local body = Bodies.get(state.bodyId)
 	local r = Vec3d.length(state.pos)
 	local altitude = r - body.Radius
@@ -366,7 +510,17 @@ local function hudFromState(state: Protocol.State, name: string, isPilot: boolea
 		burning = bit32.band(state.flags, FlightModel.FLAG_BURNING) ~= 0,
 		inAtmosphere = Atmosphere.isInside(state.bodyId, altitude),
 		pressure = pressure,
+		-- CHANGED (Phase 5)
+		apoapsis = nil,
+		periapsis = nil,
+		timeToApoapsis = nil,
+		timeToPeriapsis = nil,
+		onRails = onRails,
+		attitude = state.rot,
+		horizon = nil,
+		velocity = Vec3d.toVector3(state.vel),
 	}
+	data.apoapsis, data.periapsis, data.timeToApoapsis, data.timeToPeriapsis, data.horizon = orbitInfo(state)
 	if craft then
 		local thrust = 0
 		for _, engine in craft.physics.engines do
@@ -402,7 +556,7 @@ local function hudData(): HudData.HudData?
 	if craft and craftId then
 		local model = craftModelById(craftId :: number)
 		local name = if model then (model:GetAttribute("DesignName") or model.Name) :: string else "Craft"
-		return hudFromState(craft.state, name, seatInfo ~= nil and seatInfo.isPilot, craft)
+		return hudFromState(craft.state, name, seatInfo ~= nil and seatInfo.isPilot, craft, rails ~= nil)
 	end
 	if seatInfo then
 		if seatInfo.state == "Prelaunch" or seatInfo.state == "Launching" then
@@ -438,6 +592,15 @@ local function hudData(): HudData.HudData?
 				burning = false,
 				inAtmosphere = true,
 				pressure = 1,
+				-- CHANGED (Phase 5): on the pad there is no orbit and no navball yet
+				apoapsis = nil,
+				periapsis = nil,
+				timeToApoapsis = nil,
+				timeToPeriapsis = nil,
+				onRails = false,
+				attitude = nil,
+				horizon = nil,
+				velocity = nil,
 			}
 		end
 		-- passenger in flight: streamed state
@@ -447,7 +610,8 @@ local function hudData(): HudData.HudData?
 				state,
 				(seatInfo.craftModel:GetAttribute("DesignName") or "Craft") :: string,
 				false,
-				nil
+				nil,
+				RemoteCraftRenderer.railsOf(seatInfo.craftId) ~= nil -- CHANGED (Phase 5)
 			)
 		end
 	end
@@ -609,6 +773,8 @@ local function onFlightStart(
 	throttle = state.throttle
 	sasOn = false
 	accumulator = 0
+	rails = nil -- CHANGED (Phase 5)
+	idleTime = 0
 	predictedHidden = {}
 	craftId = id
 	sim = craft
@@ -623,6 +789,9 @@ local function onOverride(id: unknown, stateBuffer: unknown, refuel: unknown)
 	if stateBuffer ~= nil then
 		local _, state = Protocol.decodeState(stateBuffer)
 		if state then
+			rails = nil -- CHANGED (Phase 5): the override replaces any rail (and may go on rails again at once)
+			idleTime = 0
+			railsRetryAt = 0
 			craft.state = state :: any
 			craft.sasTarget = nil
 		end
@@ -686,6 +855,7 @@ local function onRemoved(id: unknown)
 	if id == craftId then
 		sim = nil
 		craftId = nil
+		rails = nil -- CHANGED (Phase 5)
 	end
 end
 
@@ -699,6 +869,32 @@ local function onFlightEnd(id: unknown)
 	sim = nil
 	craftId = nil
 	sasOn = false
+	rails = nil -- CHANGED (Phase 3/5 merge): the server owns the craft (and its rail) now
+end
+
+-- CHANGED (Phase 5): the server accepted our rail, or moved it into another SOI. Adopted only while this client
+-- is still on rails (if it already left, its next PilotState takes the server off rails too).
+local function onCraftRails(packet: unknown)
+	local id, data = Protocol.decodeRails(packet)
+	if id == nil or data == nil or id ~= craftId or rails == nil then
+		return
+	end
+	local adopted = Rails.fromData(data)
+	if adopted then
+		rails = adopted
+		railsCheckUT = math.max(adopted.epochUT, UniverseTime.now())
+	end
+end
+
+-- CHANGED (Phase 5): the server refused our rail or ended it (debug command, rails floor).
+local function onCraftOffRails(id: unknown, _ut: unknown)
+	if id ~= craftId then
+		return
+	end
+	if rails then
+		leaveRails()
+	end
+	railsRetryAt = os.clock() + RAILS_RETRY_S
 end
 
 --============================================================================
@@ -706,11 +902,19 @@ end
 --============================================================================
 
 function FlightController.Init()
-	for _, name in { "RequestStage", "LeaveSeat", "ReportPartsDestroyed" } do
+	for _, name in { "RequestStage", "LeaveSeat", "ReportPartsDestroyed", "RequestRails" } do -- CHANGED (Phase 5)
 		remotes[name] = Remotes.event(name)
 	end
 	pilotStateRemote = Remotes.unreliable("PilotState")
 	hud = FlightHUD.create()
+	-- CHANGED (Phase 5): the map view draws this client's own craft from the exact local state
+	MapViewController.setOwnCraftProvider(function(): (number?, Protocol.State?)
+		local craft = sim
+		if craft and craftId then
+			return craftId, craft.state
+		end
+		return nil, nil
+	end)
 	PocketController.registerPrimaryProvider(function(id: number): PocketController.PrimaryState?
 		if sim and id == craftId then
 			return (sim :: Craft).state
@@ -724,13 +928,14 @@ function FlightController.Init()
 		end
 		local s = craft.state
 		return string.format(
-			"Flight: craft %d  alt %.0f m  v %.1f m/s  fuel %.0f kg  stage %d/%d",
+			"Flight: craft %d  alt %.0f m  v %.1f m/s  fuel %.0f kg  stage %d/%d  %s",
 			craftId or 0,
 			Vec3d.length(s.pos) - Bodies.get(s.bodyId).Radius,
 			Vec3d.length(s.vel),
 			FlightModel.totalFuel(craft),
 			craft.stageIndex - 1,
-			#craft.stages
+			#craft.stages,
+			if rails then "ON RAILS" else string.format("idle %.1f s", idleTime) -- CHANGED (Phase 5)
 		)
 	end)
 end
@@ -742,6 +947,8 @@ function FlightController.Start()
 	Remotes.event("PartsDestroyed").OnClientEvent:Connect(onDestroyed)
 	Remotes.event("CraftRemoved").OnClientEvent:Connect(onRemoved)
 	Remotes.event("FlightEnd").OnClientEvent:Connect(onFlightEnd) -- CHANGED (Phase 3)
+	Remotes.event("CraftRails").OnClientEvent:Connect(onCraftRails) -- CHANGED (Phase 5)
+	Remotes.event("CraftOffRails").OnClientEvent:Connect(onCraftOffRails)
 
 	RunService.PreSimulation:Connect(function(dt: number)
 		local t0 = os.clock()
@@ -755,7 +962,8 @@ function FlightController.Start()
 		bindKeys(piloting)
 		-- CHANGED (Phase 2a feedback): everyone aboard a flying craft gets the level camera, not only the pilot
 		local aboardFlying = seatInfo ~= nil and seatInfo.state ~= "Prelaunch"
-		if aboardFlying and chaseEnabled then
+		-- CHANGED (Phase 5): the map view drives the camera while it is open
+		if aboardFlying and chaseEnabled and not MapViewController.isOpen() then
 			ChaseCamera.start(cameraTarget)
 		elseif ChaseCamera.isActive() then
 			ChaseCamera.stop()

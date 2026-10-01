@@ -10,6 +10,9 @@
 	    big pulsing countdown number while the launch countdown runs
 	  * bottom-left CONTROLS card (pilot only), always visible, compact
 	  * a HINT pill above the cluster (setHint); it lives outside the HUD root so it also shows while the HUD is hidden
+	  * CHANGED (Phase 5): an ORBIT panel above the cluster: apoapsis and periapsis (altitude + time to each, "—" when
+	    not applicable) either side of the NAVBALL (UI/Navball), with heading and pitch under them and an
+	    "ON RAILS" pill on the ball while the craft coasts on rails
 
 	Pure view: update(data) renders a HudData snapshot (nil hides the HUD). It is called every frame, so it only
 	writes properties, and only when a value actually changed (a per-property cache); every instance, including a
@@ -24,6 +27,7 @@
 local Players = game:GetService("Players")
 
 local HudData = require(script.Parent.Parent.Render.HudData)
+local Navball = require(script.Parent.Navball) -- CHANGED (Phase 5)
 
 --============================================================================
 -- Tunables
@@ -72,6 +76,13 @@ local STAGE_CARD_HEIGHT = 56
 local MAX_STAGE_CARDS = 5 -- more stages collapse into "+N more"
 local CONTROLS_WIDTH = 300
 local BANNER_Y = 62 -- below the builder's top-centre toast
+-- CHANGED (Phase 5): orbit panel (apoapsis | navball | periapsis) above the cluster
+local ORBIT_PANEL_WIDTH = 470
+local ORBIT_PANEL_HEIGHT = 150
+local ORBIT_PANEL_PADDING = 10
+local ORBIT_PANEL_GAP = 8 -- between the cluster and the orbit panel
+local NAVBALL_SIZE = 130
+local NOT_APPLICABLE = "—" -- shown for an apsis / time that does not exist
 local BANNER_HEIGHT = 48
 local COUNTDOWN_SIZE = 110
 -- Behaviour / formatting
@@ -311,6 +322,29 @@ local function formatSpeed(v: number): string
 	return formatInt(v) .. " m/s"
 end
 
+-- CHANGED (Phase 5): durations for time to apoapsis / periapsis.
+local function formatDuration(seconds: number?): string
+	if seconds == nil or seconds ~= seconds or seconds == math.huge then
+		return NOT_APPLICABLE
+	end
+	local t = math.max(0, seconds :: number)
+	if t < 60 then
+		return string.format("%.1f s", t)
+	elseif t < 3600 then
+		return string.format("%dm %02ds", math.floor(t / 60), math.floor(t % 60))
+	elseif t < 86400 then
+		return string.format("%dh %02dm", math.floor(t / 3600), math.floor(t % 3600 / 60))
+	end
+	return string.format("%dd %02dh", math.floor(t / 86400), math.floor(t % 86400 / 3600))
+end
+
+local function formatApsis(altitude: number?): string
+	if altitude == nil then
+		return NOT_APPLICABLE
+	end
+	return formatDistance(altitude :: number)
+end
+
 local function formatTwr(twr: number): string
 	if twr ~= twr then
 		return "-"
@@ -544,6 +578,63 @@ function FlightHUD.create(): FlightHUD
 	}, false, COLOR_ATMOSPHERE)
 
 	--========================================================================
+	-- CHANGED (Phase 5): orbit panel with the navball, above the cluster
+	--========================================================================
+	local orbitPanel = panel(root, {
+		Name = "Orbit",
+		AnchorPoint = Vector2.new(0.5, 1),
+		Position = UDim2.new(0.5, 0, 1, -(MARGIN + CLUSTER_INNER_HEIGHT + CLUSTER_PADDING * 2 + ORBIT_PANEL_GAP)),
+		Size = UDim2.fromOffset(ORBIT_PANEL_WIDTH, ORBIT_PANEL_HEIGHT),
+	})
+	padding(orbitPanel, ORBIT_PANEL_PADDING)
+	local columnWidth = (ORBIT_PANEL_WIDTH - ORBIT_PANEL_PADDING * 2 - NAVBALL_SIZE) / 2 - 8
+	local function orbitColumn(x: number, align: Enum.TextXAlignment, title: string, timeTitle: string, footer: string)
+		local column = frame(orbitPanel, { Position = UDim2.fromOffset(x, 0), Size = UDim2.new(0, columnWidth, 1, 0) })
+		caption(column, { Position = UDim2.fromOffset(0, 0), Text = title, TextXAlignment = align })
+		local value = label(column, {
+			Position = UDim2.fromOffset(0, 14),
+			Size = UDim2.new(1, 0, 0, 28),
+			Font = FONT_HEAVY,
+			TextSize = 24,
+			TextXAlignment = align,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Text = NOT_APPLICABLE,
+		})
+		caption(column, { Position = UDim2.fromOffset(0, 46), Text = timeTitle, TextXAlignment = align })
+		local time = label(column, {
+			Position = UDim2.fromOffset(0, 60),
+			Size = UDim2.new(1, 0, 0, 20),
+			Font = FONT_BOLD,
+			TextSize = 17,
+			TextXAlignment = align,
+			Text = NOT_APPLICABLE,
+		})
+		caption(column, { Position = UDim2.fromOffset(0, 92), Text = footer, TextXAlignment = align })
+		local foot = label(column, {
+			Position = UDim2.fromOffset(0, 106),
+			Size = UDim2.new(1, 0, 0, 22),
+			Font = FONT_HEAVY,
+			TextSize = 19,
+			TextXAlignment = align,
+			TextColor3 = COLOR_ACCENT_LIGHT,
+			Text = "-",
+		})
+		return value, time, foot
+	end
+	local inner = ORBIT_PANEL_WIDTH - ORBIT_PANEL_PADDING * 2
+	local apText, apTimeText, headingText =
+		orbitColumn(0, Enum.TextXAlignment.Left, "APOAPSIS", "TIME TO AP", "HEADING")
+	local peText, peTimeText, pitchText =
+		orbitColumn(inner - columnWidth, Enum.TextXAlignment.Right, "PERIAPSIS", "TIME TO PE", "PITCH")
+	local navballHolder = frame(orbitPanel, {
+		Name = "NavballHolder",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(NAVBALL_SIZE, NAVBALL_SIZE),
+	})
+	local navball = Navball.create(navballHolder, NAVBALL_SIZE)
+
+	--========================================================================
 	-- Bottom right: stage stack
 	--========================================================================
 	local stagePanel = panel(root, {
@@ -762,7 +853,13 @@ function FlightHUD.create(): FlightHUD
 	local hint = frame(canvas, {
 		Name = "Hint",
 		AnchorPoint = Vector2.new(0.5, 1),
-		Position = UDim2.new(0.5, 0, 1, -(MARGIN + CLUSTER_INNER_HEIGHT + CLUSTER_PADDING * 2 + 10)),
+		-- CHANGED (Phase 5): above the orbit panel
+		Position = UDim2.new(
+			0.5,
+			0,
+			1,
+			-(MARGIN + CLUSTER_INNER_HEIGHT + CLUSTER_PADDING * 2 + ORBIT_PANEL_GAP + ORBIT_PANEL_HEIGHT + 10)
+		),
 		Size = UDim2.fromOffset(0, 32),
 		AutomaticSize = Enum.AutomaticSize.X,
 		BackgroundColor3 = COLOR_PANEL,
@@ -895,6 +992,19 @@ function FlightHUD.create(): FlightHUD
 			set(pressureText, "TextColor3", COLOR_TEXT_DIM)
 			set(pressureFill, "Size", UDim2.fromScale(0, 1))
 		end
+
+		-- CHANGED (Phase 5): orbit panel and navball
+		set(apText, "Text", formatApsis(data.apoapsis))
+		set(peText, "Text", formatApsis(data.periapsis))
+		local pe = data.periapsis
+		set(peText, "TextColor3", if pe ~= nil and pe < 0 then COLOR_BAD else COLOR_TEXT)
+		set(apTimeText, "Text", formatDuration(data.timeToApoapsis))
+		set(peTimeText, "Text", formatDuration(data.timeToPeriapsis))
+		set(orbitPanel, "Visible", data.attitude ~= nil)
+		local heading, pitch = navball.update(data.attitude, data.horizon, data.velocity)
+		navball.setRails(data.onRails)
+		set(headingText, "Text", string.format("%03d°", math.floor(heading + 0.5) % 360))
+		set(pitchText, "Text", string.format("%+d°", math.floor(pitch + 0.5)))
 
 		-- Stage stack
 		set(craftNameText, "Text", data.craftName)

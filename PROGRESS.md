@@ -4,19 +4,75 @@
 |---|---|
 | 0: Project setup and engine spikes | **Done. All spikes S1–S12 recorded in DECISIONS.md; Q1 answered (A)** |
 | 1: Base and builder | **Built (Plane Crazy rework). Waiting for Steamy's playtest** |
-| 2a: Flight in the pocket (fly, stage, crash) | **Built. Waiting for Steamy's playtest** |
+| 2a: Flight in the pocket (fly, stage, crash) | **Done** (played and tuned with Steamy; part remodel D34) |
 | 2b: Chutes, legs, landing rebase, recovery | Skipped for now (Steamy) |
-| 3: Multiplayer crafts | Not started |
+| 3: Multiplayer crafts | **Built. Waiting for Steamy's playtest** (D35) |
 | 4: Scaled space and visuals | Started early: scaled-space bodies, sky and lighting came with 2a (D26) |
-| 5: Orbits, rails, map, navball | Not started |
+| 5: Orbits, rails, map, navball | **Built. Waiting for Steamy's playtest** (D36) |
 | 6: EVA, bubbles, boarding | Not started |
 | 7: Time warp | Not started |
 | 8: Surface terrain | Not started |
 | 9: Polish and backlog | Not started |
+| 10: Effects (Steamy) | Not started: engine plumes, smoke, explosions, staging and separation, re-entry heat, and the rest of the rocket effects |
+| 11: UI renovation (Steamy) | Not started: a new look for the builder, flight HUD, map and menus |
 
 Phase 2 is split into 2a/2b so you can playtest halfway through (agreed with Steamy).
 
 ---
+
+## Phase 3: what was built (see D35)
+
+- **Bandwidth:** each player hears about nearby rockets 20 times a second, rockets around the same planet 2 times a second, and everything else every 2 seconds. It's capped at 20 KB/s per player, and F3 shows your share.
+- **Remote rockets** move smoothly. If updates stop coming, they keep coasting briefly, then freeze.
+- **Markers** show the rocket's name (owner) and distance when it's too far to draw. They hide behind planets.
+- **Puppets:** you can see other players sitting in their rockets, even when the rockets are in a different flight area from yours.
+- **Leaving the seat after launch:** the server keeps flying the rocket, with the throttle cut. Sitting back in the pod takes control again.
+- **Passengers:** they ride along on External Seats.
+- **Late joiners** see every rocket, including rockets sitting on pads.
+
+## Phase 3: how to test (Test > Clients and Servers, 4 players)
+
+1. **A flies with B aboard:**
+   - A rolls out (auto-seated), then presses F (the rocket goes back to the pad).
+   - B sits on an External Seat. A sits in the pod again.
+   - Both should launch together, and B gets the passenger HUD. Space ignites.
+2. **C at the base**, near the pad: C is not pulled into the rocket. The launch looks smooth, and B's puppet is visible in the seat.
+3. **Far away:** past about 3–30 km, the rocket becomes a marker with name and distance. It hides behind the planet.
+4. **C launches separately:** A and C see each other's rockets.
+5. **Hand-over:**
+   - After ignition, A presses F. The rocket coasts with the flames out.
+   - A sits back in the pod and gets control again, with the right stage and fuel.
+   - Also try A dying, and A leaving the game.
+6. **Late joiner D:** joins mid-flight and sees every rocket, marker and puppet.
+7. **F3 on every client:** "Streams in: CraftStates … KB/s" stays at or below 20.
+
+## Phase 5: what was built (see D36)
+
+- **Orbit maths** (Kepler) and **"on rails" coasting:**
+  - When you're out of the air, not burning and not steering for 0.5 s, the rocket follows its exact orbit. No network updates are sent and there's no drift.
+  - Any key or thrust puts you back in normal flight.
+- **Gravity zones:** moving into and out of Dent's zone works in both directions while coasting.
+- **Debris:** orbiting debris stays. Falling debris far from everyone is cleaned up.
+- **HUD:** apoapsis and periapsis with the time to each, plus a **navball** with prograde and retrograde markers and heading and pitch.
+- **Map view (M):**
+  - Shows Kablamo, Dent, your orbit, other rockets' orbits, Ap/Pe markers, and the predicted path into and out of Dent's zone.
+  - Drag to turn, the wheel zooms, click to focus. M or Esc closes it.
+
+## Phase 5: how to test
+
+1. Sit in your rocket on the pad and type `/orbit 15`. In about half a second the navball shows **ON RAILS**.
+   - Ap and Pe both read about 15 km, and their timers count down.
+   - F3: network traffic drops.
+2. Press W: rails end right away. Let go: rails resume after about 0.5 s. With SAS on, it holds its attitude on rails.
+3. Press **M** in orbit: you should see your orbit as a cyan circle, Dent with its zone and orbit, and Ap/Pe markers.
+   - Drag, scroll and click all work, and you can still steer.
+   - M closes the map.
+4. **Navball:** pitch and yaw. Heading and pitch read sensibly, and prograde follows your velocity.
+5. **Dent:**
+   - Burn prograde until the map shows an orange path into Dent's zone. Coast, and the HUD body pill switches to Dent.
+   - `/orbit 10 dent`, then burn to escape and watch it switch back to Kablamo.
+6. **Debris:** stage a booster in orbit; it stays, and a second player sees it.
+7. **Late join:** coasting rockets show up right away for new players.
 
 ## Phase 2a: what was built
 
