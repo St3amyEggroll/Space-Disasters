@@ -18,6 +18,11 @@
 	Settings/Keybinds (Ctrl+Z stays fixed). While UIState.isInputBlocked() (main menu or a dialog) keys and clicks
 	are ignored and no ghost or hover highlight is shown. BuildController.performAction(actionId) runs any Build
 	action (or "Undo") exactly like its key, for touch buttons.
+
+	CHANGED (Phase 11, builder UI): the KSP-style BuildUI asks before Clear and before overwriting / replacing a save,
+	gets per-stage chips (engines, decouplers, chutes) and burn times for its staging list, has rotate / tilt buttons
+	(onAction -> performAction), and while the mouse is over one of its panels no ghost or hover highlight is shown
+	and clicks do not build.
 ]]
 
 local Players = game:GetService("Players")
@@ -118,9 +123,20 @@ local function updateStats()
 	local props = MassProps.compute(design)
 	local stageStats = MassProps.stageStats(graph, GameConfig.G0, Bodies.get(Bodies.HOMEWORLD).SurfaceGravity)
 	local totalVac, totalAsl = MassProps.totalDeltaV(stageStats)
-	local rows = {}
+	local rows: { BuildUI.StageRow } = {}
 	for _, stat in stageStats do
-		table.insert(rows, { stage = stat.stage, dvVac = stat.dvVac, dvAsl = stat.dvAsl, twrAsl = stat.twrAsl })
+		-- CHANGED (Phase 11): what the stage does, for the staging list's chips (stat.stage indexes graph.stages)
+		local stage = graph.stages[stat.stage]
+		table.insert(rows, {
+			stage = stat.stage,
+			dvVac = stat.dvVac,
+			dvAsl = stat.dvAsl,
+			twrAsl = stat.twrAsl,
+			burnTime = stat.burnTime,
+			engines = if stage then #stage.ignite else 0,
+			decouplers = if stage then #stage.decouple else 0,
+			chutes = if stage then #stage.deploy else 0,
+		})
 	end
 	local warnings = table.clone(graph.warnings)
 	if #design.blocks == 0 then
@@ -373,8 +389,8 @@ end
 
 local function updateGhosts()
 	local info = plotInfo
-	-- CHANGED (Phase 11): no ghost while a menu or dialog is open
-	if not active or tool ~= "Build" or info == nil or UIState.isInputBlocked() then
+	-- CHANGED (Phase 11): no ghost while a menu or dialog is open, or while the mouse is over the builder UI
+	if not active or tool ~= "Build" or info == nil or UIState.isInputBlocked() or ui.isPointerOverUI() then
 		hideGhosts()
 		return
 	end
@@ -400,7 +416,8 @@ local function updateGhosts()
 end
 
 local function updateHover()
-	if not active or tool == "Build" or UIState.isInputBlocked() then -- CHANGED (Phase 11): or a menu / dialog
+	-- CHANGED (Phase 11): or a menu / dialog, or the mouse over the builder UI
+	if not active or tool == "Build" or UIState.isInputBlocked() or ui.isPointerOverUI() then
 		hoverBox.Adornee = nil
 		return
 	end
@@ -685,6 +702,10 @@ function BuildController.Init()
 		onBoarding = function(mode: string)
 			remotes.SetBoardingPermission:FireServer(mode)
 		end,
+		-- CHANGED (Phase 11): the toolbar's rotate / tilt buttons
+		onAction = function(actionId: string)
+			BuildController.performAction(actionId)
+		end,
 	})
 	ui.setSelectedPart(selectedPart)
 	ui.setSelectedColor(selectedColor)
@@ -729,6 +750,9 @@ function BuildController.Start()
 			return
 		end
 		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			if ui.isPointerOverUI() then
+				return -- CHANGED (Phase 11): a click on a builder panel never builds behind it
+			end
 			if tool == "Delete" then
 				remove()
 			elseif tool == "Paint" then
