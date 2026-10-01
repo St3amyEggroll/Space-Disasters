@@ -172,12 +172,6 @@ function RemoteCraftRenderer.craftIds(): { number }
 	return ids
 end
 
--- CHANGED (Phase 5): owner of a craft (0 when unknown).
-function RemoteCraftRenderer.ownerOf(craftId: number): number
-	local entry = entries[craftId]
-	return if entry then entry.ownerUserId else 0
-end
-
 function RemoteCraftRenderer.design(craftId: number): Design?
 	local entry = entries[craftId]
 	return if entry then entry.design else nil
