@@ -1167,7 +1167,7 @@ end
 function MapViewController.Init()
 	DebugOverlay.addLine("map", 24, function()
 		if not isOpen then
-			return "Map: closed (M)"
+			return `Map: closed ({Keybinds.label("MapView")})` -- CHANGED (Phase 11): the current map key, not a fixed M
 		end
 		local f = focus
 		return string.format(
