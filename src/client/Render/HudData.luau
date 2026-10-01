@@ -3,6 +3,8 @@
 	HudData
 	The flight HUD's input, produced by FlightController.hudData() every frame while the local player is aboard a
 	craft (pilot or passenger), nil otherwise. Pure data: the HUD never reads the simulation directly.
+	CHANGED (Phase 11): isOwner (End Flight vs Leave Flight), legs (LEGS lamp), fuel (FUEL gauge) and orbitMode
+	(the speed plate's automatic Surface / Orbit mode) for the KSP-style HUD.
 ]]
 
 export type StageInfo = {
@@ -40,6 +42,12 @@ export type HudData = {
 	attitude: CFrame?, -- craft axes -> universe axes (navball); nil hides the navball
 	horizon: CFrame?, -- local horizon frame (X east, Y up, Z north) in universe axes
 	velocity: Vector3?, -- orbital velocity, universe axes (prograde / retrograde markers)
+	-- CHANGED (Phase 11): KSP-style HUD
+	isOwner: boolean, -- the local player owns this craft (owner or pilot: End Flight; anyone else: Leave Flight)
+	hasLegs: boolean, -- the craft has landing legs
+	gearDown: boolean, -- landing legs deployed (FlightModel.FLAG_GEAR_UP clear)
+	fuel: number?, -- 0..1 fuel left in the craft's tanks; nil when unknown (passengers in flight)
+	orbitMode: boolean, -- above the altitude where the speed display switches from Surface to Orbit (HudMath)
 }
 
 -- ModuleScripts must return exactly one value; this module only exports types.

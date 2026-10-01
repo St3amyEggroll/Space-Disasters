@@ -28,6 +28,17 @@
 	    server-simulated craft takes it back: FlightStart carries the current state plus a `resume` table (stage
 	    list and index, ignited engines, fuel left) so the client continues exactly where the server was.
 	  * The join snapshot moved to CraftService (RequestSnapshot).
+
+	CHANGED (Phase 11): End Flight (remote EndFlight, from the flight HUD's confirmation dialog; there is no pause
+	menu). The craft is the one whose seat the sender sits in.
+	  * Its pilot (pilot seat, or the client simulating it) or its owner aboard ends the flight for EVERYONE: every
+	    crew member and every player in its flight pocket is unseated, stood at their own plot spawn by the server
+	    and moved to the base pocket with an identity PocketTransfer (exactly like the pilot stepping off the pad in
+	    returnToPad), the craft is taken off rails and removed (CraftService.remove: CraftRemoved for every client)
+	    and its flight pocket released. The others are told "Flight ended by <name>". Works the same for a craft
+	    still on its pad (Prelaunch, base pocket: no transfer needed) or not yet ignited. The design in the
+	    owner's hangar is untouched (Roll Out never clears it).
+	  * Anyone else (a passenger) only leaves: they alone go back to their plot; the craft flies on.
 ]]
 
 local Players = game:GetService("Players")
@@ -49,6 +60,7 @@ local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local CraftService = require(script.Parent.CraftService)
 local CrewService = require(script.Parent.CrewService)
+local PlotService = require(script.Parent.PlotService) -- CHANGED (Phase 11): End Flight sends players home
 local PocketService = require(script.Parent.PocketService)
 local RailsService = require(script.Parent.RailsService) -- CHANGED (Phase 5)
 local Rails = require(ReplicatedStorage.Shared.Sim.Rails) -- CHANGED (Phase 5)
@@ -71,6 +83,7 @@ local LAUNCH_THROTTLE = 1
 local SEATED_START_DELAY_S = 0.3 -- s between a pilot sitting down and the flight starting
 local PAD_STEP_OFF = 6 -- studs beyond the pad edge where a pilot who leaves the seat on the pad is put
 local RAILS_HANDOFF_DT = 0.05 -- CHANGED (Phase 5): s before a pilot's first off-rails state the rail is validated at
+local END_FLIGHT_COOLDOWN_S = 1 -- CHANGED (Phase 11): EndFlight requests closer together than this are ignored
 --============================================================================
 
 local FlightService = {}
@@ -80,6 +93,8 @@ type PendingTransfer = { player: Player, m: CFrame, deadline: number }
 
 local launching: { [number]: boolean } = {}
 local returning: { [number]: boolean } = {} -- CHANGED (Phase 3): re-entrancy guard for returnToPad
+local ending: { [number]: boolean } = {} -- CHANGED (Phase 11): re-entrancy guard for endFlight
+local lastEndFlight: { [Player]: number } = {} -- CHANGED (Phase 11): EndFlight rate limit
 local lastValid: { [number]: { state: FlightModel.CraftState, fuel: number } } = {}
 local strikes: { [number]: Strikes } = {}
 local pendingTransfers: { [number]: PendingTransfer } = {}
@@ -512,7 +527,7 @@ end
 
 -- The pilot of `record` is no longer in its pilot seat. `gone` = they left the game.
 local function pilotLeft(record: CraftRecord, player: Player, gone: boolean)
-	if record.pilot ~= player or returning[record.id] then
+	if record.pilot ~= player or returning[record.id] or ending[record.id] then -- CHANGED (Phase 11): ending guard
 		return
 	end
 	if canReturnToPad(record) then
@@ -721,6 +736,100 @@ local function onTransferAck(player: Player, transferId: unknown)
 	end
 end
 
+--============================================================================
+-- CHANGED (Phase 11): End Flight
+--============================================================================
+
+-- The craft record whose seat (any seat) the player occupies, or nil.
+local function seatedCraft(player: Player): CraftRecord?
+	local humanoid = humanoidOf(player)
+	local seat = if humanoid then humanoid.SeatPart else nil
+	local model = if seat then craftModelOf(seat) else nil
+	local id = if model then model:GetAttribute("CraftId") else nil
+	local record = if type(id) == "number" then CraftService.get(id) else nil
+	if record == nil or record.model ~= model then
+		return nil
+	end
+	return record
+end
+
+-- Sends one player back to their plot: unseated, stood at their plot spawn by the server, and (from a flight pocket)
+-- moved to the base pocket with the identity transform, like the pilot stepping off the pad in returnToPad (the
+-- client must not move an already placed character a second time).
+local function sendHome(player: Player, fromPocket: number?)
+	local humanoid = humanoidOf(player)
+	local character = player.Character
+	if humanoid and character then
+		unseat(humanoid)
+		character:PivotTo(PlotService.spawnCFrame(player))
+	end
+	if fromPocket then
+		sendTransfer(player, fromPocket, PocketService.BASE_POCKET_ID, CFrame.identity, 0)
+	end
+end
+
+-- The pilot (or the owner aboard) ends the flight: everyone aboard goes home and the craft is removed.
+local function endFlight(record: CraftRecord, ender: Player)
+	local id = record.id
+	if ending[id] or returning[id] or launching[id] then
+		return
+	end
+	ending[id] = true
+	RailsService.takeOffRails(record) -- no-op unless the craft is on rails
+	local pocketId = record.pocketId
+	local model = record.model
+	local aboard: { Player } = if model then crewOf(model) else {}
+	if pocketId then
+		for _, player in PocketService.playersIn(pocketId) do
+			if not table.find(aboard, player) then
+				table.insert(aboard, player)
+			end
+		end
+	end
+	if not table.find(aboard, ender) then
+		table.insert(aboard, ender)
+	end
+	-- nobody pilots it any more: the deferred seat checks of the unseating below must not hand it to the server
+	record.pilot = nil
+	record.serverSim = false
+	for _, player in aboard do
+		sendHome(player, pocketId)
+	end
+	lastValid[id] = nil
+	strikes[id] = nil
+	CraftService.remove(id) -- CraftRemoved: every client drops its simulation / copy of the craft
+	if pocketId then
+		PocketService.releaseFlightPocket(pocketId) -- its release listener finds the craft already gone
+	end
+	for _, player in aboard do
+		if player ~= ender and player.Parent ~= nil then
+			remotes.Notify:FireClient(player, `Flight ended by {ender.DisplayName}`, "Info")
+		end
+	end
+	ending[id] = nil
+end
+
+local function onEndFlight(player: Player)
+	local now = os.clock()
+	local last = lastEndFlight[player]
+	if last and now - last < END_FLIGHT_COOLDOWN_S then
+		return
+	end
+	lastEndFlight[player] = now
+	local record = seatedCraft(player)
+	if record == nil or record.isDebris or record.state == "Destroyed" then
+		return
+	end
+	local isPilot = record.pilot == player or pilotSeatCraft(player) == record
+	local isOwner = record.ownerUserId == player.UserId
+	if isPilot or isOwner then
+		endFlight(record, player)
+	else
+		-- a passenger only leaves; the craft flies on (or stays on its pad)
+		sendHome(player, record.pocketId)
+	end
+end
+
 -- Hands a player's piloted crafts to the server simulation (pilot left, died, or lost the craft).
 -- CHANGED (Phase 3): through pilotLeft (cut throttle, FlightEnd; before ignition: back to the pad).
 local function releasePilot(player: Player, gone: boolean)
@@ -745,6 +854,7 @@ function FlightService.Init()
 			"PocketTransferAck",
 			"Notify",
 			"FlightEnd", -- CHANGED (Phase 3)
+			"EndFlight", -- CHANGED (Phase 11)
 		}
 	do
 		remotes[name] = Remotes.event(name)
@@ -757,10 +867,12 @@ function FlightService.Start()
 	remotes.ReportPartsDestroyed.OnServerEvent:Connect(onReportDestroyed)
 	remotes.LeaveSeat.OnServerEvent:Connect(onLeaveSeat)
 	remotes.PocketTransferAck.OnServerEvent:Connect(onTransferAck)
+	remotes.EndFlight.OnServerEvent:Connect(onEndFlight) -- CHANGED (Phase 11)
 	Remotes.unreliable("PilotState").OnServerEvent:Connect(onPilotState)
 
 	Players.PlayerRemoving:Connect(function(player: Player)
 		releasePilot(player, true)
+		lastEndFlight[player] = nil -- CHANGED (Phase 11)
 	end)
 	local function watchCharacter(player: Player, character: Model)
 		local humanoid = character:WaitForChild("Humanoid", 10)
