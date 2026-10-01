@@ -5,6 +5,7 @@
 	  /orbit <altKm> [body]   put your craft in a circular orbit (body: kablamo/homeworld or dent/moon)
 	  /fuel                   refill your craft
 	  /base                   go back to your plot
+	  /time <hour>            set the time of day at the base (0..24, 12 = noon; everyone sees it)
 	"Your craft" = the craft you pilot, else the craft whose pocket you are in.
 ]]
 
@@ -18,6 +19,7 @@ local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 local Protocol = require(ReplicatedStorage.Shared.Net.Protocol)
 local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
+local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local CraftService = require(script.Parent.CraftService)
 local PlotService = require(script.Parent.PlotService)
@@ -134,6 +136,22 @@ local function toBase(player: Player)
 	player:SetAttribute("PocketId", 0)
 end
 
+-- CHANGED (Phase 2a playtest 4): jump to a time of day to check day / night / sunsets.
+local function setTime(player: Player, args: { string })
+	local hour = tonumber(args[2])
+	if hour == nil or hour < 0 or hour > 24 then
+		notify:FireClient(player, "Usage: /time <hour 0-24>  (12 = noon, 0 = midnight)", "Error")
+		return
+	end
+	local offset = Universe.sunOffsetForBaseHour(hour, UniverseTime.now())
+	Universe.setSunPhaseOffset(offset)
+	ReplicatedStorage:WaitForChild("Globals"):SetAttribute(Universe.SUN_OFFSET_ATTRIBUTE, offset)
+	notify:FireClient(
+		player,
+		string.format("Time at the base set to %02d:%02d", math.floor(hour), math.floor(hour % 1 * 60))
+	)
+end
+
 local function onChatted(player: Player, message: string)
 	if string.sub(message, 1, #PREFIX) ~= PREFIX or not allowed(player) then
 		return
@@ -146,6 +164,8 @@ local function onChatted(player: Player, message: string)
 		refuel(player)
 	elseif command == "base" then
 		toBase(player)
+	elseif command == "time" then
+		setTime(player, args)
 	end
 end
 

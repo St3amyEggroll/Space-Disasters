@@ -97,9 +97,36 @@ function Universe.soiTransition(bodyId: number, pos: Vec3d, ut: number): (number
 	return bodyId, pos
 end
 
+-- CHANGED (Phase 2a playtest 4): debug "/time" shifts the sun's phase (server and every client apply the same
+-- offset, replicated as the Globals attribute SUN_OFFSET_ATTRIBUTE). Orbits and UT are untouched.
+local sunPhaseOffset = 0
+Universe.SUN_OFFSET_ATTRIBUTE = "SunPhaseOffset"
+
+function Universe.setSunPhaseOffset(radians: number)
+	if radians == radians and math.abs(radians) < math.huge then
+		sunPhaseOffset = radians
+	end
+end
+
+-- The sun's angle around +Y (from +X toward +Z) at UT. 0 = noon at the base (lat 0 / lon 0).
+function Universe.sunAngle(ut: number): number
+	return SUN_PHASE_AT_UT0 + sunPhaseOffset + 2 * math.pi * ut / GameConfig.DAY_LENGTH_S
+end
+
+-- Local time of day at the base (hours, 0..24, 12 = noon) at UT.
+function Universe.baseHour(ut: number): number
+	return (Universe.sunAngle(ut) / (2 * math.pi) * 24 + 12) % 24
+end
+
+-- Phase offset that makes the base's local time `hour` at UT.
+function Universe.sunOffsetForBaseHour(hour: number, ut: number): number
+	local wanted = (hour - 12) / 24 * 2 * math.pi
+	return wanted - (Universe.sunAngle(ut) - sunPhaseOffset)
+end
+
 -- Unit vector from the universe origin toward the sun at UT (universe axes).
 function Universe.sunDirection(ut: number): Vec3d
-	local angle = SUN_PHASE_AT_UT0 + 2 * math.pi * ut / GameConfig.DAY_LENGTH_S
+	local angle = Universe.sunAngle(ut)
 	local c = math.cos(SUN_ELEVATION)
 	return Vec3d.new(c * math.cos(angle), math.sin(SUN_ELEVATION), c * math.sin(angle))
 end

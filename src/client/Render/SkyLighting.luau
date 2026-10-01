@@ -27,18 +27,13 @@
 	Atmosphere: CHANGED (Phase 2a playtest): NONE. Whenever an Atmosphere instance exists Roblox draws its own
 	procedural sky, even at Density 0 (S4's "the skybox shows at Density 0" turned out wrong in play): a sky with a
 	fixed grey "below the horizon" half that split the screen and kept space blue. Any Atmosphere in Lighting is
-	removed, and StarSky paints the whole sky: a flat day colour blended over black space with stars.
+	removed.
 
-	Sky: CelestialBodiesShown = false (ScaledSpace draws the sun; Roblox's sun/moon discs must not show). The star
-	skybox is fixed to universe axes, so in the pocket it is rotated by frame.refRotInv (universe -> pocket).
-	ASSUMPTION (undocumented engine convention): Sky.SkyboxOrientation uses the same convention as
-	BasePart.Orientation, i.e. degrees of CFrame:ToOrientation() (Y-X-Z order). If the stars turn the wrong way in
-	Studio, flip SKYBOX_USE_INVERSE (uses refRot instead of refRotInv); if they turn about the wrong axes, the
-	engine uses another Euler order and skyboxOrientationDegrees() must change.
-
-	Sky blend (Phase 2a playtest): day = (sun above the real horizon) x (air left above you) x (not in a planet's
-	shadow); the day colour is blue, warming toward sunset. Flight pockets are horizon-aligned low down (D31), so
-	ctx.sunDirection.Y is the sun's true elevation there.
+	Sky (CHANGED Phase 2a playtest 4): CelestialBodiesShown = false (ScaledSpace draws the sun). Roblox's own skybox
+	stays UPRIGHT (SkyboxOrientation 0): near the ground it is the sky, blue with clouds by day and dark with
+	Roblox's stars at night (flight pockets are horizon-aligned there, D31, so Roblox's day/night follows the real
+	sun). Space is drawn in front of it by SkyCube (black with stars, fixed to universe axes). Painting the Sky's
+	own faces with EditableImages did not work in Studio, and rotating the stock skybox stood its clouds on end.
 
 	Lighting.Technology (Future) is set in the place file and never touched here.
 ]]
@@ -49,7 +44,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local RenderContext = require(script.Parent.RenderContext)
-local StarSky = require(script.Parent.StarSky)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 
@@ -101,22 +95,12 @@ local GROUND_AMBIENT = Color3.fromRGB(40, 40, 44) -- sea level, daylight
 local GROUND_OUTDOOR_AMBIENT = Color3.fromRGB(128, 128, 132)
 local GROUND_BRIGHTNESS = 2.5
 
--- Sky colour (StarSky): CHANGED (Phase 2a playtest)
-local SKY_DAY_COLOR = Color3.fromRGB(110, 165, 235) -- daylight sky, sun high
-local SKY_SUNSET_COLOR = Color3.fromRGB(235, 150, 110) -- sky colour with the sun at the horizon
-local SKY_SUNSET_SUN_Y = 0.3 -- sun elevation (sin) above which the sky is fully SKY_DAY_COLOR
-local SKY_NIGHT_SUN_Y = -0.08 -- sun elevation (sin) at or below which the sky is night (space)
-local SKY_FULL_DAY_SUN_Y = 0.1 -- ... and at or above which it is fully day
-local SKY_AIR_EXPONENT = 0.7 -- day factor *= air ^ this (air: 1 at sea level, 0 at the atmosphere top)
-
 -- Environment / sky
 local ENVIRONMENT_DIFFUSE_SCALE = 0.4
 local ENVIRONMENT_SPECULAR_SCALE = 0.6
 local FOG_END = 1e6
-local STAR_COUNT = 0 -- CHANGED (Phase 2a playtest): Roblox's own night stars would turn with the pocket
+local STAR_COUNT = 3000 -- Roblox's own night stars (ground level at night; SkyCube draws space)
 local MOON_ANGULAR_SIZE = 0.5 -- degrees; the disc is hidden anyway (CelestialBodiesShown = false)
-local SKYBOX_USE_INVERSE = false -- flip if the star sky rotates the wrong way in Studio
-local SKYBOX_WRITE_THRESHOLD_DEG = 0.05
 
 -- Write thresholds (avoid touching Lighting properties that did not really change)
 local NUMBER_EPSILON = 1e-3
@@ -142,7 +126,6 @@ local SkyLighting = {}
 
 local initialized = false
 local sky: Sky? = nil
-local lastSkyboxRot: CFrame? = nil
 
 local physicalBodies = Bodies.physicalBodies()
 local scratchSun = Vec3d.zero()
@@ -470,12 +453,13 @@ function SkyLighting.init()
 	local newSky = adoptChild("Sky") :: Sky
 	newSky.Name = "SkyLightingSky"
 	newSky.CelestialBodiesShown = false
-	newSky.StarCount = STAR_COUNT -- 0: StarSky paints the stars
+	newSky.StarCount = STAR_COUNT
+	-- CHANGED (Phase 2a playtest 4): Roblox's skybox stays upright (it is the daytime sky near the ground;
+	-- rotating it to universe axes stood the clouds on end). Space is drawn by SkyCube.
+	newSky.SkyboxOrientation = Vector3.zero
 	newSky.MoonTextureId = ""
 	newSky.MoonAngularSize = MOON_ANGULAR_SIZE
 	sky = newSky
-	lastSkyboxRot = nil
-	StarSky.init()
 
 	-- No Atmosphere at all (header): remove any the place or another script adds.
 	for _, child in Lighting:GetChildren() do
@@ -561,16 +545,6 @@ local function updateLighting(air: number, shadow: number)
 	end
 end
 
-local function updateSkybox(target: Sky, frame: Frames.Frame)
-	local rot = if SKYBOX_USE_INVERSE then frame.refRot else frame.refRotInv
-	local last = lastSkyboxRot
-	if last ~= nil and rotationDeltaDeg(last, rot) <= SKYBOX_WRITE_THRESHOLD_DEG then
-		return
-	end
-	target.SkyboxOrientation = skyboxOrientationDegrees(rot)
-	lastSkyboxRot = rot
-end
-
 function SkyLighting.update(ctx: RenderContext.RenderContext)
 	if not initialized then
 		SkyLighting.init()
@@ -584,11 +558,9 @@ function SkyLighting.update(ctx: RenderContext.RenderContext)
 
 	local currentSky = sky
 	if currentSky then
-		updateSkybox(currentSky, ctx.frame)
-		local sunY = ctx.sunDirection.Y
-		local day = smoothstep(SKY_NIGHT_SUN_Y, SKY_FULL_DAY_SUN_Y, sunY) * air ^ SKY_AIR_EXPONENT * (1 - shadow)
-		local dayColor = SKY_SUNSET_COLOR:Lerp(SKY_DAY_COLOR, smoothstep(0, SKY_SUNSET_SUN_Y, sunY))
-		StarSky.update(currentSky, day, dayColor)
+		if currentSky.SkyboxOrientation ~= Vector3.zero then
+			currentSky.SkyboxOrientation = Vector3.zero
+		end
 	end
 end
 

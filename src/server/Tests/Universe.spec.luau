@@ -122,4 +122,17 @@ return function(t: TestKit.Context)
 		local rot = Universe.pocketRotation(Bodies.HOMEWORLD, low, ut)
 		t.expectNear(rot.UpVector.Z, 1, 1e-6)
 	end)
+	-- CHANGED (Phase 2a playtest 4): /time
+	t.test("time of day at the base follows the sun offset", function()
+		local ut = 500
+		for _, hour in { 0, 6, 12, 18, 23.5 } do
+			Universe.setSunPhaseOffset(Universe.sunOffsetForBaseHour(hour, ut))
+			t.expectNear(Universe.baseHour(ut), hour % 24, 1e-9)
+		end
+		Universe.setSunPhaseOffset(Universe.sunOffsetForBaseHour(12, ut))
+		t.expectTrue(Universe.sunDirection(ut).x > 0.9, "noon: the sun is high over the base (+X)")
+		Universe.setSunPhaseOffset(Universe.sunOffsetForBaseHour(0, ut))
+		t.expectTrue(Universe.sunDirection(ut).x < -0.9, "midnight: the sun is under the base")
+		Universe.setSunPhaseOffset(0)
+	end)
 end

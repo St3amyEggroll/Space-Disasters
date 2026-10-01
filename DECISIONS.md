@@ -274,6 +274,28 @@ The flight camera no longer turns with the rocket.
 - **What we lose:** Roblox's aerial haze on distant parts.
 - **Invisible rocket:** a craft model that reaches the shown pocket after the pocket switch is now un-hidden on arrival. A re-parent can lag the transfer event (S8), and the model kept the hidden state of the pocket it left. In the playtest the rocket flew invisible, with only its seat prompt showing.
 
+### D33. Roblox's sky near the ground, SkyCube for space, `/time` (Steamy, Phase 2a playtest 4)
+**What went wrong:** painting the Sky's faces with EditableImages (D32) did not show in Studio. Roblox fell back to its default cloud skybox, which we were still rotating to universe axes, so the clouds stood on end.
+
+**What changed:**
+- **Near the ground:** Roblox's own skybox stays upright (`SkyboxOrientation` 0) and is the sky.
+  - Flight pockets are horizon-aligned low down (D31), and the sun solve matches the real sun, so Roblox's day/night follows the real sun: blue with clouds by day, dark with Roblox's stars (`StarCount` 3000) at night.
+  - There is still no Atmosphere (D32).
+- **Space is `Render/SkyCube`:** a cube of 54 transparent panels around the camera.
+  - Each panel has an unlit SurfaceGui (`LightInfluence` 0) with a near-black background and a painted star image (EditableImage in an ImageLabel, the engine's main EditableImage route).
+  - The cube is fixed to universe axes, so the stars don't turn with the rocket.
+- **Cube opacity:**
+  - 0 while the true-scale ground is drawn (surface mode), so far ground tiles are never hidden.
+  - 1 above the ground view for bodies without air.
+  - With air: smoothstep from the proxy handover altitude (about 3.2 km) to the atmosphere top.
+- **Cube size:** the half-size is 0.9 × draw distance, between 400 and 2,900 studs. Everything ScaledSpace draws stays inside it.
+- **Low graphics quality:** the engine may cull far panels, and Roblox's sky shows through there.
+- **`/time <hour>` (debug):** sets the base's local time.
+  - It is a sun phase offset replicated as the Globals attribute `SunPhaseOffset`, applied on the server and on every client. Orbits and UT are untouched.
+  - The F3 universe line shows the base time.
+  - A day is still `DAY_LENGTH_S` = 20 minutes.
+- **StarSky (D32) is removed.**
+
 ---
 
 ## Phase 0 spike results

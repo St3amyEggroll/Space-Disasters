@@ -88,7 +88,7 @@ Open the new `SpaceDisasters.rbxl`, click **Connect** in the Rojo plugin, then *
 8. **Look around:** high up, Kablamo should have oceans, continents and clouds. The textures paint in over about 15 seconds, so it starts out a plain colour. Near the ground you should see trees and rocks.
 9. **Crash:** let the pod hit the ground. It breaks, and you respawn on your plot.
 10. **Orbit:** launch again, and once you're flying type `/orbit 15` in chat. The camera's "up" turns to the solar plane. Look for Dent.
-11. **Fuel and base:** try `/fuel` and `/base`.
+11. **Fuel, base and time:** try `/fuel`, `/base`, and `/time 0` (midnight), `/time 6`, `/time 12` (noon).
 12. **F3:** check the pocket, flight and universe lines, and that FPS is OK.
 
 Please paste back anything red in the Output, plus anything that looks or feels wrong.
@@ -208,6 +208,7 @@ These place files already have `Lighting.Technology = Future`, `StreamingEnabled
 - 2026-09-30, Play Solo (Steamy): both bootstraps booted and Studio printed `[Tests] 24 passed, 0 failed` with no errors.
 - 2026-09-30, spikes S1–S10 (Steamy): all ran to completion, including the 2-player S3 and S9. Results are in `DECISIONS.md`. Two harness issues were fixed: S5 started twice on a double click, and the spike lock now waits for every client to finish.
 - 2026-09-30, follow-up spikes S11 (cull distance) and S12 (EditableMesh budget/sharing) (Steamy): results and decisions D10/D11 are in `DECISIONS.md`.
+- 2026-10-01, fourth Phase 2a check (Steamy): the sky was Roblox's default cloud sky turned on its side, and space still wasn't black. Fixed in D33 (Roblox's sky kept upright for the ground; SkyCube draws black starry space; `/time` debug command).
 - 2026-10-01, third Phase 2a flight (Steamy): the sky no longer followed the rocket, but space stayed blue and the ground showed a blue/grey split sky. The rocket was invisible, with only a "Sit" prompt showing. Fixed in D32 (we paint the whole sky; models arriving in your pocket are un-hidden).
 - 2026-10-01, second Phase 2a flight (Steamy): all 79 tests passed in Studio. Problems: the sky split into two halves and followed the rocket; no black space; the engine flame stayed lit at 0% throttle. Fixed in D31.
 - 2026-10-01, first Phase 2a flights (Steamy): spawn on your plot; Roll Out should seat you in the pod (or say you need one); live controls and physics on the pad; a camera that doesn't turn with the rocket (gravity up in the air, the solar plane in space); a smaller planet that looks much better. All done; see D27–D30.

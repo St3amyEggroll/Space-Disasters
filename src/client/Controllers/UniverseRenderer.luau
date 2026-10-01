@@ -5,7 +5,8 @@
 	RenderContext and hand it to every render layer in order:
 	  ScaledSpace          sun, planets and moons as scaled proxies (and the surface-mode handover)
 	  Surface              the tile cap under the camera and the cosmetic Oopsie Point copy
-	  SkyLighting          sun direction, shadow side, atmosphere and planet shadow
+	  SkyCube              black starry space in front of Roblox's sky above the air (CHANGED Phase 2a playtest 4)
+	  SkyLighting          sun direction, shadow side and planet shadow
 	  RemoteCraftRenderer  other crafts in this pocket (interpolated stream)
 
 	All layers live under workspace.ClientUniverse, which exists only on this client.
@@ -24,6 +25,7 @@ local PocketController = require(script.Parent.PocketController)
 local RemoteCraftRenderer = require(script.Parent.RemoteCraftRenderer)
 local RenderContext = require(script.Parent.Parent.Render.RenderContext)
 local ScaledSpace = require(script.Parent.Parent.Render.ScaledSpace)
+local SkyCube = require(script.Parent.Parent.Render.SkyCube)
 local SkyLighting = require(script.Parent.Parent.Render.SkyLighting)
 local Surface = require(script.Parent.Parent.Render.Surface)
 
@@ -137,6 +139,8 @@ local function step(dt: number)
 	timed("Surface", function()
 		Surface.update(ctx, ScaledSpace.isSurfaceMode())
 	end)
+	-- CHANGED (Phase 2a playtest 4): black starry space in front of Roblox's sky
+	SkyCube.update(ctx, ScaledSpace.isSurfaceMode(), ScaledSpace.proxyMinAltitude(ctx.dominantBodyId))
 	timed("SkyLighting", function()
 		SkyLighting.update(ctx)
 	end)
@@ -145,11 +149,12 @@ local function step(dt: number)
 	end)
 
 	lastSummary = string.format(
-		"Universe: near %s  alt %.0f m  %s  draw %d",
+		"Universe: near %s  alt %.0f m  %s  draw %d  base time %05.2f h",
 		Bodies.get(dominantId).DisplayName,
 		ctx.altitude,
 		if ScaledSpace.isSurfaceMode() then "surface" else "scaled",
-		drawDistance
+		drawDistance,
+		Universe.baseHour(ctx.ut)
 	)
 end
 
@@ -174,6 +179,7 @@ function UniverseRenderer.Init()
 
 	SkyLighting.init()
 	Surface.init(surfaceFolder)
+	task.spawn(SkyCube.init, root) -- paints star images (EditableImage)
 	-- EditableMesh creation can yield; the update is a no-op until init finishes.
 	task.spawn(ScaledSpace.init, scaledFolder)
 
@@ -183,6 +189,14 @@ function UniverseRenderer.Init()
 end
 
 function UniverseRenderer.Start()
+	-- CHANGED (Phase 2a playtest 4): follow the server's /time sun offset
+	local globals = ReplicatedStorage:WaitForChild("Globals")
+	local function applySunOffset()
+		local offset = globals:GetAttribute(Universe.SUN_OFFSET_ATTRIBUTE)
+		Universe.setSunPhaseOffset(if type(offset) == "number" then offset else 0)
+	end
+	globals:GetAttributeChangedSignal(Universe.SUN_OFFSET_ATTRIBUTE):Connect(applySunOffset)
+	applySunOffset()
 	RunService:BindToRenderStep(RENDER_STEP_NAME, RENDER_PRIORITY, step)
 end
 
