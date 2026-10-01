@@ -208,10 +208,13 @@ These place files already have `Lighting.Technology = Future`, `StreamingEnabled
 - 2026-09-30, Play Solo (Steamy): both bootstraps booted and Studio printed `[Tests] 24 passed, 0 failed` with no errors.
 - 2026-09-30, spikes S1–S10 (Steamy): all ran to completion, including the 2-player S3 and S9. Results are in `DECISIONS.md`. Two harness issues were fixed: S5 started twice on a double click, and the spike lock now waits for every client to finish.
 - 2026-09-30, follow-up spikes S11 (cull distance) and S12 (EditableMesh budget/sharing) (Steamy): results and decisions D10/D11 are in `DECISIONS.md`.
+- 2026-10-01, second Phase 2a flight (Steamy): all 79 tests passed in Studio. Problems: the sky split into two halves and followed the rocket; no black space; the engine flame stayed lit at 0% throttle. Fixed in D31.
 - 2026-10-01, first Phase 2a flights (Steamy): spawn on your plot; Roll Out should seat you in the pod (or say you need one); live controls and physics on the pad; a camera that doesn't turn with the rocket (gravity up in the air, the solar plane in space); a smaller planet that looks much better. All done; see D27–D30.
 
 ## Known issues
 
+- **Second round of feedback (sky, flames):** fixed in D31. The flight area now follows the planet's horizon, so the sky no longer tilts with the rocket, space turns black and starry, and flames go out at zero throttle. Not yet played in Studio.
+- **Clouds are off:** Roblox doesn't let game scripts paint them (Studio warning), so Kablamo has no cloud layer for now.
 - **The Phase 2a feedback changes (launch flow, camera, smaller and prettier planets) have not been played in Studio yet.** Everything passes the offline checks (formatting, strict types, 79 tests).
 - **Planet textures take a moment:** about 15 s (Kablamo) and 18 s (Dent) of background painting after joining. If they look mirrored inside each square, flip `UV_FLIP_V` in `Biome.luau` (D30).
 - **Water is solid** for now. Landing in the sea counts as landing on ground.

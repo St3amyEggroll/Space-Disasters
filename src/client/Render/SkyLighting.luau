@@ -34,6 +34,11 @@
 	Studio, flip SKYBOX_USE_INVERSE (uses refRot instead of refRotInv); if they turn about the wrong axes, the
 	engine uses another Euler order and skyboxOrientationDegrees() must change.
 
+	CHANGED (Phase 2a feedback): space looks like space. Below SPACE_SKY_AIR (air factor) the Sky shows its normal
+	skybox under the Atmosphere; above, StarSky's black painted star faces (fixed to universe axes like before).
+	Flight pockets are now horizon-aligned low down (D31), so the Atmosphere's horizon, the sun and day/night
+	match the real planet instead of tilting with the rocket.
+
 	Lighting.Technology (Future) is set in the place file and never touched here.
 ]]
 
@@ -43,6 +48,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local RenderContext = require(script.Parent.RenderContext)
+local StarSky = require(script.Parent.StarSky)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 
@@ -116,6 +122,7 @@ local STAR_COUNT = 3000
 local MOON_ANGULAR_SIZE = 0.5 -- degrees; the disc is hidden anyway (CelestialBodiesShown = false)
 local SKYBOX_USE_INVERSE = false -- flip if the star sky rotates the wrong way in Studio
 local SKYBOX_WRITE_THRESHOLD_DEG = 0.05
+local SPACE_SKY_AIR = 0.5 -- air factor (1 at sea level, 0 at the atmosphere top) below which the star sky shows
 
 -- Write thresholds (avoid touching Lighting properties that did not really change)
 local NUMBER_EPSILON = 1e-3
@@ -475,6 +482,7 @@ function SkyLighting.init()
 	newSky.MoonAngularSize = MOON_ANGULAR_SIZE
 	sky = newSky
 	lastSkyboxRot = nil
+	StarSky.init()
 
 	local newAtmosphere = adoptChild("Atmosphere") :: Atmosphere
 	newAtmosphere.Name = "SkyLightingAtmosphere"
@@ -631,6 +639,7 @@ function SkyLighting.update(ctx: RenderContext.RenderContext)
 	local currentSky = sky
 	if currentSky then
 		updateSkybox(currentSky, ctx.frame)
+		StarSky.setSpace(currentSky, air < SPACE_SKY_AIR)
 	end
 end
 

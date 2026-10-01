@@ -100,4 +100,26 @@ return function(t: TestKit.Context)
 		local onPlot = Frames.pointFromWorkspace(baseFrame, plot + Vector3.new(0, 2, 0))
 		t.expectNear(SurfaceHeight.height(Bodies.HOMEWORLD, onPlot), 2, 1e-6)
 	end)
+	-- CHANGED (Phase 2a feedback, D31)
+	t.test("flight pocket up: local vertical in the air, toward the sun in space", function()
+		local home = Bodies.get(Bodies.HOMEWORLD)
+		local ut = 123
+		local low = Vec3d.new(0, 0, home.Radius + 500)
+		local upLow = Universe.pocketUp(Bodies.HOMEWORLD, low, ut)
+		t.expectNear(upLow.z, 1, 1e-9)
+		local high = Vec3d.new(0, 0, home.Radius + 50000)
+		local upHigh = Universe.pocketUp(Bodies.HOMEWORLD, high, ut)
+		local sun = Universe.sunDirection(ut)
+		t.expectNear(Vec3d.dot(upHigh, sun), 1, 1e-9)
+		-- continuous through the blend
+		local previous = upLow
+		for altitude = 500, 20000, 100 do
+			local up = Universe.pocketUp(Bodies.HOMEWORLD, Vec3d.new(0, 0, home.Radius + altitude), ut)
+			t.expectNear(Vec3d.length(up), 1, 1e-9)
+			t.expectTrue(Vec3d.dot(up, previous) > 0.99, "pocket up must change smoothly")
+			previous = up
+		end
+		local rot = Universe.pocketRotation(Bodies.HOMEWORLD, low, ut)
+		t.expectNear(rot.UpVector.Z, 1, 1e-6)
+	end)
 end

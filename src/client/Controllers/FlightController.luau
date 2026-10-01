@@ -473,40 +473,44 @@ local function cameraTarget(): ChaseCamera.Target?
 	if seatInfo == nil then
 		return nil
 	end
-	local model = seatInfo.craftModel
-	local design = CraftBuilder.readDesign(model)
-	local root = CraftDesign.rootBlock(design)
-	local rootModel = if root then CraftBuilder.findBlockModel(model, root.id) else nil
-	local bounds = if rootModel then rootModel.PrimaryPart else nil
+	local com = if sim and craftId == seatInfo.craftId then (sim :: Craft).physics.com else Vector3.zero
 	local position: Vector3
-	if bounds == nil then
-		position = model:GetBoundingBox().Position
+	local craftFrame = PocketController.primaryCraftCFrame()
+	if craftFrame and seatInfo.state ~= "Prelaunch" then
+		-- CHANGED (Phase 2a feedback, D31): the craft turns inside its horizon-aligned pocket
+		position = craftFrame:PointToWorldSpace(com)
 	else
-		-- craft axes are aligned with the pocket (pad and CRAFT_ALIGNED pocket), so the CoM offset adds directly
-		local com = if sim and craftId == seatInfo.craftId then (sim :: Craft).physics.com else Vector3.zero
-		position = (bounds :: BasePart).Position + com
+		local model = seatInfo.craftModel
+		local design = CraftBuilder.readDesign(model)
+		local root = CraftDesign.rootBlock(design)
+		local rootModel = if root then CraftBuilder.findBlockModel(model, root.id) else nil
+		local bounds = if rootModel then rootModel.PrimaryPart else nil
+		position = if bounds then (bounds :: BasePart).Position else model:GetBoundingBox().Position
 	end
 	local frame = PocketController.frame()
 	return { position = position, up = cameraUp(frame), toWorkspace = frame.refRotInv }
 end
 
+local plumedModel: Model? = nil -- the real model this client last drew plumes on
+
+-- CHANGED (Phase 2a feedback): each engine's flame follows exactly what the simulation does with that engine,
+-- and every flame goes out when this client stops simulating the craft.
 local function updatePlumes()
 	local craft = sim
-	if craft == nil or craftId == nil then
+	local model = if craft and craftId then craftModelById(craftId :: number) else nil
+	local previous = plumedModel
+	if previous and previous ~= model then
+		Plumes.clear(previous)
+		plumedModel = nil
+	end
+	if craft == nil or model == nil then
 		return
 	end
-	local model = craftModelById(craftId :: number)
-	if model == nil then
-		return
-	end
+	plumedModel = model
 	local burning: { [number]: number } = {}
-	if bit32.band(craft.state.flags, FlightModel.FLAG_BURNING) ~= 0 then
-		for _, engine in craft.physics.engines do
-			if craft.active[engine.blockId] and (craft.fuel[engine.blockId] or 1) > 0 then
-				burning[engine.blockId] = if engine.solid or not engine.stats.Throttleable
-					then 1
-					else craft.controls.throttle
-			end
+	for _, engine in craft.physics.engines do
+		if FlightModel.engineBurning(craft, engine) then
+			burning[engine.blockId] = FlightModel.engineThrottle(craft, engine)
 		end
 	end
 	Plumes.update(model, burning)

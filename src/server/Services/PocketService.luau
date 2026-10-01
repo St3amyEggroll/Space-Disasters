@@ -170,15 +170,18 @@ function PocketService.baseFrame(): Frames.Frame
 end
 
 --[[
-	Creates a CRAFT_ALIGNED pocket for a crewed craft. The reference is the craft's root state at creation (the
-	pocket attributes RefX/RefY/RefZ/RefRot hold it until clients receive the craft's state stream).
+	Creates a flight pocket for a crewed craft. CHANGED (Phase 2a feedback, D31): HORIZON_ALIGNED instead of
+	CRAFT_ALIGNED: the reference point follows the craft, but the pocket axes are the local horizon frame
+	(Y = away from the body centre), so Roblox's sky, sun and day/night are right and the craft turns inside it.
+	`refRot` is that horizon rotation at creation (the pocket attributes RefX/RefY/RefZ/RefRot hold it until
+	clients receive the craft's state stream).
 	Returns nil when every slot is taken.
 ]]
 function PocketService.createFlightPocket(craftId: number, bodyId: number, refPos: any, refRot: CFrame): FlightPocket?
 	for id, origin in slotOrigins do
 		if flightPockets[id] == nil then
 			local folder = createPocketFolder(id, origin)
-			folder:SetAttribute("FrameMode", "CRAFT_ALIGNED")
+			folder:SetAttribute("FrameMode", "HORIZON_ALIGNED")
 			folder:SetAttribute("PrimaryKind", "Craft")
 			folder:SetAttribute("PrimaryId", craftId)
 			folder:SetAttribute("RefBodyId", bodyId)

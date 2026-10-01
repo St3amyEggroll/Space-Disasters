@@ -4,8 +4,8 @@
 	Server side of flying: launch, staging, the pilot's state stream, crashes and crew safety.
 
 	Flight start (spec 7.5; CHANGED Phase 2a feedback: real physics on the pad): as soon as a pilot sits in a
-	Prelaunch craft (Roll Out seats the owner automatically), the server allocates a CRAFT_ALIGNED flight pocket
-	whose reference is the craft's root pose, moves the real craft model into it with one rigid transform M (seated
+	Prelaunch craft (Roll Out seats the owner automatically), the server allocates a HORIZON_ALIGNED flight pocket
+	(D31) whose reference is the craft's root position and the local horizon, moves the real craft model into it with one rigid transform M (seated
 	crew ride along with their anchored seats, S9), sends PocketTransfer to every crew member (unseated ones move
 	themselves by M and ack; the server teleports them after 3 s without an ack), creates the simulation and hands
 	it to the pilot's client (FlightStart, no stage fired). The craft then stands on its pad under real physics;
@@ -32,6 +32,7 @@ local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 local Parts = require(ReplicatedStorage.Shared.Config.Parts)
 local Protocol = require(ReplicatedStorage.Shared.Net.Protocol)
 local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
+local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local CraftService = require(script.Parent.CraftService)
@@ -186,6 +187,13 @@ local function killOccupants(record: CraftRecord, blockId: number)
 	end
 end
 
+-- CHANGED (Phase 2a feedback, D31): clients pose flying craft models themselves; every server-side move of a
+-- real model bumps this attribute (replicated in order with the move, S8) so clients re-read the new pose.
+local function bumpPoseEpoch(model: Model)
+	local epoch = model:GetAttribute("PoseEpoch")
+	model:SetAttribute("PoseEpoch", (if type(epoch) == "number" then epoch else 0) + 1)
+end
+
 local function sendTransfer(player: Player, source: number, dest: number, m: CFrame, epoch: number)
 	local id = nextTransferId
 	nextTransferId += 1
@@ -268,18 +276,22 @@ function FlightService.startFlight(player: Player, record: CraftRecord)
 	local baseFrame = PocketService.baseFrame()
 	local pos, rot = Frames.cframeFromWorkspace(baseFrame, rootWorld)
 
-	local pocket = PocketService.createFlightPocket(record.id, Bodies.HOMEWORLD, pos, rot)
+	-- CHANGED (Phase 2a feedback, D31): pocket axes = the local horizon, not the craft
+	local horizon = Universe.pocketRotation(Bodies.HOMEWORLD, pos, UniverseTime.now())
+	local pocket = PocketService.createFlightPocket(record.id, Bodies.HOMEWORLD, pos, horizon)
 	if pocket == nil then
 		launching[record.id] = nil
 		model:SetAttribute("State", "Prelaunch")
 		remotes.Notify:FireClient(player, "No free flight slot, try again soon", "Error")
 		return
 	end
-	local newFrame = Frames.new(Bodies.HOMEWORLD, pos, rot, pocket.slotOrigin, 0)
+	local newFrame = Frames.new(Bodies.HOMEWORLD, pos, horizon, pocket.slotOrigin, 0)
 	local m = Frames.relativeTransform(baseFrame, newFrame)
 
 	local crew = crewOf(model)
 	model:PivotTo(m * model:GetPivot())
+	bumpPoseEpoch(model)
+	model:SetAttribute("FlightPocket", pocket.id) -- clients pose the model only while in this pocket
 	model.Parent = pocket.folder:FindFirstChild("Crafts")
 	record.origin = m * record.origin
 	record.pocketId = pocket.id
@@ -351,10 +363,22 @@ local function returnToPad(record: CraftRecord, pilot: Player)
 			table.insert(crew, player)
 		end
 	end
-	-- The real model never moves inside its CRAFT_ALIGNED pocket: the root block sits at the slot origin with
-	-- pocket axes = craft axes, so "now" is the pocket frame at the craft's current state.
-	local now = Frames.new(sim.state.bodyId, sim.state.pos, sim.state.rot, pocket.slotOrigin, 0)
-	local m = Frames.relativeTransform(now, PocketService.baseFrame())
+	-- CHANGED (Phase 2a feedback, D31): on the server the real model stays where it was placed at flight start
+	-- (clients pose it every frame), so it is moved by "craft frame now (in base) * craft frame on the server^-1".
+	-- Unseated crew are in the client-side pocket, whose frame is the horizon frame at the craft's state now.
+	local baseFrame = PocketService.baseFrame()
+	local craftNow = Frames.cframeToWorkspace(baseFrame, sim.state.pos, sim.state.rot)
+	local root = CraftDesign.rootBlock(record.design) :: CraftDesign.Block
+	local craftOnServer = record.origin * CFrame.new(CraftDesign.blockCenter(root) * CraftDesign.GRID)
+	local modelMove = craftNow * craftOnServer:Inverse()
+	local horizonNow = Frames.new(
+		sim.state.bodyId,
+		sim.state.pos,
+		Universe.pocketRotation(sim.state.bodyId, sim.state.pos, sim.state.ut),
+		pocket.slotOrigin,
+		0
+	)
+	local m = Frames.relativeTransform(horizonNow, baseFrame)
 
 	-- The pilot stands up first and is placed directly beside the pad by the server, so their transfer below
 	-- carries the identity transform (the client must not move an unseated character by M a second time).
@@ -363,9 +387,11 @@ local function returnToPad(record: CraftRecord, pilot: Player)
 		unseat(pilotHumanoid)
 	end
 
-	model:PivotTo(m * model:GetPivot())
+	model:SetAttribute("FlightPocket", nil) -- clients stop posing before the move below reaches them
+	model:PivotTo(modelMove * model:GetPivot())
+	bumpPoseEpoch(model)
 	model.Parent = PocketService.baseCrafts()
-	record.origin = m * record.origin
+	record.origin = modelMove * record.origin
 	record.pocketId = nil
 	record.sim = nil
 	record.pilot = nil

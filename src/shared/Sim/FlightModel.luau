@@ -454,6 +454,17 @@ local function engineThrottle(craft: Craft, engine: Engine): number
 	return craft.controls.throttle
 end
 
+-- CHANGED (Phase 2a feedback): exact per-engine "producing thrust now" test, shared with the plume renderer
+-- (plumes used a whole-craft flag plus a fuel guess and could stay lit on an engine with no thrust).
+function FlightModel.engineBurning(craft: Craft, engine: Engine): boolean
+	return craft.active[engine.blockId] == true and engineHasFuel(craft, engine) and engineThrottle(craft, engine) > 0
+end
+
+-- Throttle an engine runs at (solid boosters and non-throttleable engines: always 1).
+function FlightModel.engineThrottle(craft: Craft, engine: Engine): number
+	return engineThrottle(craft, engine)
+end
+
 -- Takes `amount` kg from an engine's fuel source, spread across its group's tanks by what each holds.
 local function drainFuel(craft: Craft, engine: Engine, amount: number)
 	if engine.solid then

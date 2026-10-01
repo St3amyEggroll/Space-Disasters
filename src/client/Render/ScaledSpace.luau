@@ -92,7 +92,9 @@ local CLOUD_TEXTURE: TextureSpec = { size = 128, cells = 32 }
 local TEXTURE_DETAIL = 1 -- Biome detail level for scaled-space textures (ground tiles use more)
 local TEXTURE_BUDGET_S = 0.004 -- painting work per frame before the generator yields
 local MAX_EDITABLE_IMAGES = 96 -- hard cap on images this module creates (3 x 24 patches today)
-local CLOUDS_ENABLED = true
+-- CHANGED (Phase 2a playtest): Studio refused SurfaceAppearance.ColorMapContent from game scripts ("lacking
+-- capability Plugin"), so the cloud shell cannot be made at runtime; off until clouds have another route.
+local CLOUDS_ENABLED = false
 local CLOUD_SHELL_SCALE = 1.012 -- cloud shell radius / body radius
 local ATMOSPHERE_ENABLED = true
 local ATMOSPHERE_SHELL_SCALE = 1.045 -- rim shell radius / body radius (a thin halo around the limb)

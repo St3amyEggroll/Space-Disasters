@@ -6,9 +6,17 @@
 
 	Frame sources:
 	  SURFACE_ALIGNED / INERTIAL   the pocket folder's RefX/RefY/RefZ/RefRot/RefBodyId attributes
-	  CRAFT_ALIGNED                the primary craft's state: from a registered provider (the pilot's own
-	                               simulation, FlightController) or the interpolated stream (passengers,
-	                               RemoteCraftRenderer), falling back to the pocket's attributes at creation.
+	  HORIZON_ALIGNED              CHANGED (Phase 2a feedback, D31; was CRAFT_ALIGNED): reference point = the primary
+	                               craft's position, axes = the local horizon (Y away from the body centre; above
+	                               the air Y turns toward the sun, Universe.pocketUp), from
+	                               the craft's state: a registered provider (the pilot's own simulation,
+	                               FlightController) or the interpolated stream (passengers, RemoteCraftRenderer),
+	                               falling back to the pocket's attributes at creation. Because the pocket no longer
+	                               turns with the craft, this client poses the craft's real model every frame
+	                               (anchored parts moved locally; seated characters ride along with their seats).
+	                               The server never moves the model in flight; when it does (pocket transfers) it
+	                               bumps the model's PoseEpoch attribute and the pose cache is rebuilt, and models
+	                               are only posed while their FlightPocket attribute names the current pocket.
 
 	Hiding (spike S2): LocalTransparencyModifier on parts, CastShadow off, decals/textures transparent, GUIs and
 	ProximityPrompts disabled, name tags hidden. Client raycasts always use Include filters (hidden parts still
@@ -20,9 +28,12 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
+local CraftBuilder = require(ReplicatedStorage.Shared.Craft.CraftBuilder)
+local CraftDesign = require(ReplicatedStorage.Shared.Craft.CraftDesign)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
+local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local DebugOverlay = require(script.Parent.DebugOverlay)
@@ -34,6 +45,7 @@ local RemoteCraftRenderer = require(script.Parent.RemoteCraftRenderer)
 local INTERP_DELAY = GameConfig.INTERP_DELAY
 local CHARACTER_CHECK_S = 0.5
 local SLOT_CAPTURE_RADIUS = 1800 -- same as PocketService
+local POSE_MOVE_MODE = Enum.BulkMoveMode.FireCFrameChanged
 --============================================================================
 
 -- What the pilot's simulation reports for its own craft (a subset of FlightModel.CraftState).
@@ -50,6 +62,21 @@ local renderUT = 0
 local frameMode = "SURFACE_ALIGNED"
 local primaryProvider: PrimaryProvider? = nil
 local pocketChanged = Instance.new("BindableEvent")
+local primaryCraftCFrame: CFrame? = nil -- workspace CFrame of the posed primary craft's reference frame
+
+-- Pose cache for the real model of the current pocket's primary craft (D31).
+type PoseCache = {
+	model: Model,
+	epoch: unknown, -- PoseEpoch the offsets were read at
+	parts: { BasePart },
+	offsets: { CFrame }, -- each part relative to the craft reference frame
+	seats: { BasePart }, -- seats are moved one by one (CFrame writes carry a welded, seated character along)
+	seatOffsets: { CFrame },
+	cframes: { CFrame }, -- scratch for BulkMoveTo
+	dirty: boolean, -- a part was removed: drop missing parts before the next move
+	connection: RBXScriptConnection,
+}
+local poseCache: PoseCache? = nil
 
 -- Hidden-state bookkeeping so we can restore what we changed
 local hiddenRoots: { [Instance]: RBXScriptConnection } = {}
@@ -264,6 +291,116 @@ local function frameFromAttributes(folder: Instance): boolean
 	return false
 end
 
+--============================================================================
+-- Posing the primary craft (HORIZON_ALIGNED pockets)
+--============================================================================
+
+local function dropPoseCache()
+	local cache = poseCache
+	if cache then
+		cache.connection:Disconnect()
+		poseCache = nil
+	end
+end
+
+-- The craft reference frame (root block centre, design axes) of a real model where it stands now.
+local function craftFrameOf(model: Model): CFrame?
+	local design = CraftBuilder.readDesign(model)
+	local root = CraftDesign.rootBlock(design)
+	local block = if root then CraftBuilder.findBlockModel(model, root.id) else nil
+	local bounds = if block then block:FindFirstChild("Bounds") else nil
+	if root == nil or bounds == nil or not bounds:IsA("BasePart") then
+		return nil
+	end
+	-- Bounds = origin * blockCFrame(root) = (craft frame) * rotation(root.rot)
+	return bounds.CFrame * CraftDesign.rotationCFrame(root.rot):Inverse()
+end
+
+local function buildPoseCache(model: Model): PoseCache?
+	local craftFrame = craftFrameOf(model)
+	if craftFrame == nil then
+		return nil
+	end
+	local inverse = craftFrame:Inverse()
+	local parts: { BasePart } = {}
+	local offsets: { CFrame } = {}
+	local seats: { BasePart } = {}
+	local seatOffsets: { CFrame } = {}
+	for _, descendant in model:GetDescendants() do
+		if descendant:IsA("Seat") then
+			table.insert(seats, descendant)
+			table.insert(seatOffsets, inverse * descendant.CFrame)
+		elseif descendant:IsA("BasePart") then
+			table.insert(parts, descendant)
+			table.insert(offsets, inverse * descendant.CFrame)
+		end
+	end
+	local cache: PoseCache
+	cache = {
+		model = model,
+		epoch = model:GetAttribute("PoseEpoch"),
+		parts = parts,
+		offsets = offsets,
+		seats = seats,
+		seatOffsets = seatOffsets,
+		cframes = table.create(#parts),
+		dirty = false,
+		connection = model.DescendantRemoving:Connect(function(descendant: Instance)
+			if descendant:IsA("BasePart") then
+				cache.dirty = true
+			end
+		end),
+	}
+	return cache
+end
+
+local function poseCraft(folder: Instance, craftId: number, pos: Vec3d.Vec3d, rot: CFrame)
+	local crafts = folder:FindFirstChild("Crafts")
+	local found = if crafts then crafts:FindFirstChild(`Craft_{craftId}`) else nil
+	local model: Model? = if found and found:IsA("Model") then found else nil
+	local target = Frames.cframeToWorkspace(frame, pos, rot)
+	primaryCraftCFrame = target
+	-- only while the server says the model belongs to this flight pocket (cleared, in order, before it moves it
+	-- out again: a stale local pose would otherwise stick, since replication only sends changes)
+	if not model or model:GetAttribute("FlightPocket") ~= pocketId then
+		dropPoseCache()
+		return
+	end
+	local cache = poseCache
+	if cache == nil or cache.model ~= model or cache.epoch ~= model:GetAttribute("PoseEpoch") then
+		dropPoseCache()
+		cache = buildPoseCache(model)
+		poseCache = cache
+	end
+	if cache == nil then
+		return
+	end
+	if cache.dirty then
+		cache.dirty = false
+		local parts, offsets = {}, {}
+		for index, part in cache.parts do
+			if part.Parent ~= nil and part:IsDescendantOf(model) then
+				table.insert(parts, part)
+				table.insert(offsets, cache.offsets[index])
+			end
+		end
+		cache.parts, cache.offsets = parts, offsets
+		table.clear(cache.cframes)
+	end
+	local cframes = cache.cframes
+	for index, offset in cache.offsets do
+		cframes[index] = target * offset
+	end
+	if #cache.parts > 0 then
+		Workspace:BulkMoveTo(cache.parts, cframes, POSE_MOVE_MODE)
+	end
+	for index, seat in cache.seats do
+		if seat.Parent ~= nil then
+			seat.CFrame = target * cache.seatOffsets[index]
+		end
+	end
+end
+
 -- Recomputes the current pocket frame; call once per render frame before drawing.
 function PocketController.update()
 	local now = UniverseTime.now()
@@ -278,25 +415,42 @@ function PocketController.update()
 	end
 	local mode = folder:GetAttribute("FrameMode")
 	frameMode = if type(mode) == "string" then mode else "SURFACE_ALIGNED"
-	if frameMode == "CRAFT_ALIGNED" then
+	primaryCraftCFrame = nil
+	if frameMode == "HORIZON_ALIGNED" then
 		local primary = folder:GetAttribute("PrimaryId")
 		if type(primary) == "number" then
 			local provider = primaryProvider
 			local own = if provider then provider(primary) else nil
-			if own then
-				Frames.setReference(frame, own.bodyId, own.pos, own.rot)
-				renderUT = own.ut
-				return
+			local state: PrimaryState? = own
+			if state then
+				renderUT = state.ut
+			else
+				local streamed = RemoteCraftRenderer.sampleState(primary, now - INTERP_DELAY)
+				if streamed then
+					state = streamed
+					renderUT = now - INTERP_DELAY
+				end
 			end
-			local streamed = RemoteCraftRenderer.sampleState(primary, now - INTERP_DELAY)
-			if streamed then
-				Frames.setReference(frame, streamed.bodyId, streamed.pos, streamed.rot)
-				renderUT = now - INTERP_DELAY
+			if state then
+				Frames.setReference(
+					frame,
+					state.bodyId,
+					state.pos,
+					Universe.pocketRotation(state.bodyId, state.pos, renderUT)
+				)
+				poseCraft(folder, primary, state.pos, state.rot)
 				return
 			end
 		end
 	end
+	dropPoseCache()
 	frameFromAttributes(folder)
+end
+
+-- CHANGED (Phase 2a feedback, D31): workspace CFrame of the current pocket's primary craft reference frame
+-- (root block centre, craft axes) as posed this frame; nil outside flight pockets or before the state arrives.
+function PocketController.primaryCraftCFrame(): CFrame?
+	return primaryCraftCFrame
 end
 
 function PocketController.frame(): Frames.Frame

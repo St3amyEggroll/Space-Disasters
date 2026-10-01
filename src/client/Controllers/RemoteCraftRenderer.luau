@@ -266,7 +266,8 @@ function RemoteCraftRenderer.render(ctx: RenderContext.RenderContext)
 				end
 				if block then
 					local engine = Parts.get(block.type).Engine
-					burning[engineId] = if engine and not engine.Throttleable then 1 else math.max(s.throttle, 0.05)
+					-- CHANGED (Phase 2a feedback): no minimum flame, a throttled-down liquid engine is out
+					burning[engineId] = if engine and not engine.Throttleable then 1 else s.throttle
 				end
 			end
 		end

@@ -11,6 +11,7 @@
 ]]
 
 local Bodies = require(script.Parent.Parent.Config.Bodies)
+local Frames = require(script.Parent.Parent.Math.Frames)
 local GameConfig = require(script.Parent.Parent.Config.GameConfig)
 local Vec3d = require(script.Parent.Parent.Math.Vec3d)
 
@@ -21,6 +22,9 @@ type Vec3d = Vec3d.Vec3d
 --============================================================================
 local SUN_PHASE_AT_UT0 = math.rad(30) -- sun direction angle from +X toward +Z at UT 0 (morning light at the base)
 local SUN_ELEVATION = math.rad(15) -- the sun's path is tilted a little so noon light is not perfectly flat
+-- CHANGED (Phase 2a feedback, D31): flight-pocket "up"
+local POCKET_UP_LOW_MIN = 2000 -- m; up = local vertical below max(this, atmosphere top)
+local POCKET_UP_BLEND_HEIGHT = 3000 -- m above that over which up turns toward the sun
 --============================================================================
 
 local Universe = {}
@@ -98,6 +102,45 @@ function Universe.sunDirection(ut: number): Vec3d
 	local angle = SUN_PHASE_AT_UT0 + 2 * math.pi * ut / GameConfig.DAY_LENGTH_S
 	local c = math.cos(SUN_ELEVATION)
 	return Vec3d.new(c * math.cos(angle), math.sin(SUN_ELEVATION), c * math.sin(angle))
+end
+
+--[[
+	CHANGED (Phase 2a feedback, D31): "up" of a flight pocket whose reference point is at `pos` (relative to
+	`bodyId`). Low down it is the local vertical, so Roblox's sky, horizon and day/night match the real planet.
+	Above the air it turns toward the sun: in space "day" means the sun is visible, but Roblox lights a scene only
+	while the sun is above the workspace horizon (an orbit sees the sun far below its local horizon).
+	Planet shadow is drawn by SkyLighting, not by this.
+]]
+function Universe.pocketUp(bodyId: number, pos: Vec3d, ut: number): Vec3d
+	local body = Bodies.get(bodyId)
+	local r = Vec3d.length(pos)
+	if r < 1 then
+		return Universe.sunDirection(ut)
+	end
+	local radial = Vec3d.scale(pos, 1 / r)
+	local atmosphere = body.Atmosphere
+	local low = math.max(POCKET_UP_LOW_MIN, if atmosphere then atmosphere.Top else 0)
+	local t = math.clamp((r - body.Radius - low) / POCKET_UP_BLEND_HEIGHT, 0, 1)
+	if t <= 0 then
+		return radial
+	end
+	t = t * t * (3 - 2 * t) -- smoothstep
+	local sun = Universe.sunDirection(ut)
+	local up = Vec3d.new(
+		radial.x + (sun.x - radial.x) * t,
+		radial.y + (sun.y - radial.y) * t,
+		radial.z + (sun.z - radial.z) * t
+	)
+	local length = Vec3d.length(up)
+	if length < 1e-3 then
+		return radial
+	end
+	return Vec3d.scale(up, 1 / length)
+end
+
+-- Rotation (pocket axes in universe axes: X east, Y up, Z north) of a flight pocket at `pos` (D31).
+function Universe.pocketRotation(bodyId: number, pos: Vec3d, ut: number): CFrame
+	return Frames.surfaceRotation(Universe.pocketUp(bodyId, pos, ut))
 end
 
 -- Altitude above sea level of a position relative to a body.

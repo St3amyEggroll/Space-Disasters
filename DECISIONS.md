@@ -231,6 +231,33 @@ The flight camera no longer turns with the rocket.
   - Every creation is guarded. Without "Allow Mesh / Image APIs", everything falls back to flat Biome colours with one warning.
 - **Heads-up for Studio:** if textures look mirrored inside a patch or tile, set `UV_FLIP_V = true` in `Biome.luau`.
 
+### D31. Flight pockets are HORIZON_ALIGNED, not CRAFT_ALIGNED (Steamy, Phase 2a playtest)
+**This deviates from the spec,** which made flight pockets CRAFT_ALIGNED.
+
+**The problem:** with CRAFT_ALIGNED pockets, workspace "up" was the rocket's up. But Roblox draws its sky, horizon haze, sun and day/night around workspace Y. So when the rocket pitched over, the sky tilted with it, and the screen split into a "day" half and a "night" half. The stars turned with the rocket too.
+
+**What changed:**
+- **Pocket axes:** a flight pocket's reference point still follows the craft, but its axes come from `Universe.pocketRotation`:
+  - Low down, up is the local vertical (away from the body's centre).
+  - Above max(2 km, atmosphere top), up turns smoothly toward the sun over 3 km.
+- **Why it turns toward the sun:** in space, "day" means the sun can be seen. But Roblox lights a scene only while the sun is above the workspace horizon, and in orbit the visible sun can sit far below the local horizon.
+- **Planet shadow** keeps the Q1 = A shadow-side look (SkyLighting).
+- **The rocket now turns inside the pocket:**
+  - The server places the real model once at flight start and never moves it in flight.
+  - Every client poses the model each frame from the craft state: its own simulation for the pilot, the interpolated stream for passengers. It moves the anchored parts with BulkMoveTo, and seats one by one so seated characters ride along.
+  - A model is posed only while its `FlightPocket` attribute names the client's current pocket. The server clears that attribute before moving the model out again, because a stale local pose would otherwise stick (replication only sends changes).
+  - `PoseEpoch` bumps on every server move, so the client re-reads part offsets.
+- **Return to pad:** the craft moves by "craft frame now (in base) × craft frame on the server⁻¹". Unseated crew use the horizon frame at the craft's current state.
+- **Known limits:**
+  - On the server, the model sits at its flight-start pose. Server checks that use bounding boxes (crew standing inside, occupants of a destroyed command part) are approximate. Seated checks are exact.
+  - Unseated characters inside a flying cabin stand on a floor that turns under them. Hatches stay locked in flight (D24).
+- **Space sky (`Render/StarSky`):**
+  - Above the lower half of the atmosphere (air factor < 0.5), the Sky shows six painted black star faces (EditableImage), kept fixed to universe axes by SkyboxOrientation as before.
+  - Below that, the original skybox shows under the Atmosphere.
+  - If the Sky refuses painted faces, it warns once and keeps the default sky.
+- **Clouds** from D30 are off (`CLOUDS_ENABLED = false`). Studio does not let game scripts set `SurfaceAppearance.ColorMapContent` ("lacking capability Plugin").
+- **Plumes:** each engine's flame now follows `FlightModel.engineBurning` exactly, and every flame goes out when the local simulation ends. Remote copies no longer keep a minimum 5% flame on throttled-down liquid engines. Solid boosters (SRBs) still can't be throttled, as in KSP.
+
 ---
 
 ## Phase 0 spike results
