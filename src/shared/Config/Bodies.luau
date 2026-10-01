@@ -14,7 +14,7 @@ local GameConfig = require(script.Parent.GameConfig)
 --============================================================================
 -- Tunables
 --============================================================================
--- CHANGED (Phase 2a feedback): Kablamo and Dent halved in size at Steamy's request (D27)
+-- CHANGED (Phase 2a feedback): Earth and Mun halved in size at Steamy's request (D27)
 local HOMEWORLD_RADIUS = 30000 -- m
 local HOMEWORLD_SURFACE_G = 9.81 -- m/s^2
 local HOMEWORLD_ATMO_TOP = 7000 -- m
@@ -95,7 +95,7 @@ local list: { Body } = {
 	table.freeze({
 		Id = 0,
 		Name = "Sun",
-		DisplayName = "Big Toasty",
+		DisplayName = "Sol",
 		Kind = "Star" :: BodyKind,
 		ParentId = nil,
 		VisualOnly = true,
@@ -113,7 +113,7 @@ local list: { Body } = {
 	table.freeze({
 		Id = 1,
 		Name = "Homeworld",
-		DisplayName = "Kablamo",
+		DisplayName = "Earth",
 		Kind = "Planet" :: BodyKind,
 		ParentId = nil,
 		VisualOnly = false,
@@ -135,7 +135,7 @@ local list: { Body } = {
 	table.freeze({
 		Id = 2,
 		Name = "Moon",
-		DisplayName = "Dent",
+		DisplayName = "Mun",
 		Kind = "Moon" :: BodyKind,
 		ParentId = 1,
 		VisualOnly = false,

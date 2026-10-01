@@ -35,7 +35,7 @@ local function absolute(bodyId: number, pos: Vec3d, ut: number): Vec3d
 	return Vec3d.add(pos, Universe.bodyPosition(bodyId, ut))
 end
 
--- A Hohmann transfer from a 10 km orbit (leaving +X toward +Z) that meets Dent; returns (ut0, r0, v0, transferTime).
+-- A Hohmann transfer from a 10 km orbit (leaving +X toward +Z) that meets Mun; returns (ut0, r0, v0, transferTime).
 local function dentTransfer(): (number, Vec3d, Vec3d, number)
 	local r1 = HOME.Radius + 10000
 	local r2 = MOON_ORBIT.Radius - 15000 -- aim inside the SOI, short of the centre
@@ -143,7 +143,7 @@ return function(t: TestKit.Context)
 		t.expectTrue(not Rails.isSuborbital(Bodies.HOMEWORLD, circular.r0, circular.v0), "orbital")
 	end)
 
-	t.test("SOI entry into Dent: bisected to 0.01 s, continuous in absolute position and velocity", function()
+	t.test("SOI entry into Mun: bisected to 0.01 s, continuous in absolute position and velocity", function()
 		local ut0, r0, v0, transferTime = dentTransfer()
 		local rails = Rails.fromState(state(Bodies.HOMEWORLD, r0, v0, ut0), Vector3.zero, true)
 		local entered = Rails.advance(rails, ut0, ut0 + transferTime + 200)
@@ -151,7 +151,7 @@ return function(t: TestKit.Context)
 		local inMoon = entered :: Rails.Rails
 		t.expectEqual(inMoon.bodyId, Bodies.MOON)
 		local tc = inMoon.epochUT
-		t.expectTrue(Vec3d.length(inMoon.r0) <= MOON.SoiRadius, "inside Dent's SOI at the new epoch")
+		t.expectTrue(Vec3d.length(inMoon.r0) <= MOON.SoiRadius, "inside Mun's SOI at the new epoch")
 		local before = Rails.stateAt(rails, tc - 0.011)
 		local moonPos = Universe.bodyOffset(Bodies.MOON, Bodies.HOMEWORLD, tc - 0.011)
 		t.expectTrue(Vec3d.distance(before.pos, moonPos) > MOON.SoiRadius, "outside 0.011 s earlier")
@@ -167,9 +167,9 @@ return function(t: TestKit.Context)
 		t.expectNear(Vec3d.distance(vAbsOld, vAbsNew), 0, 1e-9)
 	end)
 
-	t.test("SOI exit from Dent back to Kablamo", function()
+	t.test("SOI exit from Mun back to Earth", function()
 		local r = MOON.Radius + 15000
-		local s = state(Bodies.MOON, Vec3d.new(r, 0, 0), Vec3d.new(0, 0, 130), 1000) -- above Dent's escape speed
+		local s = state(Bodies.MOON, Vec3d.new(r, 0, 0), Vec3d.new(0, 0, 130), 1000) -- above Mun's escape speed
 		local rails = Rails.fromState(s, Vector3.zero, true)
 		local left = Rails.advance(rails, 1000, 1000 + 5000)
 		t.expectTrue(left ~= nil, "escaped")
@@ -185,10 +185,10 @@ return function(t: TestKit.Context)
 			1e-6
 		)
 		-- no further change while it coasts away
-		t.expectTrue(Rails.advance(out, tc, tc + 30) == nil, "stays with Kablamo")
+		t.expectTrue(Rails.advance(out, tc, tc + 30) == nil, "stays with Earth")
 	end)
 
-	t.test("prediction: closed orbit, impact, and a Dent encounter in patches", function()
+	t.test("prediction: closed orbit, impact, and a Mun encounter in patches", function()
 		local r = HOME.Radius + 10000
 		local circle = Rails.predict(Bodies.HOMEWORLD, Vec3d.new(r, 0, 0), Vec3d.new(0, 0, math.sqrt(HOME.Mu / r)), 0)
 		t.expectEqual(#circle, 1)
@@ -201,7 +201,7 @@ return function(t: TestKit.Context)
 		t.expectEqual(transfer[1].endReason, "Enter")
 		t.expectEqual(transfer[2].bodyId, Bodies.MOON)
 		t.expectNear(transfer[2].startUT, transfer[1].endUT, 1e-9)
-		t.expectTrue(Vec3d.length(transfer[2].r0) <= MOON.SoiRadius + 1, "patch 2 starts on Dent's SOI")
+		t.expectTrue(Vec3d.length(transfer[2].r0) <= MOON.SoiRadius + 1, "patch 2 starts on Mun's SOI")
 		if transfer[2].endReason == "Exit" then
 			t.expectEqual(transfer[3].bodyId, Bodies.HOMEWORLD)
 		end

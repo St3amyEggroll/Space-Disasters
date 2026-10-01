@@ -2,7 +2,7 @@
 --[[
 	DebugService (spec 7.14)
 	Chat commands for Studio and whitelisted user ids (GameConfig.DEBUG_USER_IDS):
-	  /orbit <altKm> [body]   put your craft in a circular orbit (body: kablamo/homeworld or dent/moon)
+	  /orbit <altKm> [body]   put your craft in a circular orbit (body: earth/homeworld or mun/moon)
 	  /fuel                   refill your craft
 	  /base                   go back to your plot
 	  /time <hour>            set the time of day at the base (0..24, 12 = noon; everyone sees it)

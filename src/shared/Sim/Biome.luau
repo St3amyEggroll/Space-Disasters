@@ -20,12 +20,12 @@
 
 	Model (two levels):
 	  fields  low-frequency and expensive: domain-warped fractal noise for continents, moisture, mountains and
-	          heat (Kablamo), maria (Dent), cloud cover. Painters evaluate them on a coarse grid and interpolate.
+	          heat (Earth), maria (Mun), cloud cover. Painters evaluate them on a coarse grid and interpolate.
 	  shade   cheap, per pixel: high-frequency detail (coastline wiggle, colour grain, dunes), polar caps, beaches,
-	          shallow water, and on Dent the craters and ray craters.
+	          shallow water, and on Mun the craters and ray craters.
 	sample() evaluates both exactly at the given direction.
 
-	Kablamo: ~60% ocean. Land is forced around the launch site (+X, lat 0 / lon 0): the ground is flat grassland
+	Earth: ~60% ocean. Land is forced around the launch site (+X, lat 0 / lon 0): the ground is flat grassland
 	within SITE_FLAT_INNER_M, and a sea is biased in to the east (+Z) so a coastline is in view from the pad.
 
 	Texture space (shared by ScaledSpace patches and Surface tile boxes):
@@ -61,7 +61,7 @@ local BUILTIN_NOISE_SCALE = 1.4 -- matches math.noise's spread (std 0.27) to the
 local LACUNARITY = 2.07 -- frequency step between octaves
 local OCTAVE_SHIFT = 17.31 -- coordinate offset between octaves (decorrelates them)
 
--- Kablamo: continents
+-- Earth: continents
 local K_WARP_FREQ = 1.1
 local K_WARP_OCTAVES = 2
 local K_WARP_STRENGTH = 0.3 -- unit-sphere units
@@ -69,7 +69,7 @@ local K_CONT_FREQ = 1.45
 local K_CONT_OCTAVES = 5
 local K_CONT_GAIN = 0.52
 local K_SEA_LEVEL = 0.1 -- continent noise level of the coast; raise for more ocean
--- Kablamo: climate
+-- Earth: climate
 local K_MOIST_FREQ = 2.1
 local K_MOIST_OCTAVES = 3
 local K_MOIST_SCALE = 1.5 -- noise -> moisture spread around 0.5
@@ -81,14 +81,14 @@ local K_RIDGE_FREQ = 2.7
 local K_RIDGE_OCTAVES = 3
 local K_HEAT_NOISE_FREQ = 3.1
 local K_HEAT_NOISE = 0.05 -- noisy polar-cap edge
--- Kablamo: per-pixel detail
+-- Earth: per-pixel detail
 local K_DETAIL_FREQ = 46
-local K_DETAIL_OCTAVES = 3 -- detail level of sample(); painters pass their own (Dent: level + 1 crater scales)
+local K_DETAIL_OCTAVES = 3 -- detail level of sample(); painters pass their own (Mun: level + 1 crater scales)
 local K_COAST_DETAIL = 0.03 -- elevation wiggle (sharpens coastlines)
 local K_COAST_AA = 0.004 -- water / land colour blend band (elevation units) against jagged coastlines
 local K_POLAR_DETAIL = 0.02
 local K_GRAIN = 0.07 -- +/- brightness variation
--- Kablamo: classification (elevation is relative to sea level)
+-- Earth: classification (elevation is relative to sea level)
 local K_SNOW_HEAT = 0.1 -- heat (1 - |sin lat| + noise) below this is polar ice
 local K_SNOW_EDGE = 0.012
 local K_TUNDRA_HEAT0 = 0.16 -- fully tundra-coloured below this heat
@@ -107,7 +107,7 @@ local K_ROCK0 = 0.52 -- ridge * inland mask where rock starts
 local K_ROCK1 = 0.64
 local K_PEAK0 = 0.74 -- snowy peaks
 local K_PEAK1 = 0.8
--- Kablamo: launch site shaping (metres along the surface)
+-- Earth: launch site shaping (metres along the surface)
 local SITE_FLAT_INNER_M = 3500 -- always flat grassland inside this
 local SITE_FLAT_OUTER_M = 5500
 local SITE_LAND_RADIUS_M = 7500
@@ -119,7 +119,7 @@ local SITE_ELEV = 0.13 -- elevation (above sea) forced at the site
 local SITE_MOIST = 0.48
 local SITE_RIDGE = 0.1
 
--- Kablamo colours (linear 0..1 RGB, stylised)
+-- Earth colours (linear 0..1 RGB, stylised)
 local C_DEEP = { 0.06, 0.2, 0.47 }
 local C_MID = { 0.1, 0.36, 0.66 }
 local C_SHALLOW = { 0.2, 0.68, 0.72 }
@@ -136,7 +136,7 @@ local C_ROCK_DARK = { 0.35, 0.32, 0.3 }
 local C_SNOW = { 0.95, 0.97, 1.0 }
 local C_SNOW_SHADE = { 0.8, 0.87, 0.95 }
 
--- Kablamo clouds
+-- Earth clouds
 local CLOUD_WARP_FREQ = 1.6
 local CLOUD_WARP_STRENGTH = 0.25
 local CLOUD_FREQ = 2.3
@@ -151,7 +151,7 @@ local CLOUD_BAND = 0.1 -- extra cover at the equator and mid-latitudes, less in 
 local CLOUD_BAND_WIDTH = 0.16
 local CLOUD_MIDLAT = 0.68
 
--- Dent
+-- Mun
 local D_MARE_FREQ = 1.3
 local D_MARE_OCTAVES = 3
 local D_MARE0 = 0.06
@@ -164,7 +164,7 @@ local D_GRAIN = 0.05
 local C_HIGHLAND = { 0.62, 0.6, 0.57 }
 local C_MARE = { 0.37, 0.37, 0.4 }
 local C_RAY = { 0.9, 0.9, 0.88 }
--- Dent craters, per scale: cells per cube-face edge (equal-angle grid), probability that a cell holds a crater,
+-- Mun craters, per scale: cells per cube-face edge (equal-angle grid), probability that a cell holds a crater,
 -- rim radius range as a fraction of the cell, brightness strength. CRATER_EXTENT * max radius must stay below 1
 -- cell so the 3x3 cell search finds every crater.
 local CRATER_FACE_CELLS = { 4, 12, 36 }
@@ -457,7 +457,7 @@ function Biome.hash01(a: number, b: number, c: number, salt: number): number
 end
 
 --============================================================================
--- Kablamo
+-- Earth
 --============================================================================
 local homeRadius = Bodies.get(HOMEWORLD).Radius
 local siteFlatInner = SITE_FLAT_INNER_M / homeRadius -- chord lengths on the unit sphere (~ angles here)
@@ -468,7 +468,7 @@ local seaX, seaZ = math.cos(seaAngle), math.sin(seaAngle) -- east of lat 0 / lon
 local seaRadius = SITE_SEA_RADIUS_M / homeRadius
 
 -- (elevation above sea level, moisture ~0..1, ridge 0..1, heat ~0 at the poles .. 1 at the equator)
-local function kablamoFields(x: number, y: number, z: number): (number, number, number, number)
+local function earthFields(x: number, y: number, z: number): (number, number, number, number)
 	local wx = fbm(x * K_WARP_FREQ + 5.2, y * K_WARP_FREQ + 1.3, z * K_WARP_FREQ + 7.7, K_WARP_OCTAVES, 0.5)
 	local wy = fbm(x * K_WARP_FREQ + 9.1, y * K_WARP_FREQ + 3.9, z * K_WARP_FREQ + 2.4, K_WARP_OCTAVES, 0.5)
 	local wz = fbm(x * K_WARP_FREQ + 4.6, y * K_WARP_FREQ + 8.8, z * K_WARP_FREQ + 6.1, K_WARP_OCTAVES, 0.5)
@@ -506,7 +506,7 @@ local function kablamoFields(x: number, y: number, z: number): (number, number, 
 	return elev, moist, ridge, heat
 end
 
-local function kablamoShade(
+local function earthShade(
 	x: number,
 	y: number,
 	z: number,
@@ -674,7 +674,7 @@ local function cloudShade(
 end
 
 --============================================================================
--- Dent
+-- Mun
 --============================================================================
 type RayCrater = {
 	x: number,
@@ -931,7 +931,7 @@ local groundFields: { [number]: FieldsFn } = {}
 local groundShade: { [number]: ShadeFn } = {}
 for _, body in Bodies.List do
 	if body.Id == HOMEWORLD then
-		groundFields[body.Id], groundShade[body.Id] = kablamoFields, kablamoShade
+		groundFields[body.Id], groundShade[body.Id] = earthFields, earthShade
 	elseif body.Id == MOON then
 		groundFields[body.Id], groundShade[body.Id] = dentFields, dentShade
 	else

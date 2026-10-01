@@ -30,10 +30,10 @@
 	Planets do not rotate in v1: body axes = universe axes, which are frame.refRotInv in the pocket.
 
 	CHANGED (Phase 2a feedback): textured planets. The shared patch mesh has UVs (Biome's texture-space mapping),
-	and every patch MeshPart gets its own EditableImage painted from Biome (Kablamo's continents, oceans, ice caps;
-	Dent's maria and craters). Images are painted progressively by a background thread (init spawns it) that
+	and every patch MeshPart gets its own EditableImage painted from Biome (Earth's continents, oceans, ice caps;
+	Mun's maria and craters). Images are painted progressively by a background thread (init spawns it) that
 	yields every TEXTURE_BUDGET_S of work; until a patch is ready it shows the body's average biome colour.
-	Kablamo also gets a cloud shell (24 more patch clones with a transparent cloud texture via SurfaceAppearance)
+	Earth also gets a cloud shell (24 more patch clones with a transparent cloud texture via SurfaceAppearance)
 	and an atmosphere shell (translucent patch clones in the body's AtmosphereColor: a halo around the limb).
 	If EditableImage or SurfaceAppearance texturing is unavailable, the planets stay flat-coloured / cloudless
 	with one warning.
@@ -631,9 +631,7 @@ local function applyTexture(job: TextureJob, image: EditableImage): boolean
 		if not ok then
 			cloudsDisabled = true
 			warn(
-				"[ScaledSpace] cloud textures are unavailable ("
-					.. tostring(err)
-					.. "); Kablamo is drawn without clouds."
+				"[ScaledSpace] cloud textures are unavailable (" .. tostring(err) .. "); Earth is drawn without clouds."
 			)
 			return false
 		end

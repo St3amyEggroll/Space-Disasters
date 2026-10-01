@@ -1,6 +1,6 @@
 --!strict
 -- Tests for Render/EffectsMath (Phase 10): plume shaping by air pressure, smoke-trail fading, dust, re-entry heat
--- calibration on half-size Kablamo, the vapour cone, drift-aimed particle emission and the small geometry helpers.
+-- calibration on half-size Earth, the vapour cone, drift-aimed particle emission and the small geometry helpers.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TestKit = require(script.Parent.TestKit)
@@ -12,7 +12,7 @@ local EffectsMath = require(game:GetService("StarterPlayer").StarterPlayerScript
 -- Tunables
 --============================================================================
 local EPSILON = 1e-9
-local ORBIT_SPEED = 450 -- m/s, a re-entry from a 15 km orbit on half-size Kablamo
+local ORBIT_SPEED = 450 -- m/s, a re-entry from a 15 km orbit on half-size Earth
 --============================================================================
 
 local HOMEWORLD = Bodies.HOMEWORLD

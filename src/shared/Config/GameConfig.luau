@@ -14,7 +14,7 @@ local GameConfig = {
 	-- Identity
 	--========================================================================
 	GAME_NAME = "Space Disasters",
-	BASE_SITE_NAME = "Oopsie Point Launch Complex",
+	BASE_SITE_NAME = "Space Disasters Inc.",
 
 	--========================================================================
 	-- Physics constants
@@ -125,9 +125,9 @@ local GameConfig = {
 	RAILS_POS_TOLERANCE = 50, -- m between a proposed rail and the server's last valid state
 	RAILS_VEL_TOLERANCE = 5, -- m/s, same
 	DEBRIS_CHECK_INTERVAL = 1, -- s between suborbital-debris despawn checks
-	MAP_SCALE = 0.002, -- studs per metre when the map opens (Kablamo: 60 studs in radius)
-	MAP_SCALE_MIN = 0.0001, -- fully zoomed out: the whole Kablamo-Dent system fits on screen
-	MAP_SCALE_MAX = 0.03, -- fully zoomed in (keeps Kablamo's ball under the 2048-stud part limit)
+	MAP_SCALE = 0.002, -- studs per metre when the map opens (Earth: 60 studs in radius)
+	MAP_SCALE_MIN = 0.0001, -- fully zoomed out: the whole Earth-Mun system fits on screen
+	MAP_SCALE_MAX = 0.03, -- fully zoomed in (keeps Earth's ball under the 2048-stud part limit)
 	MAP_ZOOM_STEP = 1.2, -- scale factor per mouse-wheel notch (logarithmic zoom)
 	MAP_CAMERA_DISTANCE = 160, -- studs; the map camera never moves farther, zoom changes the scale instead
 	MAP_EXTENT = 650, -- studs around the focus where map objects are drawn (inside the map's star cube)

@@ -17,11 +17,11 @@
 	any body / craft label) to focus it.
 
 	What is drawn
-	  * bodies: Neon balls at scale, Kablamo's atmosphere shell, Dent's SOI sphere, a "ghost" Dent where the
+	  * bodies: Neon balls at scale, Earth's atmosphere shell, Mun's SOI sphere, a "ghost" Mun where the
 	    tracked craft will meet it
 	  * orbit lines (pooled Beams between Attachments on one anchored part per line, so a whole line moves with
 	    one CFrame write): the tracked craft's trajectory as up to MAP_PREDICT_PATCHES conic patches through SOI
-	    changes (Rails.predict), MAP_ORBIT_SEGMENTS segments each; Dent's orbit; other crafts' current orbits
+	    changes (Rails.predict), MAP_ORBIT_SEGMENTS segments each; Mun's orbit; other crafts' current orbits
 	    (MAP_OTHER_ORBIT_SEGMENTS). Each patch is anchored to its body: the first patch to the body now, later
 	    patches to where their body will be when the craft gets there, so the patches join up.
 	  * BillboardGui markers (in PlayerGui so they are clickable): every craft, every body, apoapsis / periapsis

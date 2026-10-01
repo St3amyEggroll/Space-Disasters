@@ -2,7 +2,7 @@
 --[[
 	SurfaceProps
 	Cosmetic ground clutter near the camera while the Surface layer draws (surface mode): stylised round trees,
-	pines, snowy pines, cacti, bushes and rocks on Kablamo; boulders and small crater rims on Dent.
+	pines, snowy pines, cacti, bushes and rocks on Earth; boulders and small crater rims on Mun.
 
 	Placement is deterministic: each SurfaceHeight tile is cut into CELL_SIZE cells in its own plane coordinates
 	(origin at the tile centre, axes = the tile's X / Z), grouped in CHUNK_CELLS x CHUNK_CELLS chunks. A cell

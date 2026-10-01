@@ -1,4 +1,4 @@
-# Space Disasters
+# Space Disasters Inc.
 
 A multiplayer rocket game for Roblox. You build rockets Plane Crazy–style and fly them KSP-style: staging, fuel, orbits, the Moon. Along the way you walk around inside crafts, go on EVA with a jetpack, and board other players' ships.
 
@@ -8,9 +8,9 @@ The build spec lives in the project brief. Progress and test steps are in [`PROG
 
 | Code name | In-game name | What it is |
 |---|---|---|
-| Sun | **Big Toasty** | The sun. It's for lighting and looks only. |
-| Homeworld | **Kablamo** | The home planet. The launch site, **Oopsie Point Launch Complex**, is on its equator. |
-| Moon | **Dent** | A crater-covered moon, about 37 minutes away by transfer burn. |
+| Sun | **Sol** | The sun. It's for lighting and looks only. |
+| Homeworld | **Earth** | The home planet. The launch site, **Space Disasters Inc.**, is on its equator. |
+| Moon | **Mun** | A crater-covered moon, about 37 minutes away by transfer burn. |
 
 Display names live in `src/shared/Config/Bodies.luau` and `GameConfig.BASE_SITE_NAME`. Rename them there any time; code uses the ids.
 

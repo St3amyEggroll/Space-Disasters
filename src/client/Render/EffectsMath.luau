@@ -53,8 +53,8 @@ local SOLID_PARTICLE_SIZE_MULT = 1.3
 local LIGHT_BRIGHTNESS_MAX = 3
 local VACUUM_LIGHT_MULT = 0.7
 -- Smoke trail
-local TRAIL_PRESSURE_FULL = 0.3 -- full trail at or below this altitude's pressure ratio (~1.2 km on Kablamo)
-local TRAIL_PRESSURE_NONE = 0.004 -- no trail above this altitude (~5.5 km on Kablamo)
+local TRAIL_PRESSURE_FULL = 0.3 -- full trail at or below this altitude's pressure ratio (~1.2 km on Earth)
+local TRAIL_PRESSURE_NONE = 0.004 -- no trail above this altitude (~5.5 km on Earth)
 local TRAIL_MAX_LENGTH = 900 -- studs of trail behind a fast craft
 local TRAIL_LIFETIME_MIN = 1.2 -- s
 local TRAIL_LIFETIME_MAX = 5 -- s (slow crafts: the smoke column lingers this long)
@@ -66,7 +66,7 @@ local DUST_THRUST_CAP = 1.5 -- thrust fraction above which the dust stops growin
 local DUST_HEIGHT_POWER = 1.5 -- stronger the closer the nozzle is to the ground
 -- Re-entry heating
 local HEAT_SPEED_MIN = 380 -- m/s; nothing below this (a normal ascent stays under it in thick air)
-local HEAT_SPEED_FULL = 460 -- m/s; full speed gate (low orbit on half-size Kablamo is ~470 m/s)
+local HEAT_SPEED_FULL = 460 -- m/s; full speed gate (low orbit on half-size Earth is ~470 m/s)
 local HEAT_FLUX_MIN = 1.5e5 -- rho * v^3 where the glow starts (~6.2 km at 450 m/s)
 local HEAT_FLUX_FULL = 3e6 -- rho * v^3 of full glow (~3.7 km at 450 m/s)
 -- Transonic vapour cone
@@ -116,7 +116,7 @@ function EffectsMath.smoothstep(edge0: number, edge1: number, x: number): number
 end
 
 -- How "vacuum-like" a plume is (0 at sea level, 1 in vacuum). The square root spreads the change over the lower
--- few kilometres, where Kablamo's thin (1 km scale height) air actually changes.
+-- few kilometres, where Earth's thin (1 km scale height) air actually changes.
 function EffectsMath.vacuumFactor(pressure: number): number
 	return 1 - math.sqrt(math.clamp(pressure, 0, 1))
 end

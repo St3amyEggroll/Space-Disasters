@@ -433,6 +433,14 @@ Steamy asked for "an effects phase, to update effects of rockets and everything"
   - Explosions on other players' rockets appear where their copy is drawn, 0.1 s behind the real rocket, which is also when the blocks vanish.
   - How the particles look (built-in Roblox textures, stretched sparks and streaks) can only be judged in Studio.
 
+### D39. New names (Steamy)
+- **Game:** Space Disasters Inc. The launch site is also "Space Disasters Inc." (`GameConfig.BASE_SITE_NAME`, on the base sign).
+- **Bodies:** home planet **Earth** (was Kablamo), moon **Mun** (was Dent), sun **Sol** (was Big Toasty).
+  - These are display names only. Body ids and code names (`Homeworld`, `Moon`, `Sun`) are unchanged.
+  - `/orbit` accepts either name (e.g. `/orbit 10 mun` or `/orbit 10 moon`).
+- Earlier entries in this file keep the old names as written at the time.
+- **Mars:** Steamy wants a Mars. It's a new planet, not a rename, so its design is pending (see PROGRESS).
+
 ---
 
 ## Phase 0 spike results

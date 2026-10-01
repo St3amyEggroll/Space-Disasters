@@ -4,7 +4,7 @@
 	Once per render frame, after the camera has moved: refresh the pocket frame (PocketController), build the
 	RenderContext and hand it to every render layer in order:
 	  ScaledSpace          sun, planets and moons as scaled proxies (and the surface-mode handover)
-	  Surface              the tile cap under the camera and the cosmetic Oopsie Point copy
+	  Surface              the tile cap under the camera and the cosmetic Space Disasters Inc. copy
 	  SkyCube              black starry space in front of Roblox's sky above the air (CHANGED Phase 2a playtest 4)
 	  SkyLighting          sun direction, shadow side and planet shadow
 	  RemoteCraftRenderer  other crafts in this pocket (interpolated stream)

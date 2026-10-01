@@ -85,11 +85,11 @@ Please tell us what looks too strong, too weak, or wrong. Every number is a tuna
 - **Orbit maths** (Kepler) and **"on rails" coasting:**
   - When you're out of the air, not burning and not steering for 0.5 s, the rocket follows its exact orbit. No network updates are sent and there's no drift.
   - Any key or thrust puts you back in normal flight.
-- **Gravity zones:** moving into and out of Dent's zone works in both directions while coasting.
+- **Gravity zones:** moving into and out of Mun's zone works in both directions while coasting.
 - **Debris:** orbiting debris stays. Falling debris far from everyone is cleaned up.
 - **HUD:** apoapsis and periapsis with the time to each, plus a **navball** with prograde and retrograde markers and heading and pitch.
 - **Map view (M):**
-  - Shows Kablamo, Dent, your orbit, other rockets' orbits, Ap/Pe markers, and the predicted path into and out of Dent's zone.
+  - Shows Earth, Mun, your orbit, other rockets' orbits, Ap/Pe markers, and the predicted path into and out of Mun's zone.
   - Drag to turn, the wheel zooms, click to focus. M or Esc closes it.
 
 ## Phase 5: how to test
@@ -98,13 +98,13 @@ Please tell us what looks too strong, too weak, or wrong. Every number is a tuna
    - Ap and Pe both read about 15 km, and their timers count down.
    - F3: network traffic drops.
 2. Press W: rails end right away. Let go: rails resume after about 0.5 s. With SAS on, it holds its attitude on rails.
-3. Press **M** in orbit: you should see your orbit as a cyan circle, Dent with its zone and orbit, and Ap/Pe markers.
+3. Press **M** in orbit: you should see your orbit as a cyan circle, Mun with its zone and orbit, and Ap/Pe markers.
    - Drag, scroll and click all work, and you can still steer.
    - M closes the map.
 4. **Navball:** pitch and yaw. Heading and pitch read sensibly, and prograde follows your velocity.
-5. **Dent:**
-   - Burn prograde until the map shows an orange path into Dent's zone. Coast, and the HUD body pill switches to Dent.
-   - `/orbit 10 dent`, then burn to escape and watch it switch back to Kablamo.
+5. **Mun:**
+   - Burn prograde until the map shows an orange path into Mun's zone. Coast, and the HUD body pill switches to Mun.
+   - `/orbit 10 mun`, then burn to escape and watch it switch back to Earth.
 6. **Debris:** stage a booster in orbit; it stays, and a second player sees it.
 7. **Late join:** coasting rockets show up right away for new players.
 
@@ -117,14 +117,14 @@ Please tell us what looks too strong, too weak, or wrong. Every number is a tuna
   - The rocket flies in its own **flight pocket** (a separate area of the server map that follows the craft). Everyone seated rides along.
 - **Spawning:** you spawn on your own plot.
 - **Flight model (KSP-style, `Shared/Sim/FlightModel`):**
-  - Gravity from Kablamo and Dent.
+  - Gravity from Earth and Mun.
   - Thrust with engine gimbal, and a per-tank fuel map (fuel flows within a stage segment).
   - Drag from the atmosphere (`Shared/Sim/Atmosphere`), with nose cones helping. Fins give lift and stability.
   - Ground contact, and crashes: any block that hits harder than its crash tolerance breaks off.
   - SAS holds your heading.
 - **The world while flying** (planets are now half size, D27, and much prettier, D30):
-  - Big Toasty, Kablamo and Dent are drawn as textured spheres in the sky. Kablamo has oceans, continents, deserts, forests, mountains, ice caps, clouds and an atmosphere glow. Dent has craters and dark seas.
-  - Near the ground: matching textured terrain colours, plus trees, pines, cacti, bushes and rocks (boulders and crater rims on Dent), and a copy of Oopsie Point, so you can see the base as you leave.
+  - Sol, Earth and Mun are drawn as textured spheres in the sky. Earth has oceans, continents, deserts, forests, mountains, ice caps, clouds and an atmosphere glow. Mun has craters and dark seas.
+  - Near the ground: matching textured terrain colours, plus trees, pines, cacti, bushes and rocks (boulders and crater rims on Mun), and a copy of Space Disasters Inc., so you can see the base as you leave.
   - The sun moves with the day cycle. When it's below the horizon you get the "shadow side" look (Q1 = A). The sky darkens as you climb out of the air.
 - **Staging:**
   - Space fires the next stage (the stage list is fixed at launch).
@@ -136,7 +136,7 @@ Please tell us what looks too strong, too weak, or wrong. Every number is a tuna
 - **Plumes:** engine flames when burning.
 - **Multiplayer basics:** other players' rockets and debris are shown in your pocket, smoothed over the network.
 - **Debug commands** (Studio only):
-  - `/orbit 20` puts your rocket in a circular 20 km orbit. `/orbit 10 dent` orbits Dent.
+  - `/orbit 20` puts your rocket in a circular 20 km orbit. `/orbit 10 mun` orbits Mun.
   - `/fuel` refills the tanks.
   - `/base` takes you back to base.
 - **F3 overlay:** new lines for your pocket, flight and universe, plus per-layer timings.
@@ -175,9 +175,9 @@ Open the new `SpaceDisasters.rbxl`, click **Connect** in the Rojo plugin, then *
 5. **Launch:** press **Space**. It lifts off, and the camera stays level with the horizon as the rocket tilts.
 6. **Steer:** tap **D** to lean over a little, then **T** to hold it with SAS.
 7. **Stage:** when the tank runs dry, press **Space**. The empty tank and engine fall away as debris.
-8. **Look around:** high up, Kablamo should have oceans, continents and clouds. The textures paint in over about 15 seconds, so it starts out a plain colour. Near the ground you should see trees and rocks.
+8. **Look around:** high up, Earth should have oceans, continents and clouds. The textures paint in over about 15 seconds, so it starts out a plain colour. Near the ground you should see trees and rocks.
 9. **Crash:** let the pod hit the ground. It breaks, and you respawn on your plot.
-10. **Orbit:** launch again, and once you're flying type `/orbit 15` in chat. The camera's "up" turns to the solar plane. Look for Dent.
+10. **Orbit:** launch again, and once you're flying type `/orbit 15` in chat. The camera's "up" turns to the solar plane. Look for Mun.
 11. **Fuel, base and time:** try `/fuel`, `/base`, and `/time 0` (midnight), `/time 6`, `/time 12` (noon).
 12. **F3:** check the pocket, flight and universe lines, and that FPS is OK.
 
@@ -185,7 +185,7 @@ Please paste back anything red in the Output, plus anything that looks or feels 
 
 ## Phase 1: what was built (Plane Crazy-style rework, see DECISIONS D20)
 
-- **Base (Oopsie Point Launch Complex):**
+- **Base (Space Disasters Inc.):**
   - 12 open plots, each a raised 80×80-stud baseplate: 20×20 blocks with a 4-stud grid drawn on it, and room to build 50 blocks tall.
   - The plots sit either side of the street, with a shared **launch area** of 8 pads to the north (follow the road through the gap in the north row).
   - The site is 948 parts.
@@ -231,7 +231,7 @@ Open the new `SpaceDisasters.rbxl`, click **Connect**, then **Play**.
   - A server-side ground plate (`BaseGround`) and a spawn (`BaseSpawn`) at slot 0
 - `Shared/Config`:
   - `GameConfig`: every global tunable from Appendix B, plus Section 8 limits
-  - `Bodies`: Big Toasty (Sun), Kablamo (Homeworld), Dent (Moon), with the Section 6.1 values. The Moon's SOI (~72,200 m) and period (~10,090 s) are derived from the other values.
+  - `Bodies`: Sol (Sun), Earth (Homeworld), Mun (Moon), with the Section 6.1 values. The Moon's SOI (~72,200 m) and period (~10,090 s) are derived from the other values.
   - `Parts`: all 23 parts from Section 6.2, with Isp/thrust helpers
 - `Shared/Math`:
   - `Vec3d`: doubles, with both allocating and out-param APIs, and rotation done in doubles
@@ -299,7 +299,7 @@ These place files already have `Lighting.Technology = Future`, `StreamingEnabled
 - 2026-09-30, spikes S1–S10 (Steamy): all ran to completion, including the 2-player S3 and S9. Results are in `DECISIONS.md`. Two harness issues were fixed: S5 started twice on a double click, and the spike lock now waits for every client to finish.
 - 2026-09-30, follow-up spikes S11 (cull distance) and S12 (EditableMesh budget/sharing) (Steamy): results and decisions D10/D11 are in `DECISIONS.md`.
 - 2026-10-01 (Steamy): space looks good. Skip 2b. Delete the Crew Cabin and Ladder; remodel the pod (keep it simple), engines, booster (flat top), adapter, decouplers and nose cones; add an animated landing leg. Done in D34.
-- 2026-10-01, fifth Phase 2a check (Steamy, at 13.7 km): space is black with stars, the sun and Dent. The blue sky showed through wedge-shaped gaps between the sky panels: they were aimed at the camera instead of lying flat in the cube faces. Fixed.
+- 2026-10-01, fifth Phase 2a check (Steamy, at 13.7 km): space is black with stars, the sun and Mun. The blue sky showed through wedge-shaped gaps between the sky panels: they were aimed at the camera instead of lying flat in the cube faces. Fixed.
 - 2026-10-01, fourth Phase 2a check (Steamy): the sky was Roblox's default cloud sky turned on its side, and space still wasn't black. Fixed in D33 (Roblox's sky kept upright for the ground; SkyCube draws black starry space; `/time` debug command).
 - 2026-10-01, third Phase 2a flight (Steamy): the sky no longer followed the rocket, but space stayed blue and the ground showed a blue/grey split sky. The rocket was invisible, with only a "Sit" prompt showing. Fixed in D32 (we paint the whole sky; models arriving in your pocket are un-hidden).
 - 2026-10-01, second Phase 2a flight (Steamy): all 79 tests passed in Studio. Problems: the sky split into two halves and followed the rocket; no black space; the engine flame stayed lit at 0% throttle. Fixed in D31.
@@ -308,9 +308,9 @@ These place files already have `Lighting.Technology = Future`, `StreamingEnabled
 ## Known issues
 
 - **Second round of feedback (sky, flames):** fixed in D31. The flight area now follows the planet's horizon, so the sky no longer tilts with the rocket, space turns black and starry, and flames go out at zero throttle. Not yet played in Studio.
-- **Clouds are off:** Roblox doesn't let game scripts paint them (Studio warning), so Kablamo has no cloud layer for now.
+- **Clouds are off:** Roblox doesn't let game scripts paint them (Studio warning), so Earth has no cloud layer for now.
 - **The Phase 2a feedback changes (launch flow, camera, smaller and prettier planets) have not been played in Studio yet.** Everything passes the offline checks (formatting, strict types, 79 tests).
-- **Planet textures take a moment:** about 15 s (Kablamo) and 18 s (Dent) of background painting after joining. If they look mirrored inside each square, flip `UV_FLIP_V` in `Biome.luau` (D30).
+- **Planet textures take a moment:** about 15 s (Earth) and 18 s (Mun) of background painting after joining. If they look mirrored inside each square, flip `UV_FLIP_V` in `Biome.luau` (D30).
 - **Water is solid** for now. Landing in the sea counts as landing on ground.
 - **Low graphics quality:** between about 8 km altitude and the scaled-space handover, the ground can look thin or empty at the lowest quality levels (the engine culls far parts, S11). To be tuned after the playtest.
 - **No parachutes, legs, landing or recovery yet.** That's Phase 2b, so every flight ends in a crash or `/base`.

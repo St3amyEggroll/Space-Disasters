@@ -1,7 +1,7 @@
 --!strict
 --[[
 	HomeBase
-	Builds the Oopsie Point Launch Complex: the home base site in base-pocket coordinates (= workspace
+	Builds the Space Disasters Inc.: the home base site in base-pocket coordinates (= workspace
 	coordinates, ground level y = 0). All plot, pad and spawn geometry comes from BaseLayout so the server and
 	client code that uses BaseLayout matches what is drawn here exactly.
 

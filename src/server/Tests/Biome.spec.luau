@@ -103,7 +103,7 @@ return function(t: TestKit.Context)
 		t.expectTrue(foundOcean, "no coast east of the launch site")
 	end)
 
-	t.test("Kablamo has oceans, land and polar ice", function()
+	t.test("Earth has oceans, land and polar ice", function()
 		local counts = kindCounts(HOMEWORLD)
 		local ocean = (counts.Ocean or 0) / SPHERE_SAMPLES
 		t.expectTrue(ocean > 0.5 and ocean < 0.7, `ocean fraction {ocean}`)
@@ -118,7 +118,7 @@ return function(t: TestKit.Context)
 		t.expectEqual(nearPole, "Snow")
 	end)
 
-	t.test("Dent has maria, highlands and craters", function()
+	t.test("Mun has maria, highlands and craters", function()
 		local counts = kindCounts(MOON)
 		for _, kind in { "Mare", "Highland", "Crater" } do
 			t.expectTrue((counts[kind] or 0) > SPHERE_SAMPLES * 0.05, "too little " .. kind)
@@ -128,9 +128,9 @@ return function(t: TestKit.Context)
 
 	t.test("average colours are plausible", function()
 		local r, g, b = Biome.averageColor(HOMEWORLD)
-		t.expectTrue(b > r, "Kablamo should look blue-ish from afar")
+		t.expectTrue(b > r, "Earth should look blue-ish from afar")
 		local mr, mg, mb = Biome.averageColor(MOON)
-		t.expectTrue(math.abs(mr - mg) < 0.1 and math.abs(mg - mb) < 0.1, "Dent should be grey")
+		t.expectTrue(math.abs(mr - mg) < 0.1 and math.abs(mg - mb) < 0.1, "Mun should be grey")
 		t.expectTrue(g >= 0 and g <= 1)
 	end)
 

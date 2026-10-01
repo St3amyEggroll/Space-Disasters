@@ -135,7 +135,7 @@ function SurfaceHeight.tileExtent(bodyId: number, tile: TileId): (number, number
 	return Vec3d.distance(left, right), Vec3d.distance(bottom, top)
 end
 
--- CHANGED (Phase 2a feedback): the launch site (lat 0 / lon 0 on Kablamo, centre of face +X) has raised pads and
+-- CHANGED (Phase 2a feedback): the launch site (lat 0 / lon 0 on Earth, centre of face +X) has raised pads and
 -- plot baseplates that rockets stand on. Base-pocket axes there: X = east = universe +Z, Y = up = universe +X,
 -- Z = north = universe +Y
 -- (Frames.surfaceRotation at lat 0 / lon 0); the face-centre tile's plane is the base pocket's y = 0.

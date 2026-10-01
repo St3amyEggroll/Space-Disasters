@@ -237,7 +237,7 @@ return function(t: TestKit.Context)
 		t.expectNear(dt, brute, 0.011)
 	end)
 
-	t.test("moving SOI entry: a transfer orbit meets Dent's SOI at the right time", function()
+	t.test("moving SOI entry: a transfer orbit meets Mun's SOI at the right time", function()
 		local moonOrbit = MOON.Orbit :: Bodies.CircularOrbit
 		local r1 = HOME.Radius + 10000
 		local r2 = moonOrbit.Radius

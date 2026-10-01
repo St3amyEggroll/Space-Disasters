@@ -1,7 +1,7 @@
 --!strict
 --[[
 	BaseLayout
-	Geometry of the home base (Oopsie Point Launch Complex) in base-pocket coordinates. The base pocket is slot 0
+	Geometry of the home base (Space Disasters Inc.) in base-pocket coordinates. The base pocket is slot 0
 	at the workspace origin and is SURFACE_ALIGNED, so base-pocket coordinates are workspace coordinates.
 	Ground level is y = 0.
 
