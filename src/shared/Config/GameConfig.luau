@@ -40,7 +40,7 @@ local GameConfig = {
 	LANDED_ANGULAR_SPEED = 0.05, -- rad/s
 	LANDED_TIME = 1.0, -- s the craft must stay below both thresholds
 	MASS_PROPS_FUEL_RATE = 2, -- Hz, mass/CoM/inertia refresh while fuel drains
-	LAUNCH_COUNTDOWN_S = 1.0,
+	LAUNCH_COUNTDOWN_S = 1.0, -- unused since the Phase 2a feedback (flight starts when the pilot sits; Space ignites)
 	MAX_HULL_POINTS = 64,
 	-- CHANGED (Phase 2a): flight controls, SAS and simulation tunables
 	THROTTLE_RATE = 0.8, -- throttle change per second while Shift/Ctrl is held

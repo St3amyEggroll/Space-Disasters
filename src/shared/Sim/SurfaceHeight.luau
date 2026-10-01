@@ -13,6 +13,7 @@
 	Pure module.
 ]]
 
+local BaseLayout = require(script.Parent.Parent.Config.BaseLayout)
 local Bodies = require(script.Parent.Parent.Config.Bodies)
 local GameConfig = require(script.Parent.Parent.Config.GameConfig)
 local Vec3d = require(script.Parent.Parent.Math.Vec3d)
@@ -23,6 +24,8 @@ type Vec3d = Vec3d.Vec3d
 -- Tunables
 --============================================================================
 local TARGET_TILE_SIZE = GameConfig.TILE_SIZE -- m, tile edge length at a face centre
+local SITE_CHECK_HEIGHT = 50 -- m; launch-site platforms are only looked up below this height above the plane
+local SITE_CHECK_RADIUS = 2000 -- m; ... and this close to the site (the base pocket's surface point)
 --============================================================================
 
 export type TileId = { face: number, i: number, j: number }
@@ -132,6 +135,20 @@ function SurfaceHeight.tileExtent(bodyId: number, tile: TileId): (number, number
 	return Vec3d.distance(left, right), Vec3d.distance(bottom, top)
 end
 
+-- CHANGED (Phase 2a feedback): the launch site (lat 0 / lon 0 on Kablamo, centre of face +X) has raised pads and
+-- plot baseplates that rockets stand on. Base-pocket axes there: X = east = universe +Z, Y = up = universe +X,
+-- Z = north = universe +Y
+-- (Frames.surfaceRotation at lat 0 / lon 0); the face-centre tile's plane is the base pocket's y = 0.
+local SITE_RADIUS = Bodies.get(Bodies.HOMEWORLD).Radius
+
+local function sitePlatform(pos: Vec3d): number
+	local dx = pos.x - SITE_RADIUS
+	if dx > SITE_CHECK_HEIGHT or math.abs(pos.y) > SITE_CHECK_RADIUS or math.abs(pos.z) > SITE_CHECK_RADIUS then
+		return 0
+	end
+	return BaseLayout.platformHeight(pos.z, pos.y)
+end
+
 --[[
 	Height of a body-relative position above the ground under it (negative = below ground), and the ground's
 	up normal there.
@@ -139,7 +156,11 @@ end
 function SurfaceHeight.height(bodyId: number, pos: Vec3d): (number, Vec3d)
 	local tile = SurfaceHeight.tileOf(bodyId, pos)
 	local up = SurfaceHeight.tileCenter(bodyId, tile)
-	return Vec3d.dot(pos, up) - Bodies.get(bodyId).Radius, up
+	local h = Vec3d.dot(pos, up) - Bodies.get(bodyId).Radius
+	if bodyId == Bodies.HOMEWORLD and up.x > 0.9999999 then
+		h -= sitePlatform(pos)
+	end
+	return h, up
 end
 
 return table.freeze(SurfaceHeight)

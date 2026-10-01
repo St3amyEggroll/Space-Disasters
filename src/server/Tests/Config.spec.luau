@@ -8,16 +8,17 @@ local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
 local Parts = require(ReplicatedStorage.Shared.Config.Parts)
 
 return function(t: TestKit.Context)
+	-- CHANGED (Phase 2a feedback): bodies halved (DECISIONS D27)
 	t.test("body constants match the spec", function()
 		local home = Bodies.get(Bodies.HOMEWORLD)
 		local moon = Bodies.get(Bodies.MOON)
-		t.expectRelNear(home.Mu, 3.5316e10, 1e-9)
-		t.expectRelNear(moon.Mu, 3.645e8, 1e-9)
-		t.expectNear(moon.SoiRadius, 72200, 200)
+		t.expectRelNear(home.Mu, 8.829e9, 1e-9)
+		t.expectRelNear(moon.Mu, 9.1125e7, 1e-9)
+		t.expectNear(moon.SoiRadius, 35300, 200)
 		local orbit = moon.Orbit
 		t.expectTrue(orbit ~= nil, "moon has an orbit")
 		if orbit then
-			t.expectNear(orbit.Period, 10090, 20)
+			t.expectNear(orbit.Period, 6900, 20)
 		end
 		t.expectTrue(Bodies.get(Bodies.SUN).VisualOnly)
 		t.expectEqual(#Bodies.physicalBodies(), 2)
@@ -27,9 +28,9 @@ return function(t: TestKit.Context)
 		local home = Bodies.get(Bodies.HOMEWORLD)
 		local r = home.Radius + 10000
 		local v = math.sqrt(home.Mu / r)
-		t.expectNear(v, 710, 5)
+		t.expectNear(v, 470, 5)
 		local period = 2 * math.pi * math.sqrt(r ^ 3 / home.Mu)
-		t.expectNear(period / 60, 10.3, 0.5)
+		t.expectNear(period / 60, 8.9, 0.5)
 	end)
 
 	t.test("every part fits the grid and has stats", function()

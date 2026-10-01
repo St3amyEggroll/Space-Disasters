@@ -73,6 +73,7 @@ local craftOnPad: { [number]: number } = {} -- pad index -> craft id
 local padOfCraft: { [number]: number } = {} -- craft id -> pad index
 local nextCraftId = 1
 local lastRollout: { [Player]: number } = {}
+local rolledOutListeners: { (player: Player, record: CraftRecord) -> () } = {}
 
 local function removeCraft(id: number)
 	local record = crafts[id]
@@ -136,7 +137,8 @@ local function onRollOut(player: Player)
 	end
 	local graph = CraftGraph.build(design)
 	if graph.rootId == nil then
-		BuildService.notify(player, "Needs a command part (Command Pod or Crew Cabin)", "Error")
+		-- CHANGED (Phase 2a feedback): Roll Out seats you in the pod, so a pilot seat is required
+		BuildService.notify(player, "You need a Command Pod (or Crew Cabin) to fly! Add one to your rocket.", "Error")
 		return
 	end
 	if #graph.looseIds > 0 then
@@ -203,6 +205,10 @@ local function onRollOut(player: Player)
 	padOfCraft[id] = padIndex
 	model:SetAttribute("PadIndex", padIndex)
 	BuildService.notify(player, `Rolled out "{design.name}" to launch pad {padIndex}`)
+	-- CHANGED (Phase 2a feedback): CrewService puts the owner straight into the pilot seat
+	for _, listener in rolledOutListeners do
+		task.spawn(listener, player, crafts[id])
+	end
 end
 
 local function onSetBoarding(player: Player, mode: unknown)
@@ -256,6 +262,16 @@ end
 
 function CraftService.all(): { [number]: CraftRecord }
 	return crafts
+end
+
+-- CHANGED (Phase 2a feedback): called (in its own thread) after a player rolls a craft out onto a pad.
+function CraftService.onRolledOut(listener: (player: Player, record: CraftRecord) -> ())
+	table.insert(rolledOutListeners, listener)
+end
+
+-- CHANGED (Phase 2a feedback): the pad a craft stands on, or nil once it has lifted off.
+function CraftService.padOf(id: number): number?
+	return padOfCraft[id]
 end
 
 -- Frees the craft's launch pad (it has lifted off).

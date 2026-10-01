@@ -3,9 +3,8 @@
 	ChaseCamera
 	The piloting camera (spec 7.11): a Scriptable camera orbiting the craft's centre of mass.
 
-	start(getTarget)  take over Workspace.CurrentCamera; getTarget() returns the craft's CoM CFrame in workspace
-	                  every frame (nil = keep following the last known position). Calling start again while active
-	                  just swaps the target function.
+	start(getTarget)  take over Workspace.CurrentCamera; getTarget() returns a Target every frame (nil = keep
+	                  following the last known position). Calling start again while active just swaps the function.
 	stop()            give the camera back: CameraType Custom, CameraSubject = the local Humanoid.
 	isActive()
 
@@ -13,10 +12,14 @@
 	between GameConfig.CHASE_ZOOM_MIN and CHASE_ZOOM_MAX (smooth, exponential); on a gamepad the right stick
 	orbits and DPad up/down zooms.
 
-	The orbit is around the world Y axis through the target ("up" = pocket up): during flight the craft sits upright
-	in its pocket, so the camera never rolls with the craft. Rotation is applied instantly (no lag in the feel);
-	only the orbit centre follows the target smoothly, and snaps when the target jumps far (teleport / rebase).
-	No occlusion handling: the camera simply orbits, the craft's own parts never push it in.
+	CHANGED (Phase 2a feedback): it behaves like the normal Roblox camera, but "up" is whatever the Target says
+	(gravity up in the atmosphere, the solar-system plane's normal in space) and the orbit lives in a STABLE space
+	(universe axes), NOT the pocket's: a CRAFT_ALIGNED pocket turns with the craft, so orbiting about pocket Y made
+	the camera follow every turn of the rocket. Now the rocket turns on screen and the horizon stays level.
+	The horizontal view direction is carried along (re-projected onto the plane under `up`) whenever up changes,
+	so blending between gravity-up and the solar plane never jumps. Rotation is applied instantly; only the orbit
+	centre follows the target smoothly, and snaps when the target jumps far (teleport / rebase). No occlusion
+	handling: the camera simply orbits.
 ]]
 
 local Players = game:GetService("Players")
@@ -44,14 +47,22 @@ local FOLLOW_SMOOTHING = 15 -- 1/s, exponential approach of the orbit centre to 
 local SNAP_DISTANCE = 500 -- studs; a target jump larger than this is snapped to instead of smoothed
 --============================================================================
 
+export type Target = {
+	position: Vector3, -- orbit centre, workspace
+	up: Vector3, -- unit "up" in the stable space (universe axes)
+	toWorkspace: CFrame, -- rotation from the stable space to workspace axes (the pocket frame's refRotInv)
+}
+
 local ChaseCamera = {}
 
 local active = false
-local getTargetFn: (() -> CFrame?)? = nil
+local getTargetFn: (() -> Target?)? = nil
 local connections: { RBXScriptConnection } = {}
 
-local yaw = 0 -- rad about world +Y
+local back = Vector3.zAxis -- unit, stable space: horizontal direction from the target toward the camera
 local pitch = DEFAULT_PITCH -- rad, positive = camera above the target
+local lastUp = Vector3.yAxis -- stable space
+local lastToWorkspace = CFrame.identity
 local zoom = GameConfig.CHASE_ZOOM_DEFAULT -- displayed distance, studs
 local targetZoom = GameConfig.CHASE_ZOOM_DEFAULT
 local focus: Vector3? = nil -- smoothed orbit centre
@@ -131,6 +142,21 @@ local function localHumanoid(): Humanoid?
 	return character:FindFirstChildOfClass("Humanoid")
 end
 
+-- Rotates v about the unit axis u by angle a (Rodrigues).
+local function rotateAbout(v: Vector3, u: Vector3, a: number): Vector3
+	local c, sn = math.cos(a), math.sin(a)
+	return v * c + u:Cross(v) * sn + u * (u:Dot(v) * (1 - c))
+end
+
+-- `v` made perpendicular to `up` and unit length; any perpendicular when v is (nearly) parallel to up.
+local function horizontal(v: Vector3, up: Vector3): Vector3
+	local h = v - up * v:Dot(up)
+	if h.Magnitude < 1e-4 then
+		h = up:Cross(if math.abs(up.X) < 0.9 then Vector3.xAxis else Vector3.zAxis)
+	end
+	return h.Unit
+end
+
 local function step(dt: number)
 	local camera = Workspace.CurrentCamera
 	if not camera then
@@ -142,25 +168,31 @@ local function step(dt: number)
 
 	-- Target
 	local getTarget = getTargetFn
-	local targetCFrame = if getTarget then getTarget() else nil
-	if targetCFrame then
-		lastTarget = targetCFrame.Position
+	local t = if getTarget then getTarget() else nil
+	if t then
+		lastTarget = t.position
+		lastUp = t.up
+		lastToWorkspace = t.toWorkspace
 	end
 	local target = lastTarget
 	if not target then
 		return -- nothing to look at yet; leave the camera where it is
 	end
+	local up = lastUp
 
-	-- Orbit angles: applied immediately
-	yaw -= pendingDelta.X * MOUSE_SENSITIVITY
+	-- Orbit angles: applied immediately. Mouse right = orbit to the right around the target, like Roblox.
+	local yawDelta = -pendingDelta.X * MOUSE_SENSITIVITY
 	pitch += pendingDelta.Y * MOUSE_SENSITIVITY
 	pendingDelta = Vector2.zero
 	if stick ~= Vector2.zero then
-		yaw -= stick.X * GAMEPAD_SPEED * dt
+		yawDelta -= stick.X * GAMEPAD_SPEED * dt
 		pitch -= stick.Y * GAMEPAD_SPEED * dt
 	end
-	yaw %= 2 * math.pi
 	pitch = math.clamp(pitch, -PITCH_LIMIT, PITCH_LIMIT)
+	back = horizontal(back, up)
+	if yawDelta ~= 0 then
+		back = horizontal(rotateAbout(back, up, yawDelta), up)
+	end
 
 	-- Zoom: exponential approach in log space so every step feels the same at any distance
 	if zoomIn ~= zoomOut then
@@ -178,8 +210,9 @@ local function step(dt: number)
 	end
 	focus = current
 
-	local rotation = CFrame.Angles(0, yaw, 0) * CFrame.Angles(-pitch, 0, 0)
-	camera.CFrame = CFrame.new(current) * rotation * CFrame.new(0, 0, zoom)
+	local offset = lastToWorkspace:VectorToWorldSpace(back * math.cos(pitch) + up * math.sin(pitch))
+	local upWorkspace = lastToWorkspace:VectorToWorldSpace(up)
+	camera.CFrame = CFrame.lookAt(current + offset * zoom, current, upWorkspace)
 	camera.Focus = CFrame.new(current)
 end
 
@@ -187,9 +220,9 @@ end
 -- API
 --============================================================================
 
--- Takes over Workspace.CurrentCamera (Scriptable). getTarget returns the craft's CoM CFrame in workspace each
--- frame; nil keeps the last known position.
-function ChaseCamera.start(getTarget: () -> CFrame?)
+-- Takes over Workspace.CurrentCamera (Scriptable). getTarget returns the orbit centre and the up direction each
+-- frame; nil keeps the last known ones.
+function ChaseCamera.start(getTarget: () -> Target?)
 	getTargetFn = getTarget
 	if active then
 		return
@@ -198,13 +231,14 @@ function ChaseCamera.start(getTarget: () -> CFrame?)
 
 	-- Begin from the current view direction so taking over does not jump the view around.
 	local camera = Workspace.CurrentCamera
+	local first = getTarget()
+	if first then
+		lastUp = first.up
+		lastToWorkspace = first.toWorkspace
+	end
 	if camera then
-		local look = camera.CFrame.LookVector
-		local flat = Vector3.new(look.X, 0, look.Z)
-		if flat.Magnitude > 1e-3 then
-			-- The camera sits at -look from the target; yaw measures the camera's offset direction (+Z at yaw 0).
-			yaw = math.atan2(-look.X, -look.Z)
-		end
+		-- the camera sits at -look from the target, expressed in the stable space
+		back = horizontal(lastToWorkspace:VectorToObjectSpace(-camera.CFrame.LookVector), lastUp)
 	end
 	pitch = DEFAULT_PITCH
 	zoom = GameConfig.CHASE_ZOOM_DEFAULT

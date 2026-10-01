@@ -7,6 +7,8 @@
 	can touch-sit past the permission check; a seat is enabled only while occupied.
 
 	Pilots, deaths and respawn arrive with flight in Phase 2.
+	CHANGED (Phase 2a feedback): Roll Out puts the owner straight into the craft's pilot seat, and every successful
+	sit is announced (onSeated) so FlightService can start the flight when a pilot sits down.
 ]]
 
 local Players = game:GetService("Players")
@@ -23,6 +25,7 @@ local PlotService = require(script.Parent.PlotService)
 --============================================================================
 local FRIEND_CACHE_S = 120
 local HATCH_COOLDOWN_S = 0.5
+local SEAT_APPROACH_LIFT = 3 -- studs above the seat the character is moved to before sitting
 --============================================================================
 
 local CrewService = {}
@@ -31,6 +34,7 @@ local notifyRemote: RemoteEvent
 local watchedSeats: { [Seat]: boolean } = {}
 local friendCache: { [string]: { value: boolean, time: number } } = {}
 local lastHatch: { [Player]: number } = {}
+local seatedListeners: { (player: Player, seat: Seat) -> () } = {}
 
 -- Owner user id and boarding mode for whatever contains `instance` (a craft or a hangar build).
 local function ownership(instance: Instance): (number?, string)
@@ -125,24 +129,19 @@ local function watchSeat(seat: Seat)
 	end)
 end
 
-local function onSitPrompt(prompt: ProximityPrompt, player: Player)
-	local seat = prompt.Parent
-	if not (seat and seat:IsA("Seat")) or seat.Occupant ~= nil then
-		return
-	end
-	local _, humanoid = aliveHumanoid(player)
-	if humanoid == nil then
-		return
-	end
-	if not canBoard(player, seat) then
-		notifyRemote:FireClient(player, "The owner hasn't allowed you to board this craft", "Error")
-		return
+-- Sits the player in the seat (permission already checked). Returns true when they ended up seated.
+local function sitIn(player: Player, seat: Seat): boolean
+	local character, humanoid = aliveHumanoid(player)
+	if character == nil or humanoid == nil or seat.Occupant ~= nil then
+		return false
 	end
 	watchSeat(seat)
 	unseat(humanoid)
-	if seat.Occupant ~= nil then
-		return
+	if seat.Occupant ~= nil or seat.Parent == nil then
+		return false
 	end
+	-- CHANGED (Phase 2a feedback): bring the character to the seat first (Roll Out seats players from anywhere)
+	character:PivotTo(seat.CFrame + seat.CFrame.UpVector * SEAT_APPROACH_LIFT)
 	seat.Disabled = false
 	seat:Sit(humanoid)
 	task.delay(0.5, function()
@@ -150,6 +149,41 @@ local function onSitPrompt(prompt: ProximityPrompt, player: Player)
 			seat.Disabled = true
 		end
 	end)
+	if humanoid.SeatPart ~= seat then
+		return false
+	end
+	for _, listener in seatedListeners do
+		task.spawn(listener, player, seat)
+	end
+	return true
+end
+
+local function onSitPrompt(prompt: ProximityPrompt, player: Player)
+	local seat = prompt.Parent
+	if not (seat and seat:IsA("Seat")) or seat.Occupant ~= nil then
+		return
+	end
+	if not canBoard(player, seat) then
+		notifyRemote:FireClient(player, "The owner hasn't allowed you to board this craft", "Error")
+		return
+	end
+	sitIn(player, seat)
+end
+
+-- CHANGED (Phase 2a feedback): the owner of a freshly rolled-out craft goes straight into its pilot seat.
+local function onRolledOut(player: Player, record: CraftService.CraftRecord)
+	local model = record.model
+	if model == nil then
+		return
+	end
+	for _, descendant in model:GetDescendants() do
+		if descendant:IsA("Seat") and descendant:GetAttribute("IsPilot") == true then
+			if sitIn(player, descendant) then
+				return
+			end
+		end
+	end
+	notifyRemote:FireClient(player, "You need a Command Pod with a free pilot seat to fly!", "Error")
 end
 
 local function onHatchPrompt(prompt: ProximityPrompt, player: Player, entering: boolean)
@@ -191,6 +225,12 @@ end
 
 function CrewService.Init()
 	notifyRemote = Remotes.event("Notify")
+	CraftService.onRolledOut(onRolledOut)
+end
+
+-- CHANGED (Phase 2a feedback): called (in its own thread) whenever a player sits down in a craft seat.
+function CrewService.onSeated(listener: (player: Player, seat: Seat) -> ())
+	table.insert(seatedListeners, listener)
 end
 
 function CrewService.Start()

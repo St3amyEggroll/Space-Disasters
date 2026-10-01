@@ -6,7 +6,10 @@
 	camera and the local craft's engine plumes.
 
 	Piloting = sitting in a craft's pilot seat (Seat with IsPilot).
-	  On the pad (State "Prelaunch"): Space asks the server to launch.
+	  CHANGED (Phase 2a feedback): sitting in the pilot seat starts the flight (the server hands this client the
+	  simulation with no stage fired), so on the pad the rocket already has real physics and every control works;
+	  Space ignites stage 1. F before ignition puts the craft back on the pad (server side).
+	  (Fallback: if the craft is still "Prelaunch", Space asks the server to start the flight.)
 	  In flight: the server's FlightStart hands this client the simulation. Controls: W/S pitch, A/D yaw,
 	  Q/E roll, Shift/Ctrl throttle up/down, Z full, X cut, Space stage, T SAS, V camera, F leave seat.
 	The simulation keeps running while this client owns it, even if the pilot stands up (controls go to zero).
@@ -37,6 +40,7 @@ local ChaseCamera = require(script.Parent.Parent.Render.ChaseCamera)
 local FlightHUD = require(script.Parent.Parent.UI.FlightHUD)
 local HudData = require(script.Parent.Parent.Render.HudData)
 local Plumes = require(script.Parent.Parent.Render.Plumes)
+local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local DebugOverlay = require(script.Parent.DebugOverlay)
 local PocketController = require(script.Parent.PocketController)
 local RemoteCraftRenderer = require(script.Parent.RemoteCraftRenderer)
@@ -54,6 +58,10 @@ local THROTTLE_RATE = GameConfig.THROTTLE_RATE
 local UT_RESYNC_THRESHOLD = 0.25 -- s; the local sim's UT snaps to UniverseTime beyond this drift
 local STAGE_STATS_INTERVAL = 0.5 -- s
 local ACTION_PRIORITY = Enum.ContextActionPriority.High.Value + 10
+-- CHANGED (Phase 2a feedback): camera "up" is gravity up low down and the solar plane's normal in space
+local CAMERA_GRAVITY_UP_MIN_ALT = 2000 -- m; gravity up below max(this, atmosphere top)
+local CAMERA_UP_BLEND_HEIGHT = 3000 -- m above that over which up blends to the solar-plane normal
+local SOLAR_PLANE_NORMAL = Vector3.yAxis -- universe axes: every orbit lies in the XZ plane
 local FLIGHT_KEYS = {
 	Enum.KeyCode.W,
 	Enum.KeyCode.A,
@@ -332,7 +340,8 @@ local function hudFromState(state: Protocol.State, name: string, isPilot: boolea
 	local data: HudData.HudData = {
 		craftName = name,
 		isPilot = isPilot,
-		prelaunch = false,
+		-- CHANGED (Phase 2a feedback): "on the pad" = simulating but nothing ignited yet
+		prelaunch = craft ~= nil and isPilot and craft.stageIndex == 1,
 		countdown = nil,
 		bodyName = body.DisplayName,
 		altitude = altitude,
@@ -440,7 +449,26 @@ end
 -- Camera and plumes
 --============================================================================
 
-local function cameraTarget(): CFrame?
+-- CHANGED (Phase 2a feedback): the camera orbits in universe axes with a gravity / solar-plane up (ChaseCamera).
+local function cameraUp(frame: Frames.Frame): Vector3
+	local body = Bodies.get(frame.refBodyId)
+	local r = Vec3d.length(frame.refPos)
+	if r < 1 then
+		return SOLAR_PLANE_NORMAL
+	end
+	local radial = Vec3d.toVector3(Vec3d.scale(frame.refPos, 1 / r))
+	local atmosphere = body.Atmosphere
+	local low = math.max(CAMERA_GRAVITY_UP_MIN_ALT, if atmosphere then atmosphere.Top else 0)
+	local t = math.clamp((r - body.Radius - low) / CAMERA_UP_BLEND_HEIGHT, 0, 1)
+	t = t * t * (3 - 2 * t) -- smoothstep
+	local up = radial:Lerp(SOLAR_PLANE_NORMAL, t)
+	if up.Magnitude < 1e-3 then
+		return SOLAR_PLANE_NORMAL
+	end
+	return up.Unit
+end
+
+local function cameraTarget(): ChaseCamera.Target?
 	local seatInfo = currentSeat()
 	if seatInfo == nil then
 		return nil
@@ -450,13 +478,16 @@ local function cameraTarget(): CFrame?
 	local root = CraftDesign.rootBlock(design)
 	local rootModel = if root then CraftBuilder.findBlockModel(model, root.id) else nil
 	local bounds = if rootModel then rootModel.PrimaryPart else nil
+	local position: Vector3
 	if bounds == nil then
-		local cf = model:GetBoundingBox()
-		return cf
+		position = model:GetBoundingBox().Position
+	else
+		-- craft axes are aligned with the pocket (pad and CRAFT_ALIGNED pocket), so the CoM offset adds directly
+		local com = if sim and craftId == seatInfo.craftId then (sim :: Craft).physics.com else Vector3.zero
+		position = (bounds :: BasePart).Position + com
 	end
-	-- craft axes are aligned with the pocket (pad and CRAFT_ALIGNED pocket), so the CoM offset adds directly
-	local com = if sim and craftId == seatInfo.craftId then (sim :: Craft).physics.com else Vector3.zero
-	return CFrame.new((bounds :: BasePart).Position + com)
+	local frame = PocketController.frame()
+	return { position = position, up = cameraUp(frame), toWorkspace = frame.refRotInv }
 end
 
 local function updatePlumes()
@@ -632,7 +663,9 @@ function FlightController.Start()
 		local seatInfo = currentSeat()
 		local piloting = seatInfo ~= nil and seatInfo.isPilot
 		bindKeys(piloting)
-		if piloting and chaseEnabled then
+		-- CHANGED (Phase 2a feedback): everyone aboard a flying craft gets the level camera, not only the pilot
+		local aboardFlying = seatInfo ~= nil and seatInfo.state ~= "Prelaunch"
+		if aboardFlying and chaseEnabled then
 			ChaseCamera.start(cameraTarget)
 		elseif ChaseCamera.isActive() then
 			ChaseCamera.stop()

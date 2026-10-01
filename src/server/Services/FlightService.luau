@@ -3,12 +3,14 @@
 	FlightService (Phase 2a)
 	Server side of flying: launch, staging, the pilot's state stream, crashes and crew safety.
 
-	Launch (spec 7.5): the seated pilot of a Prelaunch craft presses Space (RequestStage). The server allocates a
-	CRAFT_ALIGNED flight pocket whose reference is the craft's root pose, moves the real craft model into it with
-	one rigid transform M (seated crew ride along with their anchored seats, S9), sends PocketTransfer to every
-	crew member (unseated ones move themselves by M and ack; the server teleports them after 3 s without an ack),
-	waits LAUNCH_COUNTDOWN_S, then creates the simulation, fires stage 1 and hands the simulation to the pilot's
-	client (FlightStart).
+	Flight start (spec 7.5; CHANGED Phase 2a feedback: real physics on the pad): as soon as a pilot sits in a
+	Prelaunch craft (Roll Out seats the owner automatically), the server allocates a CRAFT_ALIGNED flight pocket
+	whose reference is the craft's root pose, moves the real craft model into it with one rigid transform M (seated
+	crew ride along with their anchored seats, S9), sends PocketTransfer to every crew member (unseated ones move
+	themselves by M and ack; the server teleports them after 3 s without an ack), creates the simulation and hands
+	it to the pilot's client (FlightStart, no stage fired). The craft then stands on its pad under real physics;
+	Space ignites stage 1. Leaving the pilot seat before ignition returns the craft to the base pocket as Prelaunch
+	(so friends can board), and sitting down again restarts the flight.
 
 	In flight the pilot's client simulates; its PilotState (20 Hz) is validated and becomes the server copy's
 	state. Staging and part destruction are applied to the server copy (authoritative): separated pieces become
@@ -20,6 +22,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local BaseLayout = require(ReplicatedStorage.Shared.Config.BaseLayout)
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
 local CraftBuilder = require(ReplicatedStorage.Shared.Craft.CraftBuilder)
 local CraftDesign = require(ReplicatedStorage.Shared.Craft.CraftDesign)
@@ -32,6 +35,7 @@ local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
 local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local CraftService = require(script.Parent.CraftService)
+local CrewService = require(script.Parent.CrewService)
 local PocketService = require(script.Parent.PocketService)
 
 type CraftRecord = CraftService.CraftRecord
@@ -39,7 +43,6 @@ type CraftRecord = CraftService.CraftRecord
 --============================================================================
 -- Tunables
 --============================================================================
-local COUNTDOWN_S = GameConfig.LAUNCH_COUNTDOWN_S
 local ACK_TIMEOUT_S = GameConfig.POCKET_TRANSFER_ACK_TIMEOUT
 local CREW_BOUNDS_MARGIN = 4 -- studs around a craft's bounding box that count as "aboard"
 local POSITION_TOLERANCE = 50 -- m: |dpos - vel*dt| allowed between pilot states
@@ -49,6 +52,8 @@ local STRIKE_LIMIT = 3
 local STRIKE_WINDOW_S = 5
 local CRASH_ALTITUDE_SLACK = 150 -- m above the craft's size where a reported crash is still plausible
 local LAUNCH_THROTTLE = 1
+local SEATED_START_DELAY_S = 0.3 -- s between a pilot sitting down and the flight starting
+local PAD_STEP_OFF = 6 -- studs beyond the pad edge where a pilot who leaves the seat on the pad is put
 --============================================================================
 
 local FlightService = {}
@@ -244,18 +249,20 @@ function FlightService.applyDestruction(record: CraftRecord, ids: { number })
 end
 
 --============================================================================
--- Launch
+-- Flight start / return to the pad
 --============================================================================
 
-local function launch(player: Player, record: CraftRecord)
+-- CHANGED (Phase 2a feedback): runs when a pilot sits down in a Prelaunch craft; the craft then stands on its pad
+-- under real physics until Space ignites stage 1 (no countdown, no automatic staging).
+function FlightService.startFlight(player: Player, record: CraftRecord)
 	local model = record.model
-	if model == nil or launching[record.id] then
+	if model == nil or launching[record.id] or record.state ~= "Prelaunch" then
 		return
 	end
 	launching[record.id] = true
 	model:SetAttribute("State", "Launching")
 
-	-- The root block's true pose on the pad (craft axes = design axes, placed with record.origin).
+	-- The root block's true pose (craft axes = design axes, placed with record.origin in the base pocket).
 	local root = CraftDesign.rootBlock(record.design) :: CraftDesign.Block
 	local rootWorld = record.origin * CFrame.new(CraftDesign.blockCenter(root) * CraftDesign.GRID)
 	local baseFrame = PocketService.baseFrame()
@@ -274,16 +281,10 @@ local function launch(player: Player, record: CraftRecord)
 	local crew = crewOf(model)
 	model:PivotTo(m * model:GetPivot())
 	model.Parent = pocket.folder:FindFirstChild("Crafts")
+	record.origin = m * record.origin
 	record.pocketId = pocket.id
-	CraftService.freePad(record.id)
 	for _, member in crew do
 		sendTransfer(member, 0, pocket.id, m, 0)
-	end
-
-	task.wait(COUNTDOWN_S)
-	launching[record.id] = nil
-	if CraftService.get(record.id) ~= record then
-		return -- removed during the countdown
 	end
 
 	local state: FlightModel.CraftState = {
@@ -300,31 +301,97 @@ local function launch(player: Player, record: CraftRecord)
 	record.sim = sim
 	record.state = "Flying"
 	model:SetAttribute("State", "Flying")
+	launching[record.id] = nil
 
-	local pilotRecord = pilotSeatCraft(player)
-	if pilotRecord == record then
+	if pilotSeatCraft(player) == record then
 		record.pilot = player
 		record.serverSim = false
 	else
 		record.pilot = nil
 		record.serverSim = true
 	end
-
-	local result = FlightModel.stage(sim)
 	lastValid[record.id] = { state = FlightModel.copyState(sim.state), fuel = FlightModel.totalFuel(sim) }
 	if record.pilot then
 		remotes.FlightStart:FireClient(
 			player,
 			record.id,
 			Protocol.encodeState(record.id, sim.state),
-			1,
+			0,
 			CraftDesign.toBuffer(record.design)
 		)
 	end
 	CraftService.announce(record)
-	if result then
-		applyStageResult(record, result)
+end
+
+-- Can this craft still go back to Prelaunch? Only before ignition and with every block intact.
+local function canReturnToPad(record: CraftRecord): boolean
+	local sim = record.sim
+	return sim ~= nil
+		and record.pocketId ~= nil
+		and record.model ~= nil
+		and not record.isDebris
+		and sim.stageIndex == 1
+		and sim.state.bodyId == Bodies.HOMEWORLD
+		and #sim.physics.design.blocks == #record.design.blocks
+end
+
+-- CHANGED (Phase 2a feedback): the pilot stood up before ignition. Moves the craft (where it stands now, even if
+-- it tipped over) and its crew back into the base pocket as a Prelaunch craft, and releases the flight pocket.
+local function returnToPad(record: CraftRecord, pilot: Player)
+	local sim = record.sim :: FlightModel.Craft
+	local model = record.model :: Model
+	local pocketId = record.pocketId :: number
+	local pocket = PocketService.flightPocket(pocketId)
+	if pocket == nil then
+		return
 	end
+	local crew = crewOf(model)
+	for _, player in PocketService.playersIn(pocketId) do
+		if not table.find(crew, player) then
+			table.insert(crew, player)
+		end
+	end
+	-- The real model never moves inside its CRAFT_ALIGNED pocket: the root block sits at the slot origin with
+	-- pocket axes = craft axes, so "now" is the pocket frame at the craft's current state.
+	local now = Frames.new(sim.state.bodyId, sim.state.pos, sim.state.rot, pocket.slotOrigin, 0)
+	local m = Frames.relativeTransform(now, PocketService.baseFrame())
+
+	-- The pilot stands up first and is placed directly beside the pad by the server, so their transfer below
+	-- carries the identity transform (the client must not move an unseated character by M a second time).
+	local pilotHumanoid = humanoidOf(pilot)
+	if pilotHumanoid then
+		unseat(pilotHumanoid)
+	end
+
+	model:PivotTo(m * model:GetPivot())
+	model.Parent = PocketService.baseCrafts()
+	record.origin = m * record.origin
+	record.pocketId = nil
+	record.sim = nil
+	record.pilot = nil
+	record.serverSim = false
+	record.state = "Prelaunch"
+	model:SetAttribute("State", "Prelaunch")
+	lastValid[record.id] = nil
+	strikes[record.id] = nil
+	remotes.CraftRemoved:FireAllClients(record.id)
+
+	local character = pilot.Character
+	if pilotHumanoid and character then
+		local cf, size = model:GetBoundingBox()
+		local padIndex = CraftService.padOf(record.id)
+		local target = if padIndex
+			then BaseLayout.pad(padIndex).top.Position + Vector3.new(BaseLayout.PAD_SIZE / 2 + PAD_STEP_OFF, 3, 0)
+			else Vector3.new(cf.Position.X + size.X / 2 + PAD_STEP_OFF, 3, cf.Position.Z)
+		character:PivotTo(CFrame.lookAt(target, Vector3.new(cf.Position.X, target.Y, cf.Position.Z)))
+	end
+	for _, member in crew do
+		sendTransfer(member, pocketId, 0, if member == pilot then CFrame.identity else m, 0)
+	end
+	if not table.find(crew, pilot) then
+		sendTransfer(pilot, pocketId, 0, CFrame.identity, 0)
+	end
+	PocketService.releaseFlightPocket(pocketId)
 end
 
 --============================================================================
@@ -341,7 +408,7 @@ local function onRequestStage(player: Player, craftId: unknown)
 	end
 	if record.state == "Prelaunch" then
 		if pilotSeatCraft(player) == record then
-			task.spawn(launch, player, record)
+			task.spawn(FlightService.startFlight, player, record)
 		end
 		return
 	end
@@ -351,6 +418,7 @@ local function onRequestStage(player: Player, craftId: unknown)
 	end
 	local result = FlightModel.stage(sim)
 	if result then
+		CraftService.freePad(record.id) -- CHANGED (Phase 2a feedback): the pad is free once engines are lit
 		applyStageResult(record, result)
 	end
 end
@@ -453,9 +521,28 @@ local function onReportDestroyed(player: Player, craftId: unknown, ids: unknown,
 end
 
 local function onLeaveSeat(player: Player)
+	-- CHANGED (Phase 2a feedback): before ignition, standing up puts the craft back on the pad
+	local record = pilotSeatCraft(player)
+	if record and record.pilot == player and canReturnToPad(record) then
+		returnToPad(record, player)
+		return
+	end
 	local humanoid = humanoidOf(player)
 	if humanoid then
 		unseat(humanoid)
+	end
+end
+
+-- CHANGED (Phase 2a feedback): a pilot sitting down in a Prelaunch craft starts its flight (physics on the pad).
+local function onSeated(player: Player, seat: Seat)
+	if seat:GetAttribute("IsPilot") ~= true then
+		return
+	end
+	-- let the seat weld replicate first, so the pilot's client treats itself as seated during the transfer
+	task.wait(SEATED_START_DELAY_S)
+	local record = pilotSeatCraft(player)
+	if record and record.state == "Prelaunch" then
+		FlightService.startFlight(player, record)
 	end
 end
 
@@ -503,6 +590,7 @@ function FlightService.Init()
 end
 
 function FlightService.Start()
+	CrewService.onSeated(onSeated)
 	remotes.RequestStage.OnServerEvent:Connect(onRequestStage)
 	remotes.ReportPartsDestroyed.OnServerEvent:Connect(onReportDestroyed)
 	remotes.LeaveSeat.OnServerEvent:Connect(onLeaveSeat)
@@ -540,8 +628,8 @@ function FlightService.Start()
 	-- When a flight pocket empties, its craft carries on uncrewed as a server-simulated craft.
 	PocketService.onReleased(function(pocket)
 		local record = CraftService.get(pocket.craftId)
-		if record == nil then
-			return
+		if record == nil or record.pocketId ~= pocket.id then
+			return -- gone, or already moved back to the pad (returnToPad)
 		end
 		if record.model then
 			(record.model :: Model):Destroy()

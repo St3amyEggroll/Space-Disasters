@@ -4,6 +4,7 @@
 	Assigns a hangar plot (and its launch pad) to each player on join and frees it on leave.
 	Plot index is exposed as the player attribute "PlotIndex"; the plot sign shows the owner's name.
 	Other services subscribe to onAssigned / onFreed.
+	CHANGED (Phase 2a feedback): players spawn (and respawn) standing on their own plot.
 ]]
 
 local Players = game:GetService("Players")
@@ -16,6 +17,7 @@ local PocketService = require(script.Parent.PocketService)
 -- Tunables
 --============================================================================
 local PLOT_ATTRIBUTE = "PlotIndex"
+local SPAWN_ROOT_TIMEOUT_S = 10 -- s to wait for a new character's HumanoidRootPart
 --============================================================================
 
 type Listener = (player: Player, plotIndex: number) -> ()
@@ -90,14 +92,48 @@ local function free(player: Player)
 	fire(freedListeners, player, index)
 end
 
+-- Where the player should stand when sent home: their plot's spawn spot, else the base spawn.
+local function spawnCFrame(player: Player): CFrame
+	local index = plotByPlayer[player]
+	if index then
+		return BaseLayout.plotSpawn(BaseLayout.plot(index))
+	end
+	return CFrame.new(BaseLayout.SPAWN_POSITION + Vector3.new(0, 3, 0))
+end
+
+local function moveToPlot(player: Player, character: Model)
+	local root = character:WaitForChild("HumanoidRootPart", SPAWN_ROOT_TIMEOUT_S)
+	if root == nil or character.Parent == nil or player.Character ~= character then
+		return
+	end
+	character:PivotTo(spawnCFrame(player))
+	player:SetAttribute("PocketId", 0)
+end
+
+local function onPlayerAdded(player: Player)
+	assign(player)
+	player.CharacterAdded:Connect(function(character: Model)
+		moveToPlot(player, character)
+	end)
+	local character = player.Character
+	if character then
+		task.spawn(moveToPlot, player, character)
+	end
+end
+
 function PlotService.Init() end
 
 function PlotService.Start()
-	Players.PlayerAdded:Connect(assign)
+	Players.PlayerAdded:Connect(onPlayerAdded)
 	Players.PlayerRemoving:Connect(free)
 	for _, player in Players:GetPlayers() do
-		assign(player)
+		onPlayerAdded(player)
 	end
+end
+
+-- CHANGED (Phase 2a feedback): the spot a player spawns at (their plot).
+function PlotService.spawnCFrame(player: Player): CFrame
+	return spawnCFrame(player)
 end
 
 -- The player's plot index, or nil.

@@ -20,24 +20,29 @@ Phase 2 is split into 2a/2b so you can playtest halfway through (agreed with Ste
 
 ## Phase 2a: what was built
 
-- **Launch:** sit in the pilot seat (the Command Pod or a cabin seat) of a rocket on a launch pad and press **Space**.
-  - After a 1 s countdown the rocket moves into its own **flight pocket** (a separate area of the server map that follows the craft), and stage 1 fires.
-  - Everyone seated in the rocket moves with it.
+- **Launch** (reworked after Steamy's feedback, see D28):
+  - **ROLL OUT** puts your rocket on a pad and puts you straight into its Command Pod. With no pod, it tells you to add one.
+  - The rocket is live on the pad, with real physics. Throttle, SAS and steering work, and a wobbly rocket can tip over.
+  - Press **Space** to light the engines. **F** before ignition puts you back beside the pad, so friends can board, and sitting down again restarts.
+  - The rocket flies in its own **flight pocket** (a separate area of the server map that follows the craft). Everyone seated rides along.
+- **Spawning:** you spawn on your own plot.
 - **Flight model (KSP-style, `Shared/Sim/FlightModel`):**
   - Gravity from Kablamo and Dent.
   - Thrust with engine gimbal, and a per-tank fuel map (fuel flows within a stage segment).
   - Drag from the atmosphere (`Shared/Sim/Atmosphere`), with nose cones helping. Fins give lift and stability.
   - Ground contact, and crashes: any block that hits harder than its crash tolerance breaks off.
   - SAS holds your heading.
-- **The world while flying:**
-  - Big Toasty, Kablamo and Dent are drawn as scaled spheres in the sky (scaled space).
-  - Near the ground a tiled planet surface appears, plus a copy of Oopsie Point, so you can see the base as you leave.
+- **The world while flying** (planets are now half size, D27, and much prettier, D30):
+  - Big Toasty, Kablamo and Dent are drawn as textured spheres in the sky. Kablamo has oceans, continents, deserts, forests, mountains, ice caps, clouds and an atmosphere glow. Dent has craters and dark seas.
+  - Near the ground: matching textured terrain colours, plus trees, pines, cacti, bushes and rocks (boulders and crater rims on Dent), and a copy of Oopsie Point, so you can see the base as you leave.
   - The sun moves with the day cycle. When it's below the horizon you get the "shadow side" look (Q1 = A). The sky darkens as you climb out of the air.
 - **Staging:**
   - Space fires the next stage (the stage list is fixed at launch).
   - Decoupled parts become **debris** that keeps falling (the server simulates it) until it crashes.
 - **Flight HUD:** altitude, speed, vertical speed, throttle, SAS, fuel, current stage with Δv/TWR, and key hints.
-- **Chase camera:** it follows the rocket. Right-drag orbits and the mouse wheel zooms. **V** switches back to the normal camera.
+- **Camera (D29):** like the normal Roblox camera (right-drag orbits, the wheel zooms), but it never turns with the rocket.
+  - In the air, "up" is away from the planet. In space, "up" is square to the solar plane, and it blends smoothly between the two.
+  - **V** switches to the stock camera.
 - **Plumes:** engine flames when burning.
 - **Multiplayer basics:** other players' rockets and debris are shown in your pocket, smoothed over the network.
 - **Debug commands** (Studio only):
@@ -45,7 +50,7 @@ Phase 2 is split into 2a/2b so you can playtest halfway through (agreed with Ste
   - `/fuel` refills the tanks.
   - `/base` takes you back to base.
 - **F3 overlay:** new lines for your pocket, flight and universe, plus per-layer timings.
-- **Tests:** 68 offline tests (new: Universe, FlightModel, Protocol).
+- **Tests:** 79 offline tests (new: Universe, FlightModel, Protocol, Biome, launch-site platforms).
 
 ## Phase 2a: how to test
 
@@ -63,25 +68,28 @@ Open the new `SpaceDisasters.rbxl`, click **Connect** in the Rojo plugin, then *
 
 | Key | Does |
 |---|---|
-| Space | launch, then fire the next stage |
+| Space | light the engines, then fire the next stage |
 | Shift / Ctrl | throttle up / down |
 | Z / X | full / zero throttle |
 | W / S | pitch |
 | A / D | yaw |
 | Q / E | roll |
 | T | SAS on/off |
-| V | chase camera on/off |
-| F | leave the seat |
+| V | camera: level orbit / stock Roblox |
+| F | leave the seat (before ignition: step off back to the pad) |
 
-1. **Build the sanity rocket:** Small Engine, Small Tank Long, Small Decoupler, Command Pod, Parachute. **ROLL OUT**, walk to your pad, and press **E** on the pod to sit.
-2. **Launch:** press **Space**. After about a second the rocket lifts off and the HUD shows altitude climbing. The base should drop away below you.
-3. **Steer:** tap **D** to lean over a little, then **T** to hold it with SAS.
-4. **Stage:** when the tank runs dry, press **Space**. The empty tank and engine fall away as debris. The pod keeps going up and then falls back.
-5. **Crash:** let the pod hit the ground. It should break (there are no working chutes until Phase 2b). You go back to base.
-6. **Orbit:** launch again, and once you're flying type `/orbit 20` in chat. The planet should curve away below, with Dent visible in the sky. Leave it running for a bit and watch day turn into night.
-7. **Fuel and base:** try `/fuel` and `/base`.
-8. **F3:** check the pocket, flight and universe lines, and that FPS is OK.
-9. **Two players (optional):** with Test > Clients and Servers set to 2, one player launches while the other watches from the ground. Then try riding along in a Crew Cabin.
+1. **Spawn:** you should appear on your own plot.
+2. **Build the sanity rocket:** Small Engine, Small Tank Long, Small Decoupler, Command Pod, Parachute. Press **ROLL OUT**. You land straight in the pod on a pad.
+3. **No pod:** build something without a pod and press ROLL OUT. It should say you need a Command Pod.
+4. **On the pad:** press X then Shift (the throttle moves on the HUD), T for SAS, and wiggle W/A/S/D. The rocket stays put. Press **F**: you're beside the pad, and the rocket is back to normal. Sit in the pod again (E).
+5. **Launch:** press **Space**. It lifts off, and the camera stays level with the horizon as the rocket tilts.
+6. **Steer:** tap **D** to lean over a little, then **T** to hold it with SAS.
+7. **Stage:** when the tank runs dry, press **Space**. The empty tank and engine fall away as debris.
+8. **Look around:** high up, Kablamo should have oceans, continents and clouds. The textures paint in over about 15 seconds, so it starts out a plain colour. Near the ground you should see trees and rocks.
+9. **Crash:** let the pod hit the ground. It breaks, and you respawn on your plot.
+10. **Orbit:** launch again, and once you're flying type `/orbit 15` in chat. The camera's "up" turns to the solar plane. Look for Dent.
+11. **Fuel and base:** try `/fuel` and `/base`.
+12. **F3:** check the pocket, flight and universe lines, and that FPS is OK.
 
 Please paste back anything red in the Output, plus anything that looks or feels wrong.
 
@@ -200,9 +208,12 @@ These place files already have `Lighting.Technology = Future`, `StreamingEnabled
 - 2026-09-30, Play Solo (Steamy): both bootstraps booted and Studio printed `[Tests] 24 passed, 0 failed` with no errors.
 - 2026-09-30, spikes S1–S10 (Steamy): all ran to completion, including the 2-player S3 and S9. Results are in `DECISIONS.md`. Two harness issues were fixed: S5 started twice on a double click, and the spike lock now waits for every client to finish.
 - 2026-09-30, follow-up spikes S11 (cull distance) and S12 (EditableMesh budget/sharing) (Steamy): results and decisions D10/D11 are in `DECISIONS.md`.
+- 2026-10-01, first Phase 2a flights (Steamy): spawn on your plot; Roll Out should seat you in the pod (or say you need one); live controls and physics on the pad; a camera that doesn't turn with the rocket (gravity up in the air, the solar plane in space); a smaller planet that looks much better. All done; see D27–D30.
 
 ## Known issues
 
-- **Phase 2a has not been played in Studio yet.** Everything passes the offline checks (formatting, strict types, 68 tests), but feel, tuning and camera need a playtest.
+- **The Phase 2a feedback changes (launch flow, camera, smaller and prettier planets) have not been played in Studio yet.** Everything passes the offline checks (formatting, strict types, 79 tests).
+- **Planet textures take a moment:** about 15 s (Kablamo) and 18 s (Dent) of background painting after joining. If they look mirrored inside each square, flip `UV_FLIP_V` in `Biome.luau` (D30).
+- **Water is solid** for now. Landing in the sea counts as landing on ground.
 - **Low graphics quality:** between about 8 km altitude and the scaled-space handover, the ground can look thin or empty at the lowest quality levels (the engine culls far parts, S11). To be tuned after the playtest.
 - **No parachutes, legs, landing or recovery yet.** That's Phase 2b, so every flight ends in a crash or `/base`.

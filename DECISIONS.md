@@ -180,6 +180,57 @@ The 2a request included the sky, so the D10/D11 scaled space and the Q1 = A ligh
 - **The limb budget:** a proxy sphere only needs its visible limb within the draw distance, not its far hemisphere. Budgeting for the limb lets proxies sit closer and bigger than the first, far-side budget allowed.
 - **Fallback:** if EditableMesh is unavailable (the place isn't published, or the Mesh/Image APIs setting is off), bodies are drawn as single Ball parts.
 
+### D27. Smaller planets (Steamy, Phase 2a feedback)
+Steamy felt Kablamo was too big, so both bodies are **half size**. This deviates from the spec's Section 6.1 values.
+- **Kablamo:** radius 30 km (was 60 km), surface gravity still 9.81. The atmosphere top is 7 km (was 8 km), with a 1 km scale height.
+  - Low orbit at 10 km altitude is about 470 m/s (was about 710), with a period of about 8.9 minutes.
+  - The sanity rocket (about 2,100 m/s) now reaches orbit easily.
+- **Dent:** radius 7.5 km, orbit 220 km (was 450 km). Its SOI is about 35 km and its period about 6,900 s.
+
+### D28. Flight starts when the pilot sits; real physics on the pad (Steamy, Phase 2a feedback)
+- **Spawning:** players spawn (and respawn) on their own plot, near its street edge. `/base` also takes you to your plot.
+- **Roll Out:**
+  - Roll Out puts the owner straight into the craft's pilot seat. Both command parts (Command Pod, Crew Cabin) have one.
+  - Without a command part, Roll Out refuses: "You need a Command Pod (or Crew Cabin) to fly!"
+- **Flight start:**
+  - When a pilot sits in a Prelaunch craft, the flight starts right away: the pocket transfer, then `FlightStart` with **no stage fired**. The launch countdown is gone.
+  - The rocket stands on its pad under the real flight model. It can tip over if it's badly balanced.
+  - Throttle, SAS and steering work on the pad. **Space ignites stage 1**, and that's also when the pad is freed.
+- **Platforms in the ground height:** `SurfaceHeight.height` now includes the launch-site platforms (`BaseLayout.platformHeight`): the 1-stud pads and plot baseplates. That way the rocket stands on the pad top instead of sinking 1 stud.
+- **Return to pad:** pressing **F** before ignition (no stage fired, no parts lost) moves the craft back into the base pocket as Prelaunch, where it stands now.
+  - The pilot is put beside the pad, and the flight pocket is released.
+  - This keeps boarding possible: friends board while the craft is Prelaunch, then the pilot sits down again to restart the flight.
+- **Debris:** none can exist before ignition, so returning to the pad is always clean.
+
+### D29. Level camera (Steamy, Phase 2a feedback)
+The flight camera no longer turns with the rocket.
+- **Why it used to:** a CRAFT_ALIGNED pocket turns with the craft, so orbiting about pocket Y followed every rotation.
+- **How it works now:**
+  - The orbit lives in universe axes. Its "up" is gravity up (away from the body's centre) below max(2 km, atmosphere top).
+  - Over the next 3 km it smoothly blends to the solar-system plane's normal (universe +Y; every orbit is in the XZ plane).
+  - Controls are like the Roblox camera: right-drag to orbit, wheel to zoom. The horizontal view direction is carried along as "up" changes, so nothing jumps.
+- **Who gets it:** everyone aboard a flying craft, not just the pilot. **V** switches back to the stock Roblox camera.
+
+### D30. Planet visuals (Steamy: "make the planet look better")
+- **`Shared/Sim/Biome`:** a pure, deterministic look model sampled by direction. It's shared by the space view and the ground view, so they match.
+  - **Kablamo:** about 61% ocean, with shallows, beaches, grass, forest, desert, mountains with snowy peaks, and ice caps.
+  - **Dent:** maria, craters at several sizes, and ray craters.
+  - The base always sits on flat grassland, with the sea about 6–7 km to the east.
+  - It uses the built-in `math.noise` (about 20× faster than pure Luau). That is Luau's own C code, so Roblox and Lune give the same results.
+- **From space:**
+  - Every scaled-space patch gets its own EditableImage texture: 24 × 256 px for Kablamo and 24 × 128 px for Dent, through UVs on the shared patch mesh.
+  - Textures are painted in the background (about 4 ms per frame). Until a patch is done it shows the planet's average colour.
+  - Kablamo also gets a cloud shell (SurfaceAppearance with transparency) and a thin atmosphere shell, each with an on/off tunable.
+  - This updates D11: one shared mesh, but per-part textures.
+- **On the ground:**
+  - Tiles are coloured from Biome and get a 64 px texture through a shared tile mesh. The textures are cached and painted nearest-first at 2 ms per frame.
+  - Cosmetic props: trees, pines, cacti, bushes and rocks on Kablamo; boulders and crater rims on Dent.
+  - Props are placed deterministically per cell, capped at 600 parts, kept 800 m clear of the base, and never collide.
+- **Budgets:**
+  - At most 120 EditableImages (S12 measured 200 × 256² as fine) and 2 EditableMeshes (the budget is 8).
+  - Every creation is guarded. Without "Allow Mesh / Image APIs", everything falls back to flat Biome colours with one warning.
+- **Heads-up for Studio:** if textures look mirrored inside a patch or tile, set `UV_FLIP_V = true` in `Biome.luau`.
+
 ---
 
 ## Phase 0 spike results

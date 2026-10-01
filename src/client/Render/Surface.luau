@@ -17,21 +17,32 @@
 	Positions are kept in doubles relative to their body and converted with Frames only after the reference is
 	subtracted (invariant I1).
 
+	CHANGED (Phase 2a feedback): the ground matches the planet seen from space. Each tile Part is coloured and
+	given a material from Biome at its centre; on top of that, tiles get a Biome texture: a pooled MeshPart box
+	(clone of one shared EditableMesh, same pose and size as the tile Part) carrying a TILE_TEXTURE_SIZE
+	EditableImage painted over the tile's footprint. Textures are painted nearest-first from a queue with a
+	per-frame time budget; while a tile is textured its Part is invisible (Transparency 1) but still collides.
+	Images of released tiles are cached (LRU, MAX_TILE_IMAGES in total) so coming back costs nothing. Without
+	EditableMesh / EditableImage the flat biome-coloured Parts remain. Near-camera props: SurfaceProps.
+
 	API:
 		Surface.init(parent)                   -- parent = workspace.ClientUniverse.Surface
 		Surface.update(ctx, surfaceMode)       -- every frame; surfaceMode from ScaledSpace.isSurfaceMode()
+		                                         -- (also drives SurfaceProps)
 ]]
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
+local Biome = require(ReplicatedStorage.Shared.Sim.Biome)
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 local HomeBase = require(ReplicatedStorage.Shared.Sites.HomeBase)
 local RenderContext = require(script.Parent.RenderContext)
 local SurfaceHeight = require(ReplicatedStorage.Shared.Sim.SurfaceHeight)
+local SurfaceProps = require(script.Parent.SurfaceProps)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 
@@ -52,9 +63,18 @@ local MAX_TILE_EXTENT = 2048 -- studs, Roblox part size limit
 local COLLIDE_RADIUS = GameConfig.TILE_COLLIDE_RADIUS -- studs, tile nearest point to the local player's root
 local SHADOW_RADIUS = 1000 -- studs, tiles farther than this from the camera cast no shadow
 local POOL_PREWARM = 100 -- tile parts created at init (a full cap is 69-93 tiles)
-local TINT_BRIGHTNESS = 0.035 -- +/- fraction of per-tile brightness variation
-local TINT_HUE = 0.02 -- +/- fraction of per-tile green/red balance variation
-local HASH_SALT = 7919 -- second hash stream for the hue variation
+
+-- CHANGED (Phase 2a feedback): biome-textured tiles
+local TEXTURED_TILES_ENABLED = true
+local TILE_TEXTURE_SIZE = 64 -- pixels per tile side (~32 m per pixel)
+local TILE_TEXTURE_CELLS = 8 -- Biome coarse grid cells per tile side
+local TILE_TEXTURE_DETAIL = 3 -- Biome detail level (finer than the scaled-space textures)
+local TILE_TEXTURE_BUDGET_S = 0.002 -- painting work per frame
+local MAX_TILE_IMAGES = 48 -- EditableImages for tiles: in use + cached for tiles you may come back to
+local TILE_MESH_MATERIAL = Enum.Material.SmoothPlastic
+local OCEAN_TILE_FRACTION = 0.5 -- textured tiles with more water than this get OCEAN_REFLECTANCE
+local OCEAN_REFLECTANCE = 0.08
+local BODY_KEY_STRIDE = 134217728 -- tile keys are < 2^27: bodyId * stride + tileKey is unique per body
 
 local BASE_POCKET_ID = 0
 local SITE_LATITUDE = 0 -- rad, the base pocket's surface point (PocketService)
@@ -63,10 +83,19 @@ local SITE_VIEW_DISTANCE = 25000 -- m, true camera distance to the site below wh
 
 local BULK_MOVE_MODE = Enum.BulkMoveMode.FireCFrameChanged
 
-type Look = { color: Color3, material: Enum.Material }
-local LOOKS: { [number]: Look } = {
-	[Bodies.HOMEWORLD] = { color = Color3.fromRGB(88, 134, 64), material = Enum.Material.Grass },
-	[Bodies.MOON] = { color = Color3.fromRGB(128, 128, 126), material = Enum.Material.Slate },
+-- CHANGED (Phase 2a feedback): untextured tiles take the Biome colour at their centre and this material
+local KIND_MATERIALS: { [string]: Enum.Material } = {
+	Ocean = Enum.Material.SmoothPlastic,
+	Beach = Enum.Material.Sand,
+	Grass = Enum.Material.Grass,
+	Forest = Enum.Material.Grass,
+	Desert = Enum.Material.Sand,
+	Rock = Enum.Material.Rock,
+	Snow = Enum.Material.Snow,
+	Mare = Enum.Material.Slate,
+	Highland = Enum.Material.Slate,
+	Crater = Enum.Material.Slate,
+	Ray = Enum.Material.Slate,
 }
 local FALLBACK_MATERIAL = Enum.Material.SmoothPlastic
 --============================================================================
@@ -79,6 +108,14 @@ type ActiveTile = {
 	half: Vector3, -- half size
 	collide: boolean,
 	shadow: boolean,
+	-- CHANGED (Phase 2a feedback): texture state
+	tile: TileId,
+	bodyId: number,
+	imageKey: number, -- body-qualified tile key (texture cache)
+	mesh: MeshPart?, -- textured box drawn instead of the Part
+	image: EditableImage?,
+	ocean: boolean,
+	dist: number, -- m from the nadir at the last rebuild (texture priority)
 }
 
 local Surface = {}
@@ -159,42 +196,11 @@ local function tilePose(bodyId: number, tile: TileId): (Vec3d, CFrame, Vector3)
 	return pos, rot, Vector3.new(math.min(ex, MAX_TILE_EXTENT), TILE_THICKNESS, math.min(ez, MAX_TILE_EXTENT))
 end
 
--- (a * b) mod 2^32 without losing precision in doubles (a < 2^32, b < 2^27).
-local function mul32(a: number, b: number): number
-	local lo = bit32.band(a, 0xFFFF)
-	local hi = bit32.rshift(a, 16)
-	return ((hi * b) % 65536 * 65536 + lo * b) % 4294967296
-end
-
--- Deterministic hash of an integer key to [0, 1).
-local function hash01(key: number): number
-	local h = key % 4294967296
-	h = bit32.bxor(h, bit32.rshift(h, 16))
-	h = mul32(h, 0x045D9F3B)
-	h = bit32.bxor(h, bit32.rshift(h, 16))
-	h = mul32(h, 0x045D9F3B)
-	h = bit32.bxor(h, bit32.rshift(h, 16))
-	return h / 4294967296
-end
-
-local function lookOf(bodyId: number): Look
-	local look = LOOKS[bodyId]
-	if look then
-		return look
-	end
-	return { color = Bodies.get(bodyId).Color, material = FALLBACK_MATERIAL }
-end
-
--- The body's ground colour with a slight deterministic per-tile tint so tile edges are readable.
-local function tileColor(bodyId: number, key: number): Color3
-	local base = lookOf(bodyId).color
-	local brightness = 1 + TINT_BRIGHTNESS * (hash01(key) * 2 - 1)
-	local hue = TINT_HUE * (hash01(key + HASH_SALT) * 2 - 1)
-	return Color3.new(
-		math.clamp(base.R * brightness * (1 - hue), 0, 1),
-		math.clamp(base.G * brightness * (1 + hue), 0, 1),
-		math.clamp(base.B * brightness, 0, 1)
-	)
+-- CHANGED (Phase 2a feedback): the Biome colour, material and kind at a tile's centre (untextured look).
+local function tileLook(bodyId: number, tile: TileId): (Color3, Enum.Material, Biome.Kind)
+	local up = SurfaceHeight.tileCenter(bodyId, tile)
+	local r, g, b, kind = Biome.sample(bodyId, up.x, up.y, up.z)
+	return Color3.new(r, g, b), KIND_MATERIALS[kind] or FALLBACK_MATERIAL, kind :: Biome.Kind
 end
 
 -- Distance from a point to an oriented box (0 inside).
@@ -243,6 +249,22 @@ local lastOffX, lastOffY, lastOffZ = 0, 0, 0
 local lastSlot: Vector3 = Vector3.zero
 local lastRot: CFrame = CFrame.identity
 
+-- CHANGED (Phase 2a feedback): tile textures
+type CachedImage = { image: EditableImage, ocean: boolean, stamp: number }
+local texturesEnabled = TEXTURED_TILES_ENABLED -- false once EditableMesh / EditableImage failed
+local tileTemplate: MeshPart? = nil -- unparented source of every tile box (kept, never destroyed)
+local tileMeshKeepAlive: { EditableMesh } = {} -- MeshParts vanish when their EditableMesh is destroyed
+local meshPool: { MeshPart } = {}
+local imageCache: { [number]: CachedImage } = {} -- images of released tiles, by imageKey
+local freeImages: { EditableImage } = {}
+local allImages: { EditableImage } = {} -- every image created (keeps them alive)
+local imageStamp = 0
+local painter: Biome.Painter? = nil
+local paintTile: ActiveTile? = nil
+local paintImage: EditableImage? = nil
+local meshParts: { BasePart } = {}
+local meshCFrames: { CFrame } = {}
+
 local siteModel: Model? = nil
 local siteParts: { BasePart } = {}
 local siteBaseCFrames: { CFrame } = {}
@@ -282,8 +304,293 @@ local function releasePart(p: Part)
 	table.insert(pool, p)
 end
 
+--============================================================================
+-- Tile textures (CHANGED Phase 2a feedback)
+--============================================================================
+local function disableTextures(reason: string)
+	if texturesEnabled then
+		texturesEnabled = false
+		warn("[Surface] biome ground textures are unavailable (" .. reason .. "); tiles stay flat biome colours.")
+	end
+end
+
+-- Unit box (-0.5 .. 0.5) whose top face carries the tile texture (Biome texture space: s along X, t along Z);
+-- the sides stretch the edge pixels down. No bottom face.
+local function buildTileTemplate(): (EditableMesh, MeshPart)
+	local AssetService = game:GetService("AssetService")
+	local mesh = AssetService:CreateEditableMesh()
+	local ok, err = pcall(function()
+		local function uvOf(x: number, z: number): Vector2
+			local u, v = Biome.paramToUV(x + 0.5, z + 0.5)
+			return Vector2.new(u, v)
+		end
+		local function quad(corners: { Vector3 }, uvs: { Vector2 }, normal: Vector3)
+			local normalId = mesh:AddNormal(normal)
+			local ids: { number } = {}
+			local uvIds: { number } = {}
+			for i = 1, 4 do
+				ids[i] = mesh:AddVertex(corners[i])
+				uvIds[i] = mesh:AddUV(uvs[i])
+			end
+			-- counter-clockwise seen from outside: (b - a) x (c - a) along the outward normal
+			local flip = (corners[2] - corners[1]):Cross(corners[3] - corners[1]):Dot(normal) < 0
+			local function triangle(i: number, j: number, k: number)
+				if flip then
+					j, k = k, j
+				end
+				local face = mesh:AddTriangle(ids[i], ids[j], ids[k])
+				mesh:SetFaceNormals(face, { normalId, normalId, normalId })
+				mesh:SetFaceUVs(face, { uvIds[i], uvIds[j], uvIds[k] })
+			end
+			triangle(1, 2, 3)
+			triangle(1, 3, 4)
+		end
+		local h = 0.5
+		local top = { Vector3.new(-h, h, -h), Vector3.new(h, h, -h), Vector3.new(h, h, h), Vector3.new(-h, h, h) }
+		quad(top, { uvOf(-h, -h), uvOf(h, -h), uvOf(h, h), uvOf(-h, h) }, Vector3.yAxis)
+		for i = 1, 4 do
+			local a, b = top[i], top[i % 4 + 1]
+			local mid = (a + b) / 2
+			local uvA, uvB = uvOf(a.X, a.Z), uvOf(b.X, b.Z)
+			quad(
+				{ a, b, b - Vector3.yAxis, a - Vector3.yAxis },
+				{ uvA, uvB, uvB, uvA },
+				Vector3.new(mid.X, 0, mid.Z).Unit
+			)
+		end
+	end)
+	if not ok then
+		mesh:Destroy()
+		error(err, 0)
+	end
+	local partOk, part = pcall(function(): MeshPart
+		return AssetService:CreateMeshPartAsync(Content.fromObject(mesh), {
+			CollisionFidelity = Enum.CollisionFidelity.Box,
+			RenderFidelity = Enum.RenderFidelity.Precise,
+		})
+	end)
+	if not partOk then
+		mesh:Destroy()
+		error(tostring(part), 0)
+	end
+	return mesh, part
+end
+
+local function acquireMesh(): MeshPart?
+	local m = table.remove(meshPool)
+	if m then
+		return m
+	end
+	local template = tileTemplate
+	if template == nil then
+		return nil
+	end
+	local clone = template:Clone()
+	clone.Name = "TileTexture"
+	clone.Anchored = true
+	clone.CanCollide = false
+	clone.CanQuery = false
+	clone.CanTouch = false
+	clone.CastShadow = false
+	clone.Massless = true
+	clone.Locked = true
+	clone.Material = TILE_MESH_MATERIAL
+	return clone
+end
+
+-- Shows `image` on the tile (its Part turns invisible but keeps colliding).
+local function attachTexture(t: ActiveTile, image: EditableImage, ocean: boolean)
+	local mesh = acquireMesh()
+	if mesh == nil then
+		table.insert(freeImages, image)
+		return
+	end
+	local ok, err = pcall(function()
+		mesh.TextureContent = Content.fromObject(image)
+	end)
+	if not ok then
+		table.insert(meshPool, mesh)
+		table.insert(freeImages, image)
+		disableTextures(tostring(err))
+		return
+	end
+	mesh.Size = t.half * 2
+	mesh.CFrame = t.part.CFrame -- right place this frame; BulkMoveTo takes over from the next one
+	mesh.Reflectance = if ocean then OCEAN_REFLECTANCE else 0
+	mesh.CastShadow = t.shadow
+	mesh.Parent = tilesFolder
+	t.part.Transparency = 1
+	t.mesh = mesh
+	t.image = image
+	t.ocean = ocean
+	tilesDirty = true
+end
+
+-- Takes the texture off a tile that is being released; its image goes to the cache.
+local function detachTexture(t: ActiveTile)
+	local mesh = t.mesh
+	if mesh then
+		mesh.Parent = nil
+		table.insert(meshPool, mesh)
+		t.mesh = nil
+	end
+	t.part.Transparency = 0
+	local image = t.image
+	if image then
+		imageStamp += 1
+		imageCache[t.imageKey] = { image = image, ocean = t.ocean, stamp = imageStamp }
+		t.image = nil
+	end
+	if paintTile == t then
+		-- abort the job: its image is free again
+		paintTile = nil
+		local pending = paintImage
+		if pending then
+			table.insert(freeImages, pending)
+			paintImage = nil
+		end
+	end
+end
+
+-- A free image: unused, newly created (below the cap), or the least recently used cached one.
+local function acquireImage(): EditableImage?
+	local free = table.remove(freeImages)
+	if free then
+		return free
+	end
+	if #allImages < MAX_TILE_IMAGES then
+		local ok, result = pcall(function(): EditableImage
+			local AssetService = game:GetService("AssetService")
+			return AssetService:CreateEditableImage({ Size = Vector2.new(TILE_TEXTURE_SIZE, TILE_TEXTURE_SIZE) })
+		end)
+		if not ok then
+			disableTextures(tostring(result))
+			return nil
+		end
+		table.insert(allImages, result)
+		return result
+	end
+	local oldestKey: number? = nil
+	local oldestStamp = math.huge
+	for key, entry in imageCache do
+		if entry.stamp < oldestStamp then
+			oldestKey, oldestStamp = key, entry.stamp
+		end
+	end
+	if oldestKey then
+		local entry = imageCache[oldestKey]
+		imageCache[oldestKey] = nil
+		return entry.image
+	end
+	return nil
+end
+
+-- At the image cap: takes the image of the farthest textured tile if it is farther than `wanted`.
+local function stealImage(wanted: ActiveTile): EditableImage?
+	local victim: ActiveTile? = nil
+	for _, t in active do
+		if t.image ~= nil and t.dist > wanted.dist and (victim == nil or t.dist > (victim :: ActiveTile).dist) then
+			victim = t
+		end
+	end
+	if victim == nil then
+		return nil
+	end
+	local v = victim :: ActiveTile
+	local image = v.image
+	local mesh = v.mesh
+	if mesh then
+		mesh.Parent = nil
+		table.insert(meshPool, mesh)
+		v.mesh = nil
+	end
+	v.part.Transparency = 0
+	v.image = nil
+	tilesDirty = true
+	return image
+end
+
+-- Paints tile textures nearest-first within the frame budget.
+local function processTextures()
+	if not texturesEnabled or tileTemplate == nil then
+		return
+	end
+	local p = painter
+	if p == nil then
+		local fresh = Biome.newPainter(
+			TILE_TEXTURE_SIZE,
+			TILE_TEXTURE_CELLS,
+			buffer.create(TILE_TEXTURE_SIZE * TILE_TEXTURE_SIZE * 4)
+		)
+		painter = fresh
+		p = fresh
+	end
+	assert(p)
+	local start = os.clock()
+	while os.clock() - start < TILE_TEXTURE_BUDGET_S do
+		local job = paintTile
+		if job == nil then
+			-- nearest untextured tile
+			local best: ActiveTile? = nil
+			for _, t in active do
+				if t.image == nil and (best == nil or t.dist < (best :: ActiveTile).dist) then
+					best = t
+				end
+			end
+			if best == nil then
+				return
+			end
+			local t = best :: ActiveTile
+			local image = acquireImage() or stealImage(t)
+			if image == nil then
+				return
+			end
+			local radius = Bodies.get(t.bodyId).Radius
+			local up = SurfaceHeight.tileCenter(t.bodyId, t.tile)
+			local ax, az = t.rot.XVector, t.rot.ZVector
+			Biome.beginRect(
+				p,
+				t.bodyId,
+				"Ground",
+				up.x * radius,
+				up.y * radius,
+				up.z * radius,
+				ax.X,
+				ax.Y,
+				ax.Z,
+				az.X,
+				az.Y,
+				az.Z,
+				t.half.X * 2,
+				t.half.Z * 2,
+				TILE_TEXTURE_DETAIL
+			)
+			paintTile = t
+			paintImage = image
+			job = t
+		end
+		assert(job)
+		if Biome.paintStep(p) then
+			local image = paintImage :: EditableImage
+			paintTile = nil
+			paintImage = nil
+			local ok, err = pcall(function()
+				image:WritePixelsBuffer(Vector2.zero, image.Size, p.buf)
+			end)
+			if not ok then
+				table.insert(freeImages, image)
+				disableTextures(tostring(err))
+				return
+			end
+			local total = TILE_TEXTURE_SIZE * TILE_TEXTURE_SIZE
+			attachTexture(job, image, p.oceanPixels > OCEAN_TILE_FRACTION * total)
+		end
+	end
+end
+
 local function releaseAll()
 	for _, t in active do
+		detachTexture(t) -- CHANGED (Phase 2a feedback)
 		releasePart(t.part)
 	end
 	table.clear(active)
@@ -298,7 +605,6 @@ local function rebuildTiles(bodyId: number, nadirDir: Vec3d, folder: Folder)
 	if tileBodyId ~= bodyId then
 		releaseAll()
 	end
-	local look = lookOf(bodyId)
 	local newActive: { ActiveTile } = {}
 	local newByKey: { [number]: ActiveTile } = {}
 	for _, tile in collectTiles(bodyId, nadirDir) do
@@ -308,10 +614,14 @@ local function rebuildTiles(bodyId: number, nadirDir: Vec3d, folder: Folder)
 			local pos, rot, size = tilePose(bodyId, tile)
 			local p = acquirePart()
 			p.Size = size
-			p.Color = tileColor(bodyId, key)
-			p.Material = look.material
+			-- CHANGED (Phase 2a feedback): Biome colour and material instead of one flat look per body
+			local color, material, kind = tileLook(bodyId, tile)
+			p.Color = color
+			p.Material = material
+			p.Reflectance = if kind == "Ocean" then OCEAN_REFLECTANCE else 0
+			p.Transparency = 0
 			p.Parent = folder
-			t = {
+			local fresh: ActiveTile = {
 				key = key,
 				part = p,
 				pos = pos,
@@ -319,14 +629,30 @@ local function rebuildTiles(bodyId: number, nadirDir: Vec3d, folder: Folder)
 				half = size / 2,
 				collide = false,
 				shadow = false,
+				tile = tile,
+				bodyId = bodyId,
+				imageKey = bodyId * BODY_KEY_STRIDE + key,
+				mesh = nil,
+				image = nil,
+				ocean = kind == "Ocean",
+				dist = 0,
 			}
+			-- a texture painted on an earlier visit
+			local cached = imageCache[fresh.imageKey]
+			if cached and texturesEnabled and tileTemplate ~= nil then
+				imageCache[fresh.imageKey] = nil
+				attachTexture(fresh, cached.image, cached.ocean)
+			end
+			t = fresh
 		end
 		local kept = t :: ActiveTile
+		kept.dist = Vec3d.distance(SurfaceHeight.tileCenter(bodyId, tile), nadirDir) * Bodies.get(bodyId).Radius
 		table.insert(newActive, kept)
 		newByKey[key] = kept
 	end
 	for key, t in activeByKey do
 		if newByKey[key] == nil then
+			detachTexture(t) -- CHANGED (Phase 2a feedback)
 			releasePart(t.part)
 		end
 	end
@@ -407,11 +733,23 @@ local function updateTiles(ctx: RenderContext.RenderContext)
 		or frame.slotOrigin ~= lastSlot
 		or frame.refRot ~= lastRot
 	then
+		-- CHANGED (Phase 2a feedback): textured boxes share their tile's pose
+		table.clear(meshParts)
+		table.clear(meshCFrames)
 		for i, t in active do
-			tileCFrames[i] = Frames.cframeToWorkspace(frame, t.pos, t.rot, offset)
+			local cf = Frames.cframeToWorkspace(frame, t.pos, t.rot, offset)
+			tileCFrames[i] = cf
+			local mesh = t.mesh
+			if mesh then
+				table.insert(meshParts, mesh)
+				table.insert(meshCFrames, cf)
+			end
 		end
 		if #tileParts > 0 then
 			Workspace:BulkMoveTo(tileParts, tileCFrames, BULK_MOVE_MODE)
+		end
+		if #meshParts > 0 then
+			Workspace:BulkMoveTo(meshParts, meshCFrames, BULK_MOVE_MODE)
 		end
 		lastRefX, lastRefY, lastRefZ = ref.x, ref.y, ref.z
 		lastOffX, lastOffY, lastOffZ = ox, oy, oz
@@ -435,8 +773,14 @@ local function updateTiles(ctx: RenderContext.RenderContext)
 		if shadow ~= t.shadow then
 			t.shadow = shadow
 			t.part.CastShadow = shadow
+			local mesh = t.mesh
+			if mesh then
+				mesh.CastShadow = shadow
+			end
 		end
 	end
+
+	processTextures() -- CHANGED (Phase 2a feedback)
 end
 
 --============================================================================
@@ -520,6 +864,19 @@ function Surface.init(parent: Folder)
 	for _ = 1, POOL_PREWARM do
 		table.insert(pool, newTilePart())
 	end
+	-- CHANGED (Phase 2a feedback): props, and the textured tile box template (CreateMeshPartAsync yields)
+	SurfaceProps.init(parent)
+	if texturesEnabled then
+		task.spawn(function()
+			local ok, meshOrError, part = pcall(buildTileTemplate)
+			if ok then
+				table.insert(tileMeshKeepAlive, meshOrError)
+				tileTemplate = part
+			else
+				disableTextures(tostring(meshOrError))
+			end
+		end)
+	end
 end
 
 function Surface.update(ctx: RenderContext.RenderContext, surfaceMode: boolean)
@@ -529,14 +886,14 @@ function Surface.update(ctx: RenderContext.RenderContext, surfaceMode: boolean)
 		hideTiles()
 	end
 	updateSite(ctx, surfaceMode)
+	SurfaceProps.update(ctx, surfaceMode) -- CHANGED (Phase 2a feedback)
 end
 
 -- Test hook: pure helpers for the offline tests.
 Surface._test = table.freeze({
 	collectTiles = collectTiles,
 	tilePose = tilePose,
-	tileColor = tileColor,
-	hash01 = hash01,
+	tileLook = tileLook, -- CHANGED (Phase 2a feedback): replaces tileColor / hash01
 	boxDistance = boxDistance,
 	siteTransform = siteTransform,
 	siteFrame = SITE_FRAME,

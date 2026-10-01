@@ -1,0 +1,750 @@
+--!strict
+--[[
+	SurfaceProps
+	Cosmetic ground clutter near the camera while the Surface layer draws (surface mode): stylised round trees,
+	pines, snowy pines, cacti, bushes and rocks on Kablamo; boulders and small crater rims on Dent.
+
+	Placement is deterministic: each SurfaceHeight tile is cut into CELL_SIZE cells in its own plane coordinates
+	(origin at the tile centre, axes = the tile's X / Z), grouped in CHUNK_CELLS x CHUNK_CELLS chunks. A cell
+	holds at most one prop, decided by hashing (body, tile, cell) and the Biome kind under it, so the same props
+	appear on every visit. Props stand ON the tile plane (the physical ground), so they touch it exactly.
+	Nothing is placed within SITE_CLEAR_RADIUS of the launch site.
+
+	Chunks are generated lazily (nearest first, GEN_BUDGET_S per frame) and cached. Props are drawn from pooled
+	parts (MAX_PROP_PARTS hard cap), nearest chunks first, moved with one BulkMoveTo whenever the frame or the
+	assignment changes. All parts are Anchored, CanCollide / CanQuery / CanTouch false: purely cosmetic.
+
+	API (driven by Surface):
+		SurfaceProps.init(parent)
+		SurfaceProps.update(ctx, surfaceMode)
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+
+local Biome = require(ReplicatedStorage.Shared.Sim.Biome)
+local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
+local Frames = require(ReplicatedStorage.Shared.Math.Frames)
+local RenderContext = require(script.Parent.RenderContext)
+local SurfaceHeight = require(ReplicatedStorage.Shared.Sim.SurfaceHeight)
+local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
+local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
+
+type Vec3d = Vec3d.Vec3d
+type Frame = Frames.Frame
+type TileId = SurfaceHeight.TileId
+
+--============================================================================
+-- Tunables
+--============================================================================
+local PROP_RADIUS = 750 -- m (= studs), props farther than this from the camera are not drawn
+local CELL_SIZE = 28 -- m, one prop at most per cell
+local CHUNK_CELLS = 8 -- cells per chunk side (224 m chunks)
+local MAX_PROP_PARTS = 600 -- hard cap on pooled parts in use
+local SHADOW_RADIUS = 220 -- m, props nearer than this cast shadows
+local REFRESH_DISTANCE = 35 -- m of camera movement before the prop set is re-chosen
+local GEN_BUDGET_S = 0.001 -- chunk generation work per frame
+local CHUNK_CACHE_MAX = 300 -- cached chunks before far ones are dropped
+local SITE_CLEAR_RADIUS = 800 -- m around the launch site kept clear
+local TILE_EDGE_MARGIN = 8 -- m, no props this close to a tile edge (neighbouring planes diverge there)
+local PROP_SINK = 0.3 -- studs props are sunk into the ground
+local SCALE_MIN = 0.75
+local SCALE_MAX = 1.35
+local TINT_AMOUNT = 0.12 -- +/- colour brightness variation of tinted parts
+local TILE_SEARCH_STEPS = 2 -- tiles are found on a (2n + 1)^2 direction grid over the prop disc
+local HASH_SALT = 9173
+local POOL_PREWARM = 120 -- parts created at init
+
+local SITE_LATITUDE = 0 -- rad, the base pocket's surface point (PocketService)
+local SITE_LONGITUDE = 0
+local BULK_MOVE_MODE = Enum.BulkMoveMode.FireCFrameChanged
+
+local TRUNK = Color3.fromRGB(107, 74, 46)
+local LEAF = Color3.fromRGB(70, 140, 52)
+local LEAF_LIGHT = Color3.fromRGB(104, 172, 70)
+local PINE = Color3.fromRGB(34, 98, 58)
+local SNOW_PINE = Color3.fromRGB(52, 92, 78)
+local SNOW = Color3.fromRGB(236, 243, 252)
+local CACTUS = Color3.fromRGB(78, 140, 72)
+local STONE = Color3.fromRGB(118, 112, 104)
+local MOON_STONE = Color3.fromRGB(132, 128, 122)
+--============================================================================
+
+type Shape = "Block" | "Ball" | "Cylinder"
+
+type PartSpec = {
+	shape: Shape,
+	size: Vector3, -- at scale 1 (studs)
+	offset: CFrame, -- from the prop's ground point, at scale 1
+	color: Color3,
+	material: Enum.Material,
+	tint: boolean, -- gets the prop's colour variation
+}
+
+type Prop = {
+	id: number,
+	kind: Biome.PropKind,
+	pos: Vec3d, -- ground point relative to the body centre (doubles)
+	rot: CFrame, -- universe rotation (tile axes, then yaw)
+	scale: number,
+	tint: number, -- brightness factor
+	partCount: number,
+}
+
+type Chunk = {
+	key: number,
+	props: { Prop },
+	stamp: number,
+}
+
+type TileInfo = {
+	key: number,
+	tile: TileId,
+	centre: Vec3d, -- tile plane centre (m, body-relative)
+	up: Vec3d,
+	ax: Vec3d, -- tile X axis (universe)
+	az: Vec3d, -- tile Z axis (universe)
+	rot: CFrame,
+	ex: number,
+	ez: number,
+}
+
+type PendingChunk = {
+	key: number,
+	info: TileInfo,
+	ci: number,
+	cj: number,
+	dist: number,
+}
+
+type VisibleChunk = { chunk: Chunk, dist: number }
+
+type Assigned = {
+	prop: Prop,
+	parts: { Part },
+	offsets: { CFrame }, -- scaled part offsets from the prop root
+}
+
+local SurfaceProps = {}
+
+--============================================================================
+-- Prop shapes
+--============================================================================
+local Z90 = CFrame.Angles(0, 0, math.pi / 2) -- cylinder axis (X) -> vertical
+
+local function spec(
+	shape: Shape,
+	size: Vector3,
+	offset: CFrame,
+	color: Color3,
+	material: Enum.Material,
+	tint: boolean
+): PartSpec
+	return { shape = shape, size = size, offset = offset, color = color, material = material, tint = tint }
+end
+
+local function pineSpecs(tier: Color3, top: Color3, topMaterial: Enum.Material): { PartSpec }
+	return {
+		spec("Cylinder", Vector3.new(3, 1.1, 1.1), CFrame.new(0, 1.5, 0) * Z90, TRUNK, Enum.Material.Wood, false),
+		spec("Block", Vector3.new(6, 2.6, 6), CFrame.new(0, 3.8, 0), tier, Enum.Material.Grass, true),
+		spec(
+			"Block",
+			Vector3.new(4.4, 2.4, 4.4),
+			CFrame.new(0, 6, 0) * CFrame.Angles(0, math.pi / 4, 0),
+			tier,
+			Enum.Material.Grass,
+			true
+		),
+		spec("Block", Vector3.new(2.8, 2.2, 2.8), CFrame.new(0, 8, 0), top, topMaterial, true),
+	}
+end
+
+local function craterRimSpecs(): { PartSpec }
+	local specs: { PartSpec } = {}
+	for k = 0, 7 do
+		table.insert(
+			specs,
+			spec(
+				"Block",
+				Vector3.new(3.4, 1.2, 1.8),
+				CFrame.Angles(0, k * math.pi / 4, 0) * CFrame.new(0, 0.3, -7) * CFrame.Angles(0.35, 0, 0),
+				MOON_STONE,
+				Enum.Material.Slate,
+				true
+			)
+		)
+	end
+	return specs
+end
+
+local PROP_SPECS: { [string]: { PartSpec } } = {
+	RoundTree = {
+		spec("Cylinder", Vector3.new(6, 1.4, 1.4), CFrame.new(0, 3, 0) * Z90, TRUNK, Enum.Material.Wood, false),
+		spec("Ball", Vector3.one * 8, CFrame.new(0, 8, 0), LEAF, Enum.Material.Grass, true),
+		spec("Ball", Vector3.one * 5.5, CFrame.new(1.8, 10.2, 0.8), LEAF_LIGHT, Enum.Material.Grass, true),
+	},
+	PineTree = pineSpecs(PINE, PINE, Enum.Material.Grass),
+	SnowPine = pineSpecs(SNOW_PINE, SNOW, Enum.Material.Snow),
+	Cactus = {
+		spec(
+			"Cylinder",
+			Vector3.new(6, 1.4, 1.4),
+			CFrame.new(0, 3, 0) * Z90,
+			CACTUS,
+			Enum.Material.SmoothPlastic,
+			true
+		),
+		spec(
+			"Cylinder",
+			Vector3.new(1.3, 0.8, 0.8),
+			CFrame.new(1.05, 2.9, 0),
+			CACTUS,
+			Enum.Material.SmoothPlastic,
+			true
+		),
+		spec(
+			"Cylinder",
+			Vector3.new(2.2, 0.9, 0.9),
+			CFrame.new(1.6, 3.8, 0) * Z90,
+			CACTUS,
+			Enum.Material.SmoothPlastic,
+			true
+		),
+		spec(
+			"Cylinder",
+			Vector3.new(1.3, 0.8, 0.8),
+			CFrame.new(-1.05, 2.4, 0),
+			CACTUS,
+			Enum.Material.SmoothPlastic,
+			true
+		),
+		spec(
+			"Cylinder",
+			Vector3.new(1.8, 0.9, 0.9),
+			CFrame.new(-1.6, 3.1, 0) * Z90,
+			CACTUS,
+			Enum.Material.SmoothPlastic,
+			true
+		),
+	},
+	Rock = {
+		spec(
+			"Block",
+			Vector3.new(3, 2, 2.5),
+			CFrame.new(0, 0.6, 0) * CFrame.Angles(0.3, 0.7, 0.2),
+			STONE,
+			Enum.Material.Slate,
+			true
+		),
+		spec(
+			"Block",
+			Vector3.new(1.4, 1, 1.2),
+			CFrame.new(1.9, 0.3, 0.7) * CFrame.Angles(0.5, 0.2, 0.4),
+			STONE,
+			Enum.Material.Slate,
+			true
+		),
+	},
+	Bush = {
+		spec("Ball", Vector3.one * 3, CFrame.new(0, 0.8, 0), LEAF, Enum.Material.Grass, true),
+	},
+	Boulder = {
+		spec("Ball", Vector3.one * 4.5, CFrame.new(0, 1.2, 0), MOON_STONE, Enum.Material.Slate, true),
+		spec("Ball", Vector3.one * 2, CFrame.new(2.6, 0.4, 0.8), MOON_STONE, Enum.Material.Slate, true),
+	},
+	CraterRim = craterRimSpecs(),
+}
+
+--============================================================================
+-- Pure helpers
+--============================================================================
+
+local CHUNK_SIZE = CELL_SIZE * CHUNK_CELLS
+local CELL_AREA_HA = CELL_SIZE * CELL_SIZE / 10000
+local MAX_CELL_CHANCE = Biome.propDensity("Forest") * CELL_AREA_HA -- densest biome: skip the Biome sample above it
+
+local SITE_POS = Vec3d.scale(Frames.surfaceUp(SITE_LATITUDE, SITE_LONGITUDE), Bodies.get(Bodies.HOMEWORLD).Radius)
+
+local function chunkKey(bodyId: number, tileKey: number, ci: number, cj: number): number
+	return ((bodyId * 134217728 + tileKey) * 64 + (ci + 32)) * 64 + (cj + 32)
+end
+
+local function tileInfo(bodyId: number, tile: TileId): TileInfo
+	local radius = Bodies.get(bodyId).Radius
+	local up = SurfaceHeight.tileCenter(bodyId, tile)
+	local rot = SurfaceHeight.tileRotation(bodyId, tile)
+	local ex, ez = SurfaceHeight.tileExtent(bodyId, tile)
+	return {
+		key = SurfaceHeight.tileKey(tile),
+		tile = tile,
+		centre = Vec3d.scale(up, radius),
+		up = up,
+		ax = Vec3d.normalize(Vec3d.fromVector3(rot.XVector)),
+		az = Vec3d.normalize(Vec3d.fromVector3(rot.ZVector)),
+		rot = rot,
+		ex = ex,
+		ez = ez,
+	}
+end
+
+-- Deterministic props of one chunk (cells ci * CHUNK_CELLS .. + CHUNK_CELLS - 1 along X, same for cj along Z).
+local function generateChunk(bodyId: number, info: TileInfo, ci: number, cj: number): { Prop }
+	local props: { Prop } = {}
+	local halfX, halfZ = info.ex / 2 - TILE_EDGE_MARGIN, info.ez / 2 - TILE_EDGE_MARGIN
+	local salt = HASH_SALT + bodyId * 7
+	local c, ax, az = info.centre, info.ax, info.az
+	local baseKey = chunkKey(bodyId, info.key, ci, cj) * 64
+	for a = 0, CHUNK_CELLS - 1 do
+		local cellX = ci * CHUNK_CELLS + a
+		for b = 0, CHUNK_CELLS - 1 do
+			local cellZ = cj * CHUNK_CELLS + b
+			local presence = Biome.hash01(info.key, cellX, cellZ, salt)
+			if presence >= MAX_CELL_CHANCE then
+				continue
+			end
+			local x = (cellX + 0.15 + 0.7 * Biome.hash01(info.key, cellX, cellZ, salt + 1)) * CELL_SIZE
+			local z = (cellZ + 0.15 + 0.7 * Biome.hash01(info.key, cellX, cellZ, salt + 2)) * CELL_SIZE
+			if math.abs(x) > halfX or math.abs(z) > halfZ then
+				continue
+			end
+			local px, py, pz = c.x + x * ax.x + z * az.x, c.y + x * ax.y + z * az.y, c.z + x * ax.z + z * az.z
+			if bodyId == Bodies.HOMEWORLD then
+				local dx, dy, dz = px - SITE_POS.x, py - SITE_POS.y, pz - SITE_POS.z
+				if dx * dx + dy * dy + dz * dz < SITE_CLEAR_RADIUS * SITE_CLEAR_RADIUS then
+					continue
+				end
+			end
+			local len = math.sqrt(px * px + py * py + pz * pz)
+			local _, _, _, kind = Biome.sample(bodyId, px / len, py / len, pz / len)
+			if presence >= Biome.propDensity(kind) * CELL_AREA_HA then
+				continue
+			end
+			local propKind = Biome.propKind(kind, Biome.hash01(info.key, cellX, cellZ, salt + 3))
+			if propKind == nil then
+				continue
+			end
+			local yaw = Biome.hash01(info.key, cellX, cellZ, salt + 4) * 2 * math.pi
+			local scaleRoll = Biome.hash01(info.key, cellX, cellZ, salt + 5)
+			local tintRoll = Biome.hash01(info.key, cellX, cellZ, salt + 6)
+			table.insert(props, {
+				id = baseKey + a * CHUNK_CELLS + b,
+				kind = propKind :: Biome.PropKind,
+				pos = Vec3d.new(px, py, pz),
+				rot = info.rot * CFrame.Angles(0, yaw, 0),
+				scale = SCALE_MIN + (SCALE_MAX - SCALE_MIN) * scaleRoll,
+				tint = 1 + TINT_AMOUNT * (tintRoll * 2 - 1),
+				partCount = #PROP_SPECS[propKind],
+			})
+		end
+	end
+	return props
+end
+
+-- abs(bodyId) - abs(frame reference body) at UT, nil when they are the same body.
+local function bodyOffsetFor(bodyId: number, frame: Frame, ut: number): Vec3d?
+	if bodyId == frame.refBodyId then
+		return nil
+	end
+	return Universe.bodyOffset(bodyId, frame.refBodyId, ut)
+end
+
+local function tintColor(color: Color3, factor: number): Color3
+	return Color3.new(
+		math.clamp(color.R * factor, 0, 1),
+		math.clamp(color.G * factor, 0, 1),
+		math.clamp(color.B * factor, 0, 1)
+	)
+end
+
+--============================================================================
+-- State
+--============================================================================
+local root: Folder? = nil
+local propsFolder: Folder? = nil
+local pools: { [string]: { Part } } = { Block = {}, Ball = {}, Cylinder = {} }
+local partsInUse = 0
+
+local chunks: { [number]: Chunk } = {}
+local chunkCount = 0
+local stampCounter = 0
+local tileInfos: { [number]: TileInfo } = {} -- by body-qualified tile key
+local pending: { PendingChunk } = {}
+local visibleChunks: { VisibleChunk } = {}
+local assigned: { [number]: Assigned } = {}
+
+local currentBodyId: number? = nil
+local lastRefreshPos: Vec3d = Vec3d.new(math.huge, 0, 0)
+local needsRefresh = true
+
+local moveParts: { BasePart } = {}
+local moveCFrames: { CFrame } = {}
+local moveDirty = true
+local lastRefX, lastRefY, lastRefZ = 0, 0, 0
+local lastOffX, lastOffY, lastOffZ = 0, 0, 0
+local lastSlot: Vector3 = Vector3.zero
+local lastRot: CFrame = CFrame.identity
+
+--============================================================================
+-- Part pool
+--============================================================================
+local function newPart(shape: Shape): Part
+	local p = Instance.new("Part")
+	p.Name = "Prop"
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.CastShadow = false
+	p.Locked = true
+	p.Massless = true
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	if shape == "Ball" then
+		p.Shape = Enum.PartType.Ball
+	elseif shape == "Cylinder" then
+		p.Shape = Enum.PartType.Cylinder
+	end
+	return p
+end
+
+local function acquirePart(shape: Shape): Part
+	partsInUse += 1
+	local p = table.remove(pools[shape])
+	if p then
+		return p
+	end
+	return newPart(shape)
+end
+
+local function releasePart(shape: Shape, p: Part)
+	partsInUse -= 1
+	p.Parent = nil
+	table.insert(pools[shape], p)
+end
+
+local function releaseProp(a: Assigned)
+	local specs = PROP_SPECS[a.prop.kind]
+	for i, p in a.parts do
+		releasePart(specs[i].shape, p)
+	end
+end
+
+local function assignProp(prop: Prop, shadow: boolean, folder: Folder): Assigned
+	local specs = PROP_SPECS[prop.kind]
+	local parts: { Part } = table.create(#specs)
+	local offsets: { CFrame } = table.create(#specs)
+	local s = prop.scale
+	for i, sp in specs do
+		local p = acquirePart(sp.shape)
+		p.Size = sp.size * s
+		p.Color = if sp.tint then tintColor(sp.color, prop.tint) else sp.color
+		p.Material = sp.material
+		p.CastShadow = shadow
+		p.Parent = folder
+		parts[i] = p
+		local o = sp.offset
+		offsets[i] = CFrame.new(o.Position * s + Vector3.new(0, -PROP_SINK, 0)) * o.Rotation
+	end
+	return { prop = prop, parts = parts, offsets = offsets }
+end
+
+local function releaseAll()
+	for _, a in assigned do
+		releaseProp(a)
+	end
+	table.clear(assigned)
+	table.clear(pending)
+	table.clear(visibleChunks)
+	table.clear(moveParts)
+	table.clear(moveCFrames)
+	moveDirty = true
+	needsRefresh = true
+end
+
+--============================================================================
+-- Visible set
+--============================================================================
+
+-- Tiles whose plane may hold props within PROP_RADIUS of the camera.
+local function nearbyTiles(bodyId: number, camera: Vec3d): { TileInfo }
+	local result: { TileInfo } = {}
+	local seen: { [number]: boolean } = {}
+	local radius = Bodies.get(bodyId).Radius
+	local d = Vec3d.normalize(camera)
+	local ref = if math.abs(d.y) < 0.9 then Vec3d.new(0, 1, 0) else Vec3d.new(1, 0, 0)
+	local e1 = Vec3d.normalize(Vec3d.cross(ref, d))
+	local e2 = Vec3d.cross(d, e1)
+	local step = PROP_RADIUS / TILE_SEARCH_STEPS / radius
+	for ia = -TILE_SEARCH_STEPS, TILE_SEARCH_STEPS do
+		for ib = -TILE_SEARCH_STEPS, TILE_SEARCH_STEPS do
+			local dir = Vec3d.add(d, Vec3d.add(Vec3d.scale(e1, ia * step), Vec3d.scale(e2, ib * step)))
+			local tile = SurfaceHeight.tileOf(bodyId, dir)
+			local key = SurfaceHeight.tileKey(tile)
+			if not seen[key] then
+				seen[key] = true
+				local infoKey = bodyId * 134217728 + key
+				local info = tileInfos[infoKey]
+				if info == nil then
+					info = tileInfo(bodyId, tile)
+					tileInfos[infoKey] = info
+				end
+				table.insert(result, info :: TileInfo)
+			end
+		end
+	end
+	return result
+end
+
+local function byDist(a: VisibleChunk, b: VisibleChunk): boolean
+	return a.dist < b.dist
+end
+
+local function byPendingDist(a: PendingChunk, b: PendingChunk): boolean
+	return a.dist < b.dist
+end
+
+-- Rebuilds the visible chunk list and the generation queue around the camera.
+local function collectChunks(bodyId: number, camera: Vec3d)
+	table.clear(visibleChunks)
+	table.clear(pending)
+	stampCounter += 1
+	for _, info in nearbyTiles(bodyId, camera) do
+		local rel = Vec3d.sub(camera, info.centre)
+		local h = Vec3d.dot(rel, info.up)
+		if math.abs(h) >= PROP_RADIUS then
+			continue
+		end
+		local reach = math.sqrt(PROP_RADIUS * PROP_RADIUS - h * h)
+		local cx, cz = Vec3d.dot(rel, info.ax), Vec3d.dot(rel, info.az)
+		local maxChunkX = math.floor(info.ex / 2 / CHUNK_SIZE)
+		local maxChunkZ = math.floor(info.ez / 2 / CHUNK_SIZE)
+		local i0 = math.max(math.floor((cx - reach) / CHUNK_SIZE), -maxChunkX - 1)
+		local i1 = math.min(math.floor((cx + reach) / CHUNK_SIZE), maxChunkX)
+		local j0 = math.max(math.floor((cz - reach) / CHUNK_SIZE), -maxChunkZ - 1)
+		local j1 = math.min(math.floor((cz + reach) / CHUNK_SIZE), maxChunkZ)
+		for ci = i0, i1 do
+			-- distance from the camera's foot to the chunk rectangle (on the plane), plus height
+			local dx = math.max(ci * CHUNK_SIZE - cx, 0, cx - (ci + 1) * CHUNK_SIZE)
+			for cj = j0, j1 do
+				local dz = math.max(cj * CHUNK_SIZE - cz, 0, cz - (cj + 1) * CHUNK_SIZE)
+				local distSq = dx * dx + dz * dz + h * h
+				if distSq > PROP_RADIUS * PROP_RADIUS then
+					continue
+				end
+				local key = chunkKey(bodyId, info.key, ci, cj)
+				local chunk = chunks[key]
+				local dist = math.sqrt(distSq)
+				if chunk then
+					chunk.stamp = stampCounter
+					table.insert(visibleChunks, { chunk = chunk, dist = dist })
+				else
+					table.insert(pending, { key = key, info = info, ci = ci, cj = cj, dist = dist })
+				end
+			end
+		end
+	end
+	table.sort(visibleChunks, byDist)
+	table.sort(pending, byPendingDist)
+end
+
+-- Drops cached chunks that are not visible when the cache is over its size.
+local function trimCache()
+	if chunkCount <= CHUNK_CACHE_MAX then
+		return
+	end
+	for key, chunk in chunks do
+		if chunk.stamp ~= stampCounter then
+			chunks[key] = nil
+			chunkCount -= 1
+		end
+	end
+end
+
+-- Chooses the props to draw (nearest chunks first, up to the part cap) and (re)assigns parts.
+local function assignVisible(camera: Vec3d, folder: Folder)
+	local wanted: { [number]: Prop } = {}
+	local budget = MAX_PROP_PARTS
+	local radiusSq = PROP_RADIUS * PROP_RADIUS
+	for _, vc in visibleChunks do
+		for _, prop in vc.chunk.props do
+			if prop.partCount > budget then
+				continue
+			end
+			if Vec3d.distanceSq(prop.pos, camera) <= radiusSq then
+				wanted[prop.id] = prop
+				budget -= prop.partCount
+			end
+		end
+		if budget <= 0 then
+			break
+		end
+	end
+	local changed = false
+	for id, a in assigned do
+		if wanted[id] == nil then
+			releaseProp(a)
+			assigned[id] = nil
+			changed = true
+		end
+	end
+	local shadowSq = SHADOW_RADIUS * SHADOW_RADIUS
+	for id, prop in wanted do
+		local shadow = Vec3d.distanceSq(prop.pos, camera) <= shadowSq
+		local a = assigned[id]
+		if a == nil then
+			assigned[id] = assignProp(prop, shadow, folder)
+			changed = true
+		elseif a.parts[1].CastShadow ~= shadow then
+			for _, p in a.parts do
+				p.CastShadow = shadow
+			end
+		end
+	end
+	if changed then
+		table.clear(moveParts)
+		table.clear(moveCFrames)
+		for _, a in assigned do
+			for _, p in a.parts do
+				table.insert(moveParts, p)
+				table.insert(moveCFrames, CFrame.identity)
+			end
+		end
+		moveDirty = true
+	end
+end
+
+-- Generates pending chunks nearest first within the frame budget. Returns true if any finished.
+local function generatePending(bodyId: number): boolean
+	if #pending == 0 then
+		return false
+	end
+	local start = os.clock()
+	local any = false
+	while #pending > 0 and os.clock() - start < GEN_BUDGET_S do
+		local job = table.remove(pending, 1) :: PendingChunk
+		if chunks[job.key] == nil then
+			chunks[job.key] = {
+				key = job.key,
+				props = generateChunk(bodyId, job.info, job.ci, job.cj),
+				stamp = stampCounter,
+			}
+			chunkCount += 1
+			any = true
+		end
+	end
+	return any
+end
+
+--============================================================================
+-- Placement
+--============================================================================
+local function placeAll(ctx: RenderContext.RenderContext, bodyId: number)
+	local frame = ctx.frame
+	local offset = bodyOffsetFor(bodyId, frame, ctx.ut)
+	local ox, oy, oz = 0, 0, 0
+	if offset then
+		ox, oy, oz = offset.x, offset.y, offset.z
+	end
+	local ref = frame.refPos
+	if
+		not moveDirty
+		and ref.x == lastRefX
+		and ref.y == lastRefY
+		and ref.z == lastRefZ
+		and ox == lastOffX
+		and oy == lastOffY
+		and oz == lastOffZ
+		and frame.slotOrigin == lastSlot
+		and frame.refRot == lastRot
+	then
+		return
+	end
+	local i = 0
+	for _, a in assigned do
+		local rootCFrame = Frames.cframeToWorkspace(frame, a.prop.pos, a.prop.rot, offset)
+		for k = 1, #a.parts do
+			i += 1
+			moveCFrames[i] = rootCFrame * a.offsets[k]
+		end
+	end
+	if i > 0 then
+		Workspace:BulkMoveTo(moveParts, moveCFrames, BULK_MOVE_MODE)
+	end
+	lastRefX, lastRefY, lastRefZ = ref.x, ref.y, ref.z
+	lastOffX, lastOffY, lastOffZ = ox, oy, oz
+	lastSlot = frame.slotOrigin
+	lastRot = frame.refRot
+	moveDirty = false
+end
+
+local function hide()
+	local folder = propsFolder
+	if folder and folder.Parent ~= nil then
+		folder.Parent = nil
+	end
+end
+
+--============================================================================
+-- API
+--============================================================================
+function SurfaceProps.init(parent: Folder)
+	root = parent
+	local folder = Instance.new("Folder")
+	folder.Name = "Props"
+	propsFolder = folder
+	for _ = 1, POOL_PREWARM do
+		table.insert(pools.Block, newPart("Block"))
+	end
+end
+
+function SurfaceProps.update(ctx: RenderContext.RenderContext, surfaceMode: boolean)
+	local folder = propsFolder
+	local parent = root
+	if folder == nil or parent == nil then
+		return
+	end
+	local bodyId = ctx.dominantBodyId
+	local body = Bodies.find(bodyId)
+	if not surfaceMode or body == nil or body.Radius <= 0 or Vec3d.lengthSq(ctx.cameraDominant) < 1 then
+		hide()
+		return
+	end
+	if currentBodyId ~= bodyId then
+		releaseAll()
+		currentBodyId = bodyId
+	end
+	local camera = ctx.cameraDominant
+	-- far above the ground nothing is in reach: keep what is assigned but skip the work
+	if Vec3d.length(camera) - body.Radius > PROP_RADIUS then
+		hide()
+		return
+	end
+	if folder.Parent ~= parent then
+		folder.Parent = parent
+		moveDirty = true
+	end
+	if needsRefresh or Vec3d.distanceSq(camera, lastRefreshPos) > REFRESH_DISTANCE * REFRESH_DISTANCE then
+		collectChunks(bodyId, camera)
+		trimCache()
+		assignVisible(camera, folder)
+		Vec3d.copyInto(lastRefreshPos, camera)
+		needsRefresh = false
+	end
+	if generatePending(bodyId) then
+		-- new chunks are in the cache: re-collect next frame so they get drawn
+		needsRefresh = true
+	end
+	placeAll(ctx, bodyId)
+end
+
+-- Test hook / debug.
+SurfaceProps._test = table.freeze({
+	generateChunk = generateChunk,
+	tileInfo = tileInfo,
+	partsInUse = function(): number
+		return partsInUse
+	end,
+	PROP_SPECS = PROP_SPECS,
+})
+
+return table.freeze(SurfaceProps)

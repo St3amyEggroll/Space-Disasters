@@ -28,10 +28,20 @@
 
 	All positions are camera-relative (camera position + direction * d), so any pocket slot renders the same.
 	Planets do not rotate in v1: body axes = universe axes, which are frame.refRotInv in the pocket.
+
+	CHANGED (Phase 2a feedback): textured planets. The shared patch mesh has UVs (Biome's texture-space mapping),
+	and every patch MeshPart gets its own EditableImage painted from Biome (Kablamo's continents, oceans, ice caps;
+	Dent's maria and craters). Images are painted progressively by a background thread (init spawns it) that
+	yields every TEXTURE_BUDGET_S of work; until a patch is ready it shows the body's average biome colour.
+	Kablamo also gets a cloud shell (24 more patch clones with a transparent cloud texture via SurfaceAppearance)
+	and an atmosphere shell (translucent patch clones in the body's AtmosphereColor: a halo around the limb).
+	If EditableImage or SurfaceAppearance texturing is unavailable, the planets stay flat-coloured / cloudless
+	with one warning.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local Biome = require(ReplicatedStorage.Shared.Sim.Biome)
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
@@ -70,6 +80,25 @@ local SUN_GLOW_LAYERS: { { size: number, transparency: number } } = {
 }
 
 local PATCH_MATERIAL = Enum.Material.SmoothPlastic
+
+-- CHANGED (Phase 2a feedback): planet textures, clouds and atmosphere
+type TextureSpec = { size: number, cells: number } -- pixels per patch side, Biome coarse grid cells per side
+local GROUND_TEXTURES: { [number]: TextureSpec } = {
+	[Bodies.HOMEWORLD] = { size = 256, cells = 64 },
+	[Bodies.MOON] = { size = 128, cells = 32 },
+}
+local DEFAULT_TEXTURE: TextureSpec = { size = 128, cells = 32 } -- any other body
+local CLOUD_TEXTURE: TextureSpec = { size = 128, cells = 32 }
+local TEXTURE_DETAIL = 1 -- Biome detail level for scaled-space textures (ground tiles use more)
+local TEXTURE_BUDGET_S = 0.004 -- painting work per frame before the generator yields
+local MAX_EDITABLE_IMAGES = 96 -- hard cap on images this module creates (3 x 24 patches today)
+local CLOUDS_ENABLED = true
+local CLOUD_SHELL_SCALE = 1.012 -- cloud shell radius / body radius
+local ATMOSPHERE_ENABLED = true
+local ATMOSPHERE_SHELL_SCALE = 1.045 -- rim shell radius / body radius (a thin halo around the limb)
+local ATMOSPHERE_MATERIAL = Enum.Material.SmoothPlastic -- lit by the sun; ForceField / Neon glow instead
+local ATMOSPHERE_TRANSPARENCY = 0.78
+local MAX_SHELL_SCALE = math.max(1, CLOUD_SHELL_SCALE, ATMOSPHERE_SHELL_SCALE) -- largest patch clone per body
 local SUN_MATERIAL = Enum.Material.Neon
 local RENDER_FIDELITY = Enum.RenderFidelity.Precise -- no LOD decimation of the silhouette
 local COLLISION_FIDELITY = Enum.CollisionFidelity.Box -- never collides; keeps creation cheap
@@ -88,6 +117,7 @@ type Point = { x: number, y: number, z: number }
 -- Unit-sphere patch geometry in plain numbers (testable offline).
 type PatchGeometry = {
 	points: { Point }, -- unit-sphere vertex directions, index = i * (n + 1) + j + 1 (i along x, j along z)
+	uvs: { { number } }, -- CHANGED (Phase 2a feedback): texture UV {u, v} per point (Biome texture space)
 	triangles: { { number } }, -- vertex index triples, counter-clockwise seen from outside
 	centre: Point, -- bounding-box centre
 	size: Point, -- bounding-box size
@@ -117,6 +147,11 @@ type Visual = {
 	radius: number, -- true radius (m); 0 for the sun
 	kind: Kind,
 	parts: { BasePart },
+	-- CHANGED (Phase 2a feedback): per part (Patches only): cube rotation index, radius scale of its shell, and
+	-- the Transparency it shows with (1 keeps it hidden, e.g. a cloud patch whose texture is not ready)
+	partPatch: { number },
+	partScale: { number },
+	partAlpha: { number },
 	glow: BillboardGui?,
 	entry: Entry,
 	dirUni: Vec3d, -- unit direction camera -> body, universe axes
@@ -134,11 +169,15 @@ local ScaledSpace = {}
 -- Quarter of the +Y cube face (x, z in [-1, 0]) projected onto the unit sphere.
 local function patchGeometry(n: number): PatchGeometry
 	local points: { Point } = table.create((n + 1) * (n + 1))
+	local uvs: { { number } } = table.create((n + 1) * (n + 1))
 	local minX, minY, minZ = math.huge, math.huge, math.huge
 	local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
 	for i = 0, n do
 		for j = 0, n do
 			local x, y, z = -1 + i / n, 1, -1 + j / n
+			-- CHANGED (Phase 2a feedback): UVs from Biome's patch parametrisation, so painted pixels line up
+			local u, v = Biome.paramToUV(Biome.cubeToParam(x), Biome.cubeToParam(z))
+			uvs[i * (n + 1) + j + 1] = { u, v }
 			local length = math.sqrt(x * x + y * y + z * z)
 			x, y, z = x / length, y / length, z / length
 			points[i * (n + 1) + j + 1] = { x = x, y = y, z = z }
@@ -160,6 +199,7 @@ local function patchGeometry(n: number): PatchGeometry
 	end
 	return {
 		points = points,
+		uvs = uvs,
 		triangles = triangles,
 		centre = { x = (minX + maxX) / 2, y = (minY + maxY) / 2, z = (minZ + maxZ) / 2 },
 		size = { x = maxX - minX, y = maxY - minY, z = maxZ - minZ },
@@ -167,27 +207,9 @@ local function patchGeometry(n: number): PatchGeometry
 end
 
 -- The 24 proper rotations of the cube (signed permutation matrices with determinant +1), row-major 3x3.
+-- CHANGED (Phase 2a feedback): shared with Biome so patch index i is painted with the rotation it is drawn with.
 local function patchMatrices(): { { number } }
-	local permutations = { { 1, 2, 3 }, { 1, 3, 2 }, { 2, 1, 3 }, { 2, 3, 1 }, { 3, 1, 2 }, { 3, 2, 1 } }
-	local parity = { 1, -1, -1, 1, 1, -1 }
-	local matrices: { { number } } = {}
-	for index, permutation in permutations do
-		for mask = 0, 7 do
-			local signs = {
-				if mask % 2 == 1 then -1 else 1,
-				if math.floor(mask / 2) % 2 == 1 then -1 else 1,
-				if math.floor(mask / 4) % 2 == 1 then -1 else 1,
-			}
-			if parity[index] * signs[1] * signs[2] * signs[3] == 1 then
-				local m = { 0, 0, 0, 0, 0, 0, 0, 0, 0 }
-				for row = 1, 3 do
-					m[(row - 1) * 3 + permutation[row]] = signs[row]
-				end
-				table.insert(matrices, m)
-			end
-		end
-	end
-	return matrices
+	return Biome.cubeRotations()
 end
 
 local geometry = patchGeometry(PATCH_SUBDIVISIONS)
@@ -209,7 +231,8 @@ local function computeLimits(drawDistance: number, fallback: boolean, out: Limit
 	local near = math.max(SCALED_NEAR * scale, math.min(NEAR_RENDER_RADIUS * NEAR_FLOOR_FRACTION, far * 0.5))
 	-- Largest proxy radius: config maximum, a fraction of the draw distance, the part-size limit, and small enough
 	-- that at the handover (nearest surface = NEAR_RENDER_RADIUS, r = maxRadius) the far side 2r + NRR fits.
-	local partLimit = if fallback then FALLBACK_MAX_RADIUS else patchRadiusLimit
+	-- CHANGED (Phase 2a feedback): the largest shell (atmosphere) must also fit the part-size limit
+	local partLimit = if fallback then FALLBACK_MAX_RADIUS else patchRadiusLimit / MAX_SHELL_SCALE
 	-- CHANGED (Phase 2a integration): only the camera-facing hemisphere up to the limb is ever visible, so the
 	-- budget constrains the LIMB distance sqrt(d^2 - r^2), not the far side. At the handover (d = r + NRR) that
 	-- gives r <= (budget^2 - NRR^2) / (2 NRR), which keeps the full PROXY_MAX_RADIUS on medium+ quality.
@@ -276,14 +299,16 @@ end
 --============================================================================
 local patchCentre = Vector3.new(geometry.centre.x, geometry.centre.y, geometry.centre.z)
 local patchSize = Vector3.new(geometry.size.x, geometry.size.y, geometry.size.z)
+local patchMatrixList = patchMatrices()
 local patchRotations: { CFrame } = {}
-for _, m in patchMatrices() do
+for _, m in patchMatrixList do
 	table.insert(patchRotations, CFrame.new(0, 0, 0, m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9]))
 end
 
 local initialised = false
 local fallback = false
 local keepAlive: { EditableMesh } = {} -- MeshParts vanish when their EditableMesh is destroyed: keep it referenced
+local keepAliveImages: { EditableImage } = {} -- CHANGED (Phase 2a feedback): same for the patch textures
 local patchTemplate: MeshPart? = nil -- unparented source of every patch clone (kept, never destroyed)
 local workspaceRef: Workspace? = nil
 local limits: Limits = computeLimits(DRAW_DISTANCE_CAP, false)
@@ -297,6 +322,18 @@ local sortedEntries: { Entry } = {}
 local moveParts: { BasePart } = {}
 local moveCFrames: { CFrame } = {}
 local scratchOffset: Vec3d = Vec3d.zero()
+
+-- CHANGED (Phase 2a feedback): texture jobs, painted in order by the generator thread
+type TextureJob = {
+	visual: Visual,
+	part: MeshPart,
+	partIndex: number,
+	bodyId: number,
+	layer: Biome.Layer,
+	matrix: { number },
+	spec: TextureSpec,
+}
+local textureJobs: { TextureJob } = {}
 
 --============================================================================
 -- Instance creation
@@ -327,15 +364,20 @@ local function buildPatchTemplate(): (EditableMesh, MeshPart)
 	local ok, err = pcall(function()
 		local vertexIds: { number } = table.create(#geometry.points)
 		local normalIds: { number } = table.create(#geometry.points)
+		local uvIds: { number } = table.create(#geometry.points)
 		for index, p in geometry.points do
 			local direction = Vector3.new(p.x, p.y, p.z)
 			vertexIds[index] = mesh:AddVertex(direction - patchCentre)
 			normalIds[index] = mesh:AddNormal(direction)
+			-- CHANGED (Phase 2a feedback): texture coordinates for the per-patch planet textures
+			local uv = geometry.uvs[index]
+			uvIds[index] = mesh:AddUV(Vector2.new(uv[1], uv[2]))
 		end
 		for _, tri in geometry.triangles do
 			local a, b, c = tri[1], tri[2], tri[3]
 			local face = mesh:AddTriangle(vertexIds[a], vertexIds[b], vertexIds[c])
 			mesh:SetFaceNormals(face, { normalIds[a], normalIds[b], normalIds[c] })
+			mesh:SetFaceUVs(face, { uvIds[a], uvIds[b], uvIds[c] })
 		end
 	end)
 	if not ok then
@@ -365,6 +407,9 @@ local function newVisual(id: number, radius: number, kind: Kind, parts: { BasePa
 		radius = radius,
 		kind = kind,
 		parts = parts,
+		partPatch = {},
+		partScale = {},
+		partAlpha = {},
 		glow = glow,
 		entry = newEntry(),
 		dirUni = Vec3d.zero(),
@@ -374,30 +419,99 @@ local function newVisual(id: number, radius: number, kind: Kind, parts: { BasePa
 	}
 end
 
+-- CHANGED (Phase 2a feedback): the body's average biome colour (shown until textures are ready, and by the Ball)
+local function averageColor(body: Bodies.Body): Color3
+	local r, g, b = Biome.averageColor(body.Id)
+	return Color3.new(r, g, b)
+end
+
+local function textureSpecFor(bodyId: number): TextureSpec
+	return GROUND_TEXTURES[bodyId] or DEFAULT_TEXTURE
+end
+
+-- Adds one shell of 24 patch clones to a Patches visual (and queues their texture jobs when `layer` is given).
+local function addShell(
+	visual: Visual,
+	template: MeshPart,
+	folder: Folder,
+	name: string,
+	scale: number,
+	color: Color3,
+	material: Enum.Material,
+	shownAlpha: number,
+	layer: Biome.Layer?,
+	spec: TextureSpec
+)
+	for index = 1, #patchRotations do
+		local part = template:Clone()
+		configurePart(part, string.format("%s%02d", name, index), color, material)
+		part.Parent = folder
+		table.insert(visual.parts, part)
+		table.insert(visual.partPatch, index)
+		table.insert(visual.partScale, scale)
+		table.insert(visual.partAlpha, shownAlpha)
+		if layer then
+			table.insert(textureJobs, {
+				visual = visual,
+				part = part,
+				partIndex = #visual.parts,
+				bodyId = visual.id,
+				layer = layer,
+				matrix = patchMatrixList[index],
+				spec = spec,
+			})
+		end
+	end
+end
+
 local function createBodyVisual(body: Bodies.Body, parent: Folder): Visual
 	local folder = Instance.new("Folder")
 	folder.Name = body.Name
-	local parts: { BasePart } = {}
-	local kind: Kind
+	local color = averageColor(body)
 	local template = patchTemplate
+	local visual: Visual
 	if template then
-		kind = "Patches"
-		for index = 1, #patchRotations do
-			local part = template:Clone()
-			configurePart(part, string.format("Patch%02d", index), body.Color, PATCH_MATERIAL)
-			part.Parent = folder
-			table.insert(parts, part)
+		visual = newVisual(body.Id, body.Radius, "Patches", {}, nil)
+		addShell(visual, template, folder, "Patch", 1, color, PATCH_MATERIAL, 0, "Ground", textureSpecFor(body.Id))
+		if CLOUDS_ENABLED and Biome.hasClouds(body.Id) then
+			-- hidden (alpha 1) until each patch's cloud texture is applied
+			addShell(
+				visual,
+				template,
+				folder,
+				"Cloud",
+				CLOUD_SHELL_SCALE,
+				Color3.new(1, 1, 1),
+				PATCH_MATERIAL,
+				1,
+				"Clouds",
+				CLOUD_TEXTURE
+			)
+		end
+		local atmosphereColor = body.AtmosphereColor
+		if ATMOSPHERE_ENABLED and atmosphereColor then
+			addShell(
+				visual,
+				template,
+				folder,
+				"Atmosphere",
+				ATMOSPHERE_SHELL_SCALE,
+				atmosphereColor,
+				ATMOSPHERE_MATERIAL,
+				ATMOSPHERE_TRANSPARENCY,
+				nil,
+				DEFAULT_TEXTURE
+			)
 		end
 	else
-		kind = "Ball"
 		local part = Instance.new("Part")
 		part.Shape = Enum.PartType.Ball
-		configurePart(part, "Ball", body.Color, PATCH_MATERIAL)
+		configurePart(part, "Ball", color, PATCH_MATERIAL)
 		part.Parent = folder
-		table.insert(parts, part)
+		visual = newVisual(body.Id, body.Radius, "Ball", { part }, nil)
 	end
 	folder.Parent = parent
-	return newVisual(body.Id, body.Radius, kind, parts, nil)
+	return visual
 end
 
 local function createSunVisual(body: Bodies.Body, parent: Folder): Visual
@@ -446,9 +560,10 @@ local function setShown(visual: Visual, shown: boolean)
 		return
 	end
 	visual.shown = shown
-	local transparency = if shown then 0 else 1
-	for _, part in visual.parts do
-		part.Transparency = transparency
+	local alphas = visual.partAlpha
+	for index, part in visual.parts do
+		-- CHANGED (Phase 2a feedback): each part shows with its own transparency (atmosphere / clouds)
+		part.Transparency = if shown then alphas[index] or 0 else 1
 	end
 	local glow = visual.glow
 	if glow then
@@ -472,9 +587,10 @@ local function applyRadius(visual: Visual, r: number): number
 	end
 	visual.appliedRadius = radius
 	if visual.kind == "Patches" then
-		local size = patchSize * radius
-		for _, part in visual.parts do
-			part.Size = size
+		local scales = visual.partScale
+		for index, part in visual.parts do
+			-- CHANGED (Phase 2a feedback): shells are larger copies
+			part.Size = patchSize * (radius * scales[index])
 		end
 	else
 		visual.parts[1].Size = Vector3.one * (2 * radius)
@@ -492,6 +608,112 @@ end
 local function fullyOccluded(visual: Visual, domDir: Vec3d, domAngle: number): boolean
 	local dot = math.clamp(Vec3d.dot(visual.dirUni, domDir), -1, 1)
 	return math.acos(dot) + math.asin(visual.entry.s) < domAngle
+end
+
+--============================================================================
+-- Texture generation (CHANGED Phase 2a feedback)
+--============================================================================
+local texturesDisabled = false
+local cloudsDisabled = false
+
+-- Puts a finished image on its patch. Returns false (and disables that layer with one warning) on failure.
+local function applyTexture(job: TextureJob, image: EditableImage): boolean
+	local content = Content.fromObject(image)
+	if job.layer == "Clouds" then
+		local ok, err = pcall(function()
+			local appearance = Instance.new("SurfaceAppearance")
+			appearance.AlphaMode = Enum.AlphaMode.Transparency
+			appearance.ColorMapContent = content
+			appearance.Parent = job.part
+		end)
+		if not ok then
+			cloudsDisabled = true
+			warn(
+				"[ScaledSpace] cloud textures are unavailable ("
+					.. tostring(err)
+					.. "); Kablamo is drawn without clouds."
+			)
+			return false
+		end
+		-- reveal this cloud patch (it stayed hidden until now)
+		job.visual.partAlpha[job.partIndex] = 0
+		if job.visual.shown then
+			job.part.Transparency = 0
+		end
+		return true
+	end
+	local ok, err = pcall(function()
+		job.part.TextureContent = content
+	end)
+	if not ok then
+		texturesDisabled = true
+		warn("[ScaledSpace] planet textures are unavailable (" .. tostring(err) .. "); planets stay flat-coloured.")
+		return false
+	end
+	return true
+end
+
+-- Paints every queued patch texture in order, yielding whenever TEXTURE_BUDGET_S of work has been done.
+local function generateTextures()
+	local AssetService = game:GetService("AssetService")
+	local painters: { [string]: Biome.Painter } = {}
+	local sliceStart = os.clock()
+	local function yieldIfDue()
+		if os.clock() - sliceStart >= TEXTURE_BUDGET_S then
+			task.wait()
+			sliceStart = os.clock()
+		end
+	end
+	for _, job in textureJobs do
+		if texturesDisabled or #keepAliveImages >= MAX_EDITABLE_IMAGES then
+			break
+		end
+		if job.layer == "Clouds" and cloudsDisabled then
+			continue
+		end
+		local spec = job.spec
+		local created, image = pcall(function(): EditableImage
+			return AssetService:CreateEditableImage({ Size = Vector2.new(spec.size, spec.size) })
+		end)
+		if not created then
+			texturesDisabled = true
+			warn(
+				"[ScaledSpace] CreateEditableImage failed ("
+					.. tostring(image)
+					.. "); remaining planet patches stay flat-coloured. Enable Game Settings > Security >"
+					.. " 'Allow Mesh / Image APIs'."
+			)
+			break
+		end
+		local key = spec.size .. ":" .. spec.cells
+		local painter = painters[key]
+		if painter == nil then
+			local fresh = Biome.newPainter(spec.size, spec.cells, buffer.create(spec.size * spec.size * 4))
+			painters[key] = fresh
+			painter = fresh
+		end
+		assert(painter)
+		Biome.beginPatch(painter, job.bodyId, job.layer, job.matrix, TEXTURE_DETAIL)
+		while not Biome.paintStep(painter) do
+			yieldIfDue()
+		end
+		local written, err = pcall(function()
+			image:WritePixelsBuffer(Vector2.zero, image.Size, painter.buf)
+		end)
+		if not written then
+			image:Destroy()
+			texturesDisabled = true
+			warn("[ScaledSpace] WritePixelsBuffer failed (" .. tostring(err) .. "); planet textures disabled.")
+			break
+		end
+		if applyTexture(job, image) then
+			table.insert(keepAliveImages, image)
+		else
+			image:Destroy()
+		end
+		yieldIfDue()
+	end
+	table.clear(textureJobs)
 end
 
 --============================================================================
@@ -532,6 +754,10 @@ function ScaledSpace.init(parent: Folder)
 		visualById[body.Id] = visual
 	end
 	initialised = true
+	-- CHANGED (Phase 2a feedback): paint the planet textures in the background
+	if #textureJobs > 0 then
+		task.spawn(generateTextures)
+	end
 end
 
 function ScaledSpace.update(ctx: RenderContext.RenderContext)
@@ -625,11 +851,18 @@ function ScaledSpace.update(ctx: RenderContext.RenderContext)
 		local centre = camPos + visual.dirPocket * d
 		if visual.kind == "Patches" then
 			local bodyRot = frame.refRotInv
-			local offsetCFrame = CFrame.new(patchCentre * r)
 			local centreCFrame = CFrame.new(centre)
+			local patchIndex = visual.partPatch
+			local scales = visual.partScale
 			for index, part in visual.parts do
+				-- CHANGED (Phase 2a feedback): per-part cube rotation and shell scale
 				table.insert(moveParts, part)
-				table.insert(moveCFrames, centreCFrame * (bodyRot * patchRotations[index]) * offsetCFrame)
+				table.insert(
+					moveCFrames,
+					centreCFrame
+						* (bodyRot * patchRotations[patchIndex[index]])
+						* CFrame.new(patchCentre * (r * scales[index]))
+				)
 			end
 		else
 			table.insert(moveParts, visual.parts[1])
@@ -665,6 +898,7 @@ ScaledSpace._test = {
 	nextSurfaceMode = nextSurfaceMode,
 	solveDistances = solveDistances,
 	byDistance = byDistance,
+	patchRotations = patchRotations, -- CHANGED (Phase 2a feedback): exposed for tooling
 }
 
 return ScaledSpace

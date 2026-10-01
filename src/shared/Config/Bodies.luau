@@ -14,15 +14,16 @@ local GameConfig = require(script.Parent.GameConfig)
 --============================================================================
 -- Tunables
 --============================================================================
-local HOMEWORLD_RADIUS = 60000 -- m
+-- CHANGED (Phase 2a feedback): Kablamo and Dent halved in size at Steamy's request (D27)
+local HOMEWORLD_RADIUS = 30000 -- m
 local HOMEWORLD_SURFACE_G = 9.81 -- m/s^2
-local HOMEWORLD_ATMO_TOP = 8000 -- m
+local HOMEWORLD_ATMO_TOP = 7000 -- m
 local HOMEWORLD_ATMO_RHO0 = 1.225 -- kg/m^3
-local HOMEWORLD_ATMO_SCALE_HEIGHT = 1100 -- m
+local HOMEWORLD_ATMO_SCALE_HEIGHT = 1000 -- m
 
-local MOON_RADIUS = 15000 -- m
+local MOON_RADIUS = 7500 -- m
 local MOON_SURFACE_G = 1.62 -- m/s^2
-local MOON_ORBIT_RADIUS = 450000 -- m, circular and equatorial
+local MOON_ORBIT_RADIUS = 220000 -- m, circular and equatorial
 local MOON_ORBIT_PHASE_AT_UT0 = 0 -- rad, angle from +X toward +Z at UT 0
 
 local SUN_ANGULAR_RADIUS_DEG = 0.27
@@ -80,8 +81,8 @@ local function soiRadius(orbitRadius: number, childMu: number, parentMu: number)
 	return orbitRadius * (childMu / parentMu) ^ 0.4
 end
 
-local homeworldMu = HOMEWORLD_SURFACE_G * HOMEWORLD_RADIUS * HOMEWORLD_RADIUS -- 3.5316e10
-local moonMu = MOON_SURFACE_G * MOON_RADIUS * MOON_RADIUS -- 3.645e8
+local homeworldMu = HOMEWORLD_SURFACE_G * HOMEWORLD_RADIUS * HOMEWORLD_RADIUS -- 8.829e9
+local moonMu = MOON_SURFACE_G * MOON_RADIUS * MOON_RADIUS -- 9.11e7
 
 local Bodies = {}
 
@@ -141,9 +142,9 @@ local list: { Body } = {
 		Radius = MOON_RADIUS,
 		SurfaceGravity = MOON_SURFACE_G,
 		Mu = moonMu,
-		SoiRadius = soiRadius(MOON_ORBIT_RADIUS, moonMu, homeworldMu), -- ~72,200 m
+		SoiRadius = soiRadius(MOON_ORBIT_RADIUS, moonMu, homeworldMu), -- ~35,300 m
 		Atmosphere = nil,
-		Orbit = circularOrbit(homeworldMu, 1, MOON_ORBIT_RADIUS, MOON_ORBIT_PHASE_AT_UT0), -- period ~10,090 s
+		Orbit = circularOrbit(homeworldMu, 1, MOON_ORBIT_RADIUS, MOON_ORBIT_PHASE_AT_UT0), -- period ~6,900 s
 		AngularRadiusDeg = nil,
 		DayLengthS = nil,
 		Color = Color3.fromRGB(150, 146, 140),

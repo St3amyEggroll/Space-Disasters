@@ -31,6 +31,7 @@ local PAD_HEIGHT = 1 -- pad slab thickness; its top is the launch surface
 local LAUNCH_AREA_Z = 280 -- pad centre line (north of the north plot row)
 local SPAWN_POSITION = Vector3.new(0, 0, 0)
 local SITE_HALF_EXTENT = 420 -- half size of the square ground plate area the site covers
+local PLOT_SPAWN_INSET = 6 -- studs from the plot's street edge where players spawn (CHANGED Phase 2a feedback)
 --============================================================================
 
 export type PlotInfo = {
@@ -137,6 +138,32 @@ end
 -- World position of a grid point (block units) on a plot.
 function BaseLayout.gridToWorld(info: PlotInfo, grid: Vector3): Vector3
 	return info.buildOrigin + grid * GRID
+end
+
+-- CHANGED (Phase 2a feedback): raised slabs the flight model stands on (rockets now sit on their pad with real
+-- physics before ignition). Height (studs above ground level y = 0) of the platform under (x, z), 0 if none.
+function BaseLayout.platformHeight(x: number, z: number): number
+	local half = PAD_SIZE / 2
+	if math.abs(z - LAUNCH_AREA_Z) <= half then
+		for _, pad in pads do
+			if math.abs(x - pad.top.Position.X) <= half then
+				return PAD_HEIGHT
+			end
+		end
+	end
+	for _, info in plots do
+		local p = info.buildOrigin
+		if x >= p.X and x <= p.X + info.buildSize.X and z >= p.Z and z <= p.Z + info.buildSize.Z then
+			return PLOT_TOP
+		end
+	end
+	return 0
+end
+
+-- Where a player stands when they spawn at their plot: on the baseplate near its street edge, facing the plot.
+function BaseLayout.plotSpawn(info: PlotInfo): CFrame
+	local position = info.center + info.facingStreet * (info.buildSize.Z / 2 - PLOT_SPAWN_INSET) + Vector3.new(0, 3, 0)
+	return CFrame.lookAt(position, position - info.facingStreet)
 end
 
 -- Grid position (block units, fractional) of a world point on a plot.
