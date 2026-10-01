@@ -25,6 +25,10 @@
 	the rail's exitUT leaves rails at once: the simulation resumes from the rail's state and the next PilotState
 	(newer than the rail's epoch) tells the server. A refusal (CraftOffRails) makes it wait RAILS_RETRY_S.
 	The HUD also gets apoapsis / periapsis (Kepler) and the navball attitude.
+
+	CHANGED (Phase 10): the own craft's effects go through Render/Effects: every frame the simulated craft is reported
+	(model, design, state, burning engines; source "Local", so it wins over the stream), and predicted staging and
+	crash reports call Effects.blockEvent (separation puffs, explosions) before the blocks are removed.
 ]]
 
 local ContextActionService = game:GetService("ContextActionService")
@@ -52,7 +56,7 @@ local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local ChaseCamera = require(script.Parent.Parent.Render.ChaseCamera)
 local FlightHUD = require(script.Parent.Parent.UI.FlightHUD)
 local HudData = require(script.Parent.Parent.Render.HudData)
-local Plumes = require(script.Parent.Parent.Render.Plumes)
+local Effects = require(script.Parent.Parent.Render.Effects) -- CHANGED (Phase 10): replaces direct Plumes calls
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local DebugOverlay = require(script.Parent.DebugOverlay)
 local MapViewController = require(script.Parent.MapViewController) -- CHANGED (Phase 5)
@@ -134,6 +138,7 @@ local idleTime = 0 -- s the craft has been eligible without input
 local railsRetryAt = 0 -- os.clock() before which no new rail is proposed
 local inputPulse = false -- a discrete flight key was pressed since the last simulation step
 local leaveRails: () -> () -- defined in the rails section below (stage() needs it first)
+local separationEffects: (craft: Craft) -> () -- CHANGED (Phase 10): defined next to stage()
 
 --============================================================================
 -- Seat detection
@@ -211,6 +216,16 @@ local function hideBlocksLocally(ids: { number })
 	end
 end
 
+-- CHANGED (Phase 10): separation puffs at the decouplers the next stage fires (call before FlightModel.stage).
+separationEffects = function(craft: Craft)
+	local id = craftId
+	local next = craft.stages[craft.stageIndex]
+	if id == nil or next == nil or #next.decouple == 0 then
+		return
+	end
+	Effects.blockEvent(id :: number, "Separate", craft.physics.design, next.decouple, "Local")
+end
+
 local function stage()
 	local seatInfo = currentSeat()
 	if seatInfo == nil or not seatInfo.isPilot then
@@ -225,6 +240,7 @@ local function stage()
 		return
 	end
 	leaveRails() -- CHANGED (Phase 5): staging ends rails (the server does the same on RequestStage)
+	separationEffects(craft) -- CHANGED (Phase 10)
 	-- predict locally; the server repeats the same deterministic stage and confirms with CraftStaged
 	local result = FlightModel.stage(craft)
 	if result then
@@ -388,6 +404,7 @@ local function reportDestroyed(craft: Craft)
 	local destroyed = craft.destroyed
 	craft.destroyed = {}
 	remotes.ReportPartsDestroyed:FireServer(craftId, destroyed, craft.state.ut)
+	Effects.blockEvent(craftId :: number, "Explode", craft.physics.design, destroyed, "Local") -- CHANGED (Phase 10)
 	local _, originLost = FlightModel.removeBlocks(craft, destroyed)
 	hideBlocksLocally(destroyed)
 	if originLost then
@@ -664,29 +681,31 @@ local function cameraTarget(): ChaseCamera.Target?
 	return { position = position, up = cameraUp(frame), toWorkspace = frame.refRotInv }
 end
 
-local plumedModel: Model? = nil -- the real model this client last drew plumes on
-
 -- CHANGED (Phase 2a feedback): each engine's flame follows exactly what the simulation does with that engine,
 -- and every flame goes out when this client stops simulating the craft.
-local function updatePlumes()
+-- CHANGED (Phase 10): reported to Render/Effects (plumes, trail, dust, heating), which drops the effects by itself
+-- once the craft is no longer reported.
+local function reportEffects()
 	local craft = sim
-	local model = if craft and craftId then craftModelById(craftId :: number) else nil
-	local previous = plumedModel
-	if previous and previous ~= model then
-		Plumes.clear(previous)
-		plumedModel = nil
-	end
-	if craft == nil or model == nil then
+	local id = craftId
+	local model = if craft and id then craftModelById(id :: number) else nil
+	if craft == nil or id == nil or model == nil then
 		return
 	end
-	plumedModel = model
 	local burning: { [number]: number } = {}
 	for _, engine in craft.physics.engines do
 		if FlightModel.engineBurning(craft, engine) then
 			burning[engine.blockId] = FlightModel.engineThrottle(craft, engine)
 		end
 	end
-	Plumes.update(model, burning)
+	Effects.reportCraft(id :: number, {
+		source = "Local",
+		model = model,
+		design = craft.physics.design,
+		state = craft.state,
+		burning = burning,
+		craftCFrame = nil, -- from the state through the pocket frame, exactly as PocketController poses it
+	})
 end
 
 --============================================================================
@@ -811,6 +830,7 @@ local function onStaged(id: unknown, stageIndex: unknown)
 	end
 	-- the server fired a stage we did not predict (e.g. stage 1 at launch is replayed via FlightStart)
 	while craft.stageIndex <= stageIndex do
+		separationEffects(craft) -- CHANGED (Phase 10)
 		local result = FlightModel.stage(craft)
 		if result == nil then
 			break
@@ -827,9 +847,11 @@ local function onDestroyed(id: unknown, ids: unknown, _ut: unknown, pieces: unkn
 		return
 	end
 	local missing = {}
+	local destroyed = {} -- CHANGED (Phase 10): the destroyed ids only (pieces fly on as debris)
 	for _, blockId in ids :: { any } do
 		if type(blockId) == "number" and craft.physics.blockPos[blockId] then
 			table.insert(missing, blockId)
+			table.insert(destroyed, blockId)
 		end
 	end
 	if type(pieces) == "table" then
@@ -844,6 +866,9 @@ local function onDestroyed(id: unknown, ids: unknown, _ut: unknown, pieces: unkn
 		end
 	end
 	if #missing > 0 then
+		-- CHANGED (Phase 10): explosions for blocks the server destroyed that we did not predict (the destroyed ids
+		-- only; split-off pieces fly on as debris). Already-shown blocks are skipped by Effects.
+		Effects.blockEvent(id :: number, "Explode", craft.physics.design, destroyed, "Local")
 		local _, originLost = FlightModel.removeBlocks(craft, missing)
 		if originLost then
 			sim = nil
@@ -979,7 +1004,7 @@ function FlightController.Start()
 			end
 		end
 		hud.update(hudData())
-		updatePlumes()
+		reportEffects() -- CHANGED (Phase 10)
 	end)
 end
 

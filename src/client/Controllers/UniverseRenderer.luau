@@ -8,6 +8,8 @@
 	  SkyCube              black starry space in front of Roblox's sky above the air (CHANGED Phase 2a playtest 4)
 	  SkyLighting          sun direction, shadow side and planet shadow
 	  RemoteCraftRenderer  other crafts in this pocket (interpolated stream)
+	  Effects              CHANGED (Phase 10): plumes, smoke trails, dust, separation, explosions, re-entry heat
+	                       for every craft reported this frame (FlightController, RemoteCraftRenderer)
 
 	All layers live under workspace.ClientUniverse, which exists only on this client.
 
@@ -26,6 +28,7 @@ local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local DebugOverlay = require(script.Parent.DebugOverlay)
+local Effects = require(script.Parent.Parent.Render.Effects) -- CHANGED (Phase 10)
 local PocketController = require(script.Parent.PocketController)
 local RemoteCraftRenderer = require(script.Parent.RemoteCraftRenderer)
 local RenderContext = require(script.Parent.Parent.Render.RenderContext)
@@ -155,6 +158,10 @@ local function step(dt: number)
 		timed("SkyLighting", function()
 			SkyLighting.update(ctx)
 		end)
+		-- CHANGED (Phase 10): effects keep ageing (their folder is hidden in map view)
+		timed("Effects", function()
+			Effects.step(ctx, PocketController.frameVelocity())
+		end)
 		lastSummary = "Universe: map view"
 		return
 	end
@@ -172,6 +179,10 @@ local function step(dt: number)
 	end)
 	timed("RemoteCrafts", function()
 		RemoteCraftRenderer.render(ctx)
+	end)
+	-- CHANGED (Phase 10): after the copies are posed, so attached effects follow them this frame
+	timed("Effects", function()
+		Effects.step(ctx, PocketController.frameVelocity())
 	end)
 
 	lastSummary = string.format(
@@ -199,6 +210,7 @@ function UniverseRenderer.setMapMode(enabled: boolean, cubeHalfSize: number?)
 			if layerRoot then layerRoot:FindFirstChild("ScaledSpace") else nil,
 			if layerRoot then layerRoot:FindFirstChild("Surface") else nil,
 			Workspace:FindFirstChild("RemoteCrafts"),
+			Effects.folder(), -- CHANGED (Phase 10)
 		}
 		for _, layer in candidates do
 			if layer then
@@ -249,6 +261,7 @@ function UniverseRenderer.Init()
 
 	SkyLighting.init()
 	Surface.init(surfaceFolder)
+	Effects.init(root) -- CHANGED (Phase 10)
 	task.spawn(SkyCube.init, root) -- paints star images (EditableImage)
 	-- EditableMesh creation can yield; the update is a no-op until init finishes.
 	task.spawn(ScaledSpace.init, scaledFolder)
@@ -256,6 +269,7 @@ function UniverseRenderer.Init()
 	DebugOverlay.addLine("universe", 22, function()
 		return lastSummary
 	end)
+	DebugOverlay.addLine("effects", 24, Effects.summary) -- CHANGED (Phase 10)
 end
 
 function UniverseRenderer.Start()

@@ -25,6 +25,11 @@
 	  * F3 shows the CraftStates bytes/s this client receives, and copy / marker / puppet counts.
 	  * seedState(): the former pilot's last local state, so its pocket frame continues smoothly when the server
 	    takes the craft over.
+
+	CHANGED (Phase 10): effects. Every copy drawn this frame is reported to Render/Effects (source "Stream": plumes,
+	smoke trail, dust, re-entry heat from the interpolated state), and so is the real model of this pocket's primary
+	craft when this client does not fly it (passengers: their own rocket now has flames and smoke too). CraftStaged
+	and PartsDestroyed call Effects.blockEvent before the blocks are removed (separation puffs, explosions).
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -44,6 +49,8 @@ local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local CraftMarkers = require(script.Parent.Parent.Render.CraftMarkers)
 local DebugOverlay = require(script.Parent.DebugOverlay)
+local Effects = require(script.Parent.Parent.Render.Effects) -- CHANGED (Phase 10)
+local FlightModel = require(ReplicatedStorage.Shared.Sim.FlightModel) -- CHANGED (Phase 10): flag bits
 local Plumes = require(script.Parent.Parent.Render.Plumes)
 local Gear = require(script.Parent.Parent.Render.Gear)
 local Puppets = require(script.Parent.Parent.Render.Puppets)
@@ -318,6 +325,25 @@ local function chooseLod(entry: Entry, distance: number): Lod
 	return if copy then "Copy" else "Marker"
 end
 
+-- CHANGED (Phase 10): engines burning in a streamed state (FLAG_BURNING + the craft's ignited engines). Moved out of
+-- poseCopy and made one pass over the blocks. Solid boosters (not throttleable) always burn at 1.
+local function burningOf(entry: Entry, s: State): { [number]: number }
+	local burning: { [number]: number } = {}
+	if bit32.band(s.flags, FlightModel.FLAG_BURNING) == 0 then
+		return burning
+	end
+	for _, block in entry.design.blocks do
+		if entry.active[block.id] then
+			local engine = Parts.get(block.type).Engine
+			if engine then
+				-- CHANGED (Phase 2a feedback): no minimum flame, a throttled-down liquid engine is out
+				burning[block.id] = if engine.Throttleable then s.throttle else 1
+			end
+		end
+	end
+	return burning
+end
+
 local function poseCopy(entry: Entry, s: State, target: CFrame, dt: number)
 	local model = entry.model or buildModel(entry)
 	if model.Parent ~= folder then
@@ -330,24 +356,45 @@ local function poseCopy(entry: Entry, s: State, target: CFrame, dt: number)
 		Gear.pose(entry.gear, target, entry.gearFraction)
 	end
 
-	local burning: { [number]: number } = {}
-	if bit32.band(s.flags, 2) ~= 0 then
-		for engineId in entry.active do
-			local block = nil
-			for _, b in entry.design.blocks do
-				if b.id == engineId then
-					block = b
-					break
-				end
-			end
-			if block then
-				local engine = Parts.get(block.type).Engine
-				-- CHANGED (Phase 2a feedback): no minimum flame, a throttled-down liquid engine is out
-				burning[engineId] = if engine and not engine.Throttleable then 1 else s.throttle
-			end
-		end
+	-- CHANGED (Phase 10): plumes and the other effects are drawn by Render/Effects from this report
+	Effects.reportCraft(entry.id, {
+		source = "Stream",
+		model = model,
+		design = entry.design,
+		state = s,
+		burning = burningOf(entry, s),
+		craftCFrame = target,
+	})
+end
+
+--[[
+	CHANGED (Phase 10): the real model of this pocket's primary craft, for passengers (and anyone in the pocket who
+	does not fly it). PocketController poses it from sampleState at the render UT; the effects use the same state.
+	The pilot's own "Local" report wins inside Effects.
+]]
+local function reportPocketCraft(entry: Entry, ctx: RenderContext.RenderContext)
+	local pockets = Workspace:FindFirstChild("Pockets")
+	local pocket = if pockets then pockets:FindFirstChild(`Pocket_{ctx.pocketId}`) else nil
+	if pocket == nil or pocket:GetAttribute("PrimaryId") ~= entry.id then
+		return
 	end
-	Plumes.update(model, burning)
+	local crafts = pocket:FindFirstChild("Crafts")
+	local model = if crafts then crafts:FindFirstChild(`Craft_{entry.id}`) else nil
+	if model == nil or not model:IsA("Model") or model:GetAttribute("FlightPocket") ~= ctx.pocketId then
+		return
+	end
+	local s = RemoteCraftRenderer.sampleState(entry.id, ctx.ut)
+	if s == nil then
+		return
+	end
+	Effects.reportCraft(entry.id, {
+		source = "Stream",
+		model = model,
+		design = entry.design,
+		state = s,
+		burning = burningOf(entry, s),
+		craftCFrame = nil,
+	})
 end
 
 local function markerTitle(entry: Entry): string
@@ -370,6 +417,9 @@ function RemoteCraftRenderer.render(ctx: RenderContext.RenderContext)
 			then ctx.pocketId == 0
 			else entry.pocketId ~= 0 and entry.pocketId == ctx.pocketId
 		local state: State? = nil
+		if inMyPocket and not entry.prelaunch and #entry.design.blocks > 0 then
+			reportPocketCraft(entry, ctx) -- CHANGED (Phase 10)
+		end
 		if not inMyPocket and #entry.design.blocks > 0 then
 			local onRails = railsById[id] -- CHANGED (Phase 5): crafts on rails are not streamed; sample the rail
 			if onRails then
@@ -429,6 +479,19 @@ end
 --============================================================================
 -- Network
 --============================================================================
+
+-- CHANGED (Phase 10): the numbers of a network list (anything else is dropped).
+local function numberList(value: unknown): { number }
+	local list: { number } = {}
+	if type(value) == "table" then
+		for _, item in value :: { any } do
+			if type(item) == "number" then
+				table.insert(list, item)
+			end
+		end
+	end
+	return list
+end
 
 local function onSpawned(craftId: unknown, designBuffer: unknown, stateBuffer: unknown, info: unknown)
 	if type(craftId) ~= "number" or typeof(designBuffer) ~= "buffer" or type(info) ~= "table" then
@@ -496,7 +559,7 @@ local function onStaged(
 	_stage: unknown,
 	_ut: unknown,
 	ignited: unknown,
-	_decoupled: unknown,
+	decoupled: unknown, -- CHANGED (Phase 10): used for the separation puffs
 	debris: unknown
 )
 	if type(craftId) ~= "number" then
@@ -512,6 +575,11 @@ local function onStaged(
 				entry.active[id] = true
 			end
 		end
+	end
+	-- CHANGED (Phase 10): separation puffs at the decouplers that fired (before their blocks are removed)
+	local decouplers = numberList(decoupled)
+	if #decouplers > 0 then
+		Effects.blockEvent(craftId, "Separate", entry.design, decouplers, "Stream")
 	end
 	if type(debris) == "table" then
 		for _, piece in debris :: { any } do
@@ -530,6 +598,8 @@ local function onDestroyed(craftId: unknown, ids: unknown, _ut: unknown, pieces:
 	if entry == nil then
 		return
 	end
+	-- CHANGED (Phase 10): explosions at the destroyed blocks (before they are removed)
+	Effects.blockEvent(craftId, "Explode", entry.design, numberList(ids), "Stream")
 	removeBlocks(entry, ids :: { number })
 	if type(pieces) == "table" then
 		for _, piece in pieces :: { any } do

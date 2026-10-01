@@ -378,6 +378,61 @@ The flight camera no longer turns with the rocket.
 - **Phase 10: Effects.** Better effects for rockets and everything else: plumes, smoke, explosions, separation, re-entry heat and the rest.
 - **Phase 11: UI renovation.** A new look for the builder, flight HUD, map and menus.
 
+### D38. Phase 10 effects
+Steamy asked for "an effects phase, to update effects of rockets and everything". He was away, so these are our choices.
+
+- **Where it lives:**
+  - `Render/Effects` (new) draws every rocket effect. `Render/EffectsMath` (new) holds the pure curves, with 12 offline tests.
+  - `Render/Plumes` is now only called by Effects. Effects is stepped by `UniverseRenderer` once per frame, after the copies are posed.
+  - Everything is client-only and cosmetic (I5/I6). Nothing is replicated and nothing uses Roblox physics (I3).
+- **Same effects for everyone, with no new remotes:** they come from data every client already has (`FLAG_BURNING`, throttle, ignited engines, velocity, position, `CraftStaged`, `PartsDestroyed`).
+  - **The pilot's own rocket:** `FlightController` reports it every frame from its own simulation. Its predicted staging and crash reports trigger the puffs and explosions straight away.
+  - **Everyone else's rockets and debris:** `RemoteCraftRenderer` reports every copy it draws.
+  - **Passengers:** the pocket's real rocket is reported too, so passengers now see their own rocket's flames. That was missing before.
+  - **The pilot wins:** when both report the same rocket, the pilot's simulation is used. The server's echo of a predicted event is ignored, and no block explodes or separates twice within 3 s.
+- **Hidden things stay hidden:** a rocket that isn't reported for 2 frames loses its effects. That covers other pockets, the far-away marker view and the map view, so effects never show for rockets that aren't drawn.
+- **Smoke in a moving flight pocket:**
+  - In a flight pocket the rocket hardly moves and the world streams past it. So smoke, dust and debris move at the air's velocity in pocket axes: `drift = vectorToWorkspace(v_body(craft) − v_body(pocket ref) − v_pocket)`.
+  - `PocketController.frameVelocity()` (new) gives `v_pocket`: the primary rocket's velocity in a flight pocket, and zero in the base.
+  - **Aiming the particles:** ParticleEmitters can't add a velocity to their particles. So each emitter is pointed along drift plus its own push, with the cone opened just enough for the random part (`EffectsMath.driftEmission`).
+  - **No drag on moving smoke:** the pocket's acceleration, smoothed, is applied as −a to the drifting particles, and they get no Drag. Drag would pull them back toward the pocket.
+  - **Pocket switches:** they clear all one-shot effects.
+- **The effects:**
+  - **Engine plumes:**
+    - At sea level they are narrow, bright and tight. In vacuum they become a long, faint cone that keeps widening, with a shorter core and paler, bluer glow (driven by air pressure).
+    - Solid boosters are detected by their part: thicker, longer, yellower, with grey-brown smoke.
+    - An engine that lights on a rocket already in view flares (light and core) for 0.35 s with a burst of flame and sparks. One that cuts out leaves a smoke puff (smaller in thin air).
+  - **Smoke trail:**
+    - One trail per rocket while engines burn in air. It is full below about 1.2 km and gone above about 5.5 km, on a log scale.
+    - It is thicker for boosters and thin for liquid engines.
+    - Puffs stay put in the air, so the trail is up to 900 studs long. Puffs grow with speed so the trail never breaks into dots.
+  - **Launch and landing dust:**
+    - Below 40 m (nozzle height above the SurfaceHeight ground plane, so pads count), there is a ring of 6 emitters on the ground under the burning nozzles.
+    - It is stronger closer to the ground and with more downward thrust.
+    - The colour comes from the ground under it (Biome), with white spray over the sea.
+  - **Stage separation:** a white puff, sparks and a short flash at every decoupler that fired.
+  - **Explosions** (`PartsDestroyed` or the pilot's own crash report): for the 6 largest destroyed blocks of an event, each gets:
+    - a growing, fading Neon fireball
+    - fire, dark smoke and sparks
+    - 5 glowing debris bits with short trails
+    - a light flash
+    - Roblox's classic Explosion, with BlastPressure 0 and DestroyJointRadiusPercent 0. It's skipped when the air streams past faster than 30 m/s, because the classic effect can't move with it.
+    - Everything scales with block size. There's a budget of 12 explosions in a burst, refilling at 10 per second.
+  - **Re-entry heating:**
+    - Driven by heat = ρ·v³ on a log scale (1.5e5 to 3e6), times a speed gate from 380 to 460 m/s.
+    - A re-entry from a 15 km orbit glows from about 6 km down, strongest around 4 km. A normal ascent stays dark; a very fast one (400 m/s at 4.5 km) only glimmers.
+    - What you see on the leading side: an orange-pink plasma envelope (two beams), a glowing cap, flame streaks streaming back along the rocket, and an orange light.
+  - **Transonic vapour cone:** a white flickering cone between Mach 0.93 and 1.12 (we use 340 m/s everywhere), only below about 1.9 km.
+- **Budgets:**
+  - Everything is pooled: 6 trails, 4 dust rings, 4 heated rockets, 16 bursts, 10 fireballs and 40 debris bits at most.
+  - Particle rates scale with the graphics quality: x0.3 at level 1, x1 at level 10, x0.8 on Automatic.
+  - The F3 overlay has an "Effects:" line (counts and quality) and an "Effects" timing.
+- **No sounds yet.** They need uploaded audio asset ids. That's a follow-up for Steamy.
+- **Known limits:**
+  - Copies of other rockets only know "something is burning" plus which engines were ignited, so a burnt-out booster on someone else's rocket keeps its flame until the whole rocket stops burning. This is unchanged from before.
+  - Explosions on other players' rockets appear where their copy is drawn, 0.1 s behind the real rocket, which is also when the blocks vanish.
+  - How the particles look (built-in Roblox textures, stretched sparks and streaks) can only be judged in Studio.
+
 ---
 
 ## Phase 0 spike results

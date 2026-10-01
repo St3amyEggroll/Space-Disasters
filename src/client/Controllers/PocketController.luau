@@ -50,7 +50,15 @@ local POSE_MOVE_MODE = Enum.BulkMoveMode.FireCFrameChanged
 --============================================================================
 
 -- What the pilot's simulation reports for its own craft (a subset of FlightModel.CraftState).
-export type PrimaryState = { bodyId: number, pos: Vec3d.Vec3d, rot: CFrame, ut: number, flags: number? }
+-- CHANGED (Phase 10): vel (optional) so effects know how fast the pocket moves through the air
+export type PrimaryState = {
+	bodyId: number,
+	pos: Vec3d.Vec3d,
+	vel: Vec3d.Vec3d?,
+	rot: CFrame,
+	ut: number,
+	flags: number?,
+}
 export type PrimaryProvider = (craftId: number) -> PrimaryState?
 
 local PocketController = {}
@@ -64,6 +72,9 @@ local frameMode = "SURFACE_ALIGNED"
 local primaryProvider: PrimaryProvider? = nil
 local pocketChanged = Instance.new("BindableEvent")
 local primaryCraftCFrame: CFrame? = nil -- workspace CFrame of the posed primary craft's reference frame
+-- CHANGED (Phase 10): velocity of the pocket's reference point relative to frame.refBodyId (universe axes); the
+-- primary craft's velocity in a flight pocket, zero otherwise (planets do not rotate)
+local frameVelocity = Vec3d.zero()
 
 -- Pose cache for the real model of the current pocket's primary craft (D31).
 type PoseCache = {
@@ -448,6 +459,7 @@ function PocketController.update()
 	local mode = folder:GetAttribute("FrameMode")
 	frameMode = if type(mode) == "string" then mode else "SURFACE_ALIGNED"
 	primaryCraftCFrame = nil
+	Vec3d.set(frameVelocity, 0, 0, 0) -- CHANGED (Phase 10)
 	if frameMode == "HORIZON_ALIGNED" then
 		local primary = folder:GetAttribute("PrimaryId")
 		if type(primary) == "number" then
@@ -464,6 +476,10 @@ function PocketController.update()
 				end
 			end
 			if state then
+				local vel = state.vel -- CHANGED (Phase 10)
+				if vel then
+					Vec3d.copyInto(frameVelocity, vel)
+				end
 				Frames.setReference(
 					frame,
 					state.bodyId,
@@ -487,6 +503,13 @@ end
 
 function PocketController.frame(): Frames.Frame
 	return frame
+end
+
+-- CHANGED (Phase 10): velocity of the current pocket's reference point relative to frame.refBodyId (universe axes,
+-- m/s): the primary craft's velocity in a flight pocket, zero in surface pockets. Effects use it to move smoke and
+-- dust with the air.
+function PocketController.frameVelocity(): Vec3d.Vec3d
+	return frameVelocity
 end
 
 -- UT the current frame corresponds to (pilot: its simulation time; passengers: the interpolation time).

@@ -13,12 +13,46 @@
 | 7: Time warp | Not started |
 | 8: Surface terrain | Not started |
 | 9: Polish and backlog | Not started |
-| 10: Effects (Steamy) | Not started: engine plumes, smoke, explosions, staging and separation, re-entry heat, and the rest of the rocket effects |
+| 10: Effects (Steamy) | **Built. Waiting for Steamy's playtest** (D38) |
 | 11: UI renovation (Steamy) | Not started: a new look for the builder, flight HUD, map and menus |
 
 Phase 2 is split into 2a/2b so you can playtest halfway through (agreed with Steamy).
 
 ---
+
+## Phase 10: what was built (see D38)
+
+- **Engine flames:**
+  - Near the ground they are short, tight and bright. As you climb they stretch into a long, faint cone that keeps opening up in space.
+  - Solid boosters have fatter, yellower, smokier flames.
+  - When an engine lights it flashes, with a few sparks. When it cuts out it leaves a puff of smoke.
+- **Smoke trail:** burning engines leave a trail of smoke in the air. It is thick for boosters, thin for liquid engines, and fades out as you climb (gone above about 5.5 km).
+- **Launch and landing dust:** below about 40 m, the engines blow a ring of dust across the ground. It takes the ground's colour, and is white spray over the sea. It gets stronger the lower and harder you burn.
+- **Staging:** every decoupler that fires gives a white puff, sparks and a quick flash.
+- **Crashes:** every part that breaks explodes, with a fireball, fire and smoke, glowing bits flying off, a flash of light, and the classic Roblox explosion.
+- **Re-entry:** coming back fast from orbit, the front of the rocket glows orange and pink, with flame streaks running back along it. A normal launch doesn't glow.
+- **Breaking the sound barrier:** a quick white vapour cone around the rocket, low down only.
+- **Everyone sees the same effects** on every rocket and piece of debris. Passengers now also see their own rocket's flames.
+- **Performance:** everything is reused and capped, and there are fewer particles at low graphics quality. F3 shows a new "Effects:" line and an "Effects" timing.
+- **No sounds yet:** they need uploaded sound ids (a follow-up).
+
+## Phase 10: how to test
+
+Rebuild and connect as usual (`git pull`, `rojo build -o SpaceDisasters.rbxl`, `rojo serve`).
+
+1. **Launch:** build a rocket with a Solid Booster stage under a liquid stage. Sit, press Space.
+   - Flash and sparks at ignition, then a thick smoke column and a ring of dust on the pad.
+   - The dust fades as you climb past about 40 m.
+2. **Climb:** the smoke trail streams away below you and fades out around 4–5 km. The flame gets longer and wider as the air thins, and becomes a wide faint cone in space.
+3. **Throttle:** press X. The liquid flame goes out with a puff of smoke; Z relights it with a flash. Boosters can't be throttled.
+4. **Staging:** press Space when the booster burns out. A white puff and sparks at the decoupler, and the booster falls away.
+5. **Re-entry:** `/orbit 15`, then burn retrograde (backwards) until the orbit dips into the air. Coming down through about 6 km, the rocket's front glows orange-pink with streaks. It fades as you slow down.
+6. **Crash:** fly into the ground. Every broken part explodes (fireball, smoke, glowing bits, flash).
+7. **Two players (Test > Clients and Servers):** each sees the other's flames, trail, dust, staging puffs and explosions. A passenger on an External Seat sees the flames too.
+8. **Map (M) and far away:** effects hide with the rocket, and come back without a flash.
+9. **Low graphics quality:** fewer particles, but everything still shows. F3 shows the "Effects:" line, and the "Effects" timing stays well under 1 ms.
+
+Please tell us what looks too strong, too weak, or wrong. Every number is a tunable at the top of `Render/Effects.luau` and `Render/EffectsMath.luau`.
 
 ## Phase 3: what was built (see D35)
 
