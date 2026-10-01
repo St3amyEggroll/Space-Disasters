@@ -16,12 +16,19 @@
 	thin outer layer over the ball), and thin cylinder rings for the lines. Client-only, about 30 parts; the ball
 	is re-posed only when the attitude changed by more than POSE_EPSILON.
 
+	CHANGED (Phase 11): restyled for the KSP flight HUD (UI/Theme): the ball sits centred in its parent (the face of a
+	Kit.gaugeBezel), with no frame or outline of its own; sky / ground come from Theme.Colors.NavSky / NavGround, the
+	nose reticle is amber, the prograde markers yellow-green and the "ON RAILS" pill is a green lamp. The maths is
+	unchanged.
+
 	API:
-	  Navball.create(parent, size) -> Navball
+	  Navball.create(parent, size) -> Navball         CHANGED (Phase 11): centred in parent, size = diameter (px)
 	  navball.update(attitude?, horizon?, velocity?)   attitude: craft -> universe rotation; horizon: local horizon
 	                                                   rotation (X east, Y up, Z north); velocity: universe axes.
 	                                                   Returns heading (deg, 0..360) and pitch (deg).
 ]]
+
+local Theme = require(script.Parent.Theme) -- CHANGED (Phase 11)
 
 --============================================================================
 -- Tunables
@@ -33,17 +40,21 @@ local GROUND_SCALE = 1.004 -- the ground layer sits just outside the sky ball
 local LINE_SCALE = 1.008 -- rings sit just outside the ground layer
 local HORIZON_THICKNESS = 0.035
 local MERIDIAN_THICKNESS = 0.014
-local SKY_COLOR = Color3.fromRGB(64, 148, 230)
-local GROUND_COLOR = Color3.fromRGB(150, 96, 52)
+-- CHANGED (Phase 11): colours and fonts from UI/Theme
+local SKY_COLOR = Theme.Colors.NavSky
+local GROUND_COLOR = Theme.Colors.NavGround
 local HORIZON_COLOR = Color3.fromRGB(255, 255, 255)
 local MERIDIAN_COLOR = Color3.fromRGB(225, 232, 245)
-local RETICLE_COLOR = Color3.fromRGB(255, 140, 40) -- HUD accent
-local PROGRADE_COLOR = Color3.fromRGB(210, 255, 70)
-local CARDINAL_COLOR = Color3.fromRGB(255, 255, 255)
+local RETICLE_COLOR = Theme.Colors.Warning -- KSP's amber nose marker
+local PROGRADE_COLOR = Theme.Colors.Title -- KSP's yellow-green prograde marker
+local CARDINAL_COLOR = Theme.Colors.DigitText
+local RAILS_COLOR = Theme.Colors.Accent -- the "ON RAILS" lamp
+local RAILS_TEXT_COLOR = Theme.Colors.ButtonText
 local MARKER_SIZE = 22 -- pixels at the design size
+local MARKER_DESIGN_SIZE = 140 -- ball diameter MARKER_SIZE is meant for
 local POSE_EPSILON = math.rad(0.15) -- re-pose the ball only beyond this attitude change
-local FONT_BOLD = Enum.Font.BuilderSansBold
-local FONT_HEAVY = Enum.Font.BuilderSansExtraBold
+local FONT_BOLD = Theme.Fonts.Bold
+local FONT_HEAVY = Theme.Fonts.ExtraBold
 --============================================================================
 
 export type Navball = {
@@ -153,20 +164,15 @@ local function ring(parent: Instance, size: number, color: Color3, thickness: nu
 end
 
 function Navball.create(parent: Instance, size: number): Navball
+	-- CHANGED (Phase 11): centred in the bezel's face, which draws the black backing and the rim
 	local container = Instance.new("Frame")
 	container.Name = "Navball"
+	container.AnchorPoint = Vector2.new(0.5, 0.5)
+	container.Position = UDim2.fromScale(0.5, 0.5)
 	container.Size = UDim2.fromOffset(size, size)
-	container.BackgroundColor3 = Color3.fromRGB(13, 15, 23)
-	container.BackgroundTransparency = 0.2
+	container.BackgroundTransparency = 1
 	container.BorderSizePixel = 0
 	container.Active = false
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0.5, 0)
-	corner.Parent = container
-	local outline = Instance.new("UIStroke")
-	outline.Color = Color3.fromRGB(78, 88, 122)
-	outline.Thickness = 2
-	outline.Parent = container
 	container.Parent = parent
 
 	local viewport = Instance.new("ViewportFrame")
@@ -213,7 +219,7 @@ function Navball.create(parent: Instance, size: number): Navball
 		table.insert(cardinals, { label = label, dir = letter })
 	end
 
-	local markerSize = math.floor(MARKER_SIZE * size / 140 + 0.5)
+	local markerSize = math.floor(MARKER_SIZE * size / MARKER_DESIGN_SIZE + 0.5)
 	local prograde = ring(overlay, markerSize, PROGRADE_COLOR, 2.5)
 	prograde.ZIndex = 4
 	prograde.Visible = false
@@ -256,14 +262,15 @@ function Navball.create(parent: Instance, size: number): Navball
 	end
 
 	local railsPill = newLabel(container, {
-		AnchorPoint = Vector2.new(0.5, 1),
-		Position = UDim2.new(0.5, 0, 1, -4),
+		-- CHANGED (Phase 11): at the top of the ball (the HUD's heading box covers its bottom)
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 0, 6),
 		Size = UDim2.fromOffset(62, 15),
-		BackgroundTransparency = 0.1,
-		BackgroundColor3 = Color3.fromRGB(88, 214, 122),
+		BackgroundTransparency = 0,
+		BackgroundColor3 = RAILS_COLOR, -- CHANGED (Phase 11)
 		Font = FONT_BOLD,
-		TextSize = 11,
-		TextColor3 = Color3.fromRGB(28, 22, 18),
+		TextSize = Theme.TextSizes.Tiny,
+		TextColor3 = RAILS_TEXT_COLOR,
 		Text = "ON RAILS",
 		Visible = false,
 		ZIndex = 7,

@@ -42,6 +42,15 @@
 	                                                       (false for held or unknown actions); not blocked by UIState
 	  FlightController.setHeld(actionId, held) -> boolean  holds a held action (pitch / yaw / roll / throttle up and
 	                                                       down) like its key; released when piloting stops
+
+	CHANGED (Phase 11): the KSP-style FlightHUD gets its callbacks from here (SAS button -> performAction("ToggleSAS"),
+	End Flight button -> endFlight) and HudData carries isOwner, hasLegs, gearDown, fuel (the fuel feeding the
+	stage that burns, or fires next) and orbitMode (HudMath). There is no pause menu: End Flight asks first (Kit.confirm)
+	and fires the EndFlight remote. The pilot or the craft's owner ends the flight for everyone (the server removes the
+	craft and puts everyone aboard back at their plot); anyone else only leaves it. Leaving flight mode afterwards is
+	the usual path: the server unseats the player (bindKeys(false), ChaseCamera.stop, HUD hidden), CraftRemoved clears
+	the simulation (onRemoved) and the identity PocketTransfer moves PocketController to the base pocket.
+	  FlightController.endFlight()                         asks to end (or leave) the flight, like the HUD button
 ]]
 
 local ContextActionService = game:GetService("ContextActionService")
@@ -68,6 +77,8 @@ local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local ChaseCamera = require(script.Parent.Parent.Render.ChaseCamera)
 local FlightHUD = require(script.Parent.Parent.UI.FlightHUD)
+local HudMath = require(script.Parent.Parent.UI.HudMath) -- CHANGED (Phase 11)
+local Kit = require(script.Parent.Parent.UI.Kit) -- CHANGED (Phase 11): End Flight confirmation
 local Keybinds = require(script.Parent.Parent.Settings.Keybinds) -- CHANGED (Phase 11)
 local Settings = require(script.Parent.Parent.Settings.Settings) -- CHANGED (Phase 11)
 local UIState = require(script.Parent.Parent.UI.UIState) -- CHANGED (Phase 11)
@@ -118,6 +129,19 @@ local NO_PULSE_ACTIONS: { [string]: boolean } = { -- discrete actions that do no
 	MapView = true,
 	ToggleHUD = true,
 }
+-- CHANGED (Phase 11): HUD extras and End Flight
+local LEGS_CHECK_INTERVAL = 1 -- s between scans of the craft model for landing legs (HUD LEGS lamp)
+local END_FLIGHT_TEXT = {
+	ownerTitle = "End flight?",
+	ownerBody = "Your craft will be removed and everyone aboard goes back to their plot. Your design stays in your hangar.",
+	pilotTitle = "End flight?",
+	pilotBody = "The craft will be removed and everyone aboard goes back to their plot. Its design stays in its owner's hangar.",
+	endConfirm = "End Flight",
+	passengerTitle = "Leave flight?",
+	passengerBody = "You go back to your plot. The craft keeps flying.",
+	passengerPadBody = "You go back to your plot. The craft stays on its pad.",
+	leaveConfirm = "Leave Flight",
+}
 --============================================================================
 
 local FlightController = {}
@@ -146,6 +170,10 @@ local railsRetryAt = 0 -- os.clock() before which no new rail is proposed
 local inputPulse = false -- a discrete flight key was pressed since the last simulation step
 local leaveRails: () -> () -- defined in the rails section below (stage() needs it first)
 local virtualHeld: { [string]: boolean } = {} -- CHANGED (Phase 11): held actions from setHeld (touch buttons)
+-- CHANGED (Phase 11): landing legs of the craft model the HUD shows (one model at a time)
+local legsModel: Model? = nil
+local legsValue = false
+local legsCheckedAt = -math.huge
 
 --============================================================================
 -- Seat detection
@@ -535,12 +563,86 @@ local function orbitInfo(state: Protocol.State): (number?, number?, number?, num
 	return apoapsis, el.periapsis - body.Radius, el.timeToApoapsis, el.timeToPeriapsis, horizon
 end
 
+-- CHANGED (Phase 11): does the craft model have landing legs? (rescanned every LEGS_CHECK_INTERVAL)
+local function hasLegs(model: Model?): boolean
+	if model == nil then
+		return false
+	end
+	local now = os.clock()
+	if model == legsModel and now - legsCheckedAt < LEGS_CHECK_INTERVAL then
+		return legsValue
+	end
+	local found = false
+	for _, child in model:GetChildren() do
+		local partId = child:GetAttribute("PartId")
+		local def = if type(partId) == "string" then Parts.find(partId) else nil
+		if def and def.Leg then
+			found = true
+			break
+		end
+	end
+	legsModel = model
+	legsValue = found
+	legsCheckedAt = now
+	return found
+end
+
+-- CHANGED (Phase 11): is the local player the craft model's owner?
+local function isOwnerOf(model: Model?): boolean
+	return model ~= nil and model:GetAttribute("OwnerUserId") == player.UserId
+end
+
+-- CHANGED (Phase 11): fuel left (0..1) in what feeds the stage that is burning (its engines' tanks and solid
+-- boosters), or the stage that fires next when nothing burns; the whole craft's fuel when that is unknown.
+local function stageFuelFraction(craft: Craft): number
+	local engines: { [number]: boolean } = {}
+	for id in craft.active do
+		engines[id] = true
+	end
+	if next(engines) == nil then
+		local upcoming = craft.stages[craft.stageIndex]
+		if upcoming then
+			for _, id in upcoming.ignite do
+				engines[id] = true
+			end
+		end
+	end
+	local physics = craft.physics
+	local sources: { [number]: boolean } = {}
+	for _, engine in physics.engines do
+		if engines[engine.blockId] then
+			if engine.solid then
+				sources[engine.blockId] = true
+			else
+				local group = physics.groupOf[engine.blockId]
+				local tanks: { number } = if group then physics.groups[group] or {} else {}
+				for _, tank in tanks do
+					sources[tank] = true
+				end
+			end
+		end
+	end
+	local now, full = 0, 0
+	for id in sources do
+		local block = physics.graph.blockById[id]
+		if block then
+			full += Parts.get(block.type).FuelMass
+			now += craft.fuel[id] or 0
+		end
+	end
+	if full <= 0 then
+		return FlightModel.remainingFuelFraction(craft)
+	end
+	return math.clamp(now / full, 0, 1)
+end
+
 local function hudFromState(
 	state: Protocol.State,
 	name: string,
 	isPilot: boolean,
 	craft: Craft?,
-	onRails: boolean
+	onRails: boolean,
+	model: Model? -- CHANGED (Phase 11): the craft's real model (owner, legs)
 ): HudData.HudData
 	local body = Bodies.get(state.bodyId)
 	local r = Vec3d.length(state.pos)
@@ -578,6 +680,12 @@ local function hudFromState(
 		attitude = state.rot,
 		horizon = nil,
 		velocity = Vec3d.toVector3(state.vel),
+		-- CHANGED (Phase 11)
+		isOwner = isOwnerOf(model),
+		hasLegs = hasLegs(model),
+		gearDown = not FlightModel.isGearUp(state.flags),
+		fuel = if craft then stageFuelFraction(craft) else nil,
+		orbitMode = HudMath.isOrbitMode(altitude, if body.Atmosphere then body.Atmosphere.Top else nil, body.Radius),
 	}
 	data.apoapsis, data.periapsis, data.timeToApoapsis, data.timeToPeriapsis, data.horizon = orbitInfo(state)
 	if craft then
@@ -615,7 +723,7 @@ local function hudData(): HudData.HudData?
 	if craft and craftId then
 		local model = craftModelById(craftId :: number)
 		local name = if model then (model:GetAttribute("DesignName") or model.Name) :: string else "Craft"
-		return hudFromState(craft.state, name, seatInfo ~= nil and seatInfo.isPilot, craft, rails ~= nil)
+		return hudFromState(craft.state, name, seatInfo ~= nil and seatInfo.isPilot, craft, rails ~= nil, model)
 	end
 	if seatInfo then
 		if seatInfo.state == "Prelaunch" or seatInfo.state == "Launching" then
@@ -660,6 +768,12 @@ local function hudData(): HudData.HudData?
 				attitude = nil,
 				horizon = nil,
 				velocity = nil,
+				-- CHANGED (Phase 11)
+				isOwner = isOwnerOf(seatInfo.craftModel),
+				hasLegs = hasLegs(seatInfo.craftModel),
+				gearDown = true, -- legs are built deployed
+				fuel = 1,
+				orbitMode = false,
 			}
 		end
 		-- passenger in flight: streamed state
@@ -670,7 +784,8 @@ local function hudData(): HudData.HudData?
 				(seatInfo.craftModel:GetAttribute("DesignName") or "Craft") :: string,
 				false,
 				nil,
-				RemoteCraftRenderer.railsOf(seatInfo.craftId) ~= nil -- CHANGED (Phase 5)
+				RemoteCraftRenderer.railsOf(seatInfo.craftId) ~= nil, -- CHANGED (Phase 5)
+				seatInfo.craftModel -- CHANGED (Phase 11)
 			)
 		end
 	end
@@ -967,15 +1082,68 @@ local function onCraftOffRails(id: unknown, _ut: unknown)
 end
 
 --============================================================================
+-- CHANGED (Phase 11): End Flight (no pause menu)
+--============================================================================
+
+-- Asks first (Kit.confirm), then tells the server. The pilot or the craft's owner ends the flight for everyone;
+-- anyone else only leaves it. Nothing happens when not aboard a craft or while another dialog is open.
+local function endFlight()
+	local seatInfo = currentSeat()
+	if seatInfo == nil or Kit.isConfirmOpen() then
+		return
+	end
+	local id = seatInfo.craftId
+	local owner = isOwnerOf(seatInfo.craftModel)
+	local options: Kit.ConfirmOptions
+	if owner then
+		options = {
+			title = END_FLIGHT_TEXT.ownerTitle,
+			body = END_FLIGHT_TEXT.ownerBody,
+			confirmText = END_FLIGHT_TEXT.endConfirm,
+			danger = true,
+		}
+	elseif seatInfo.isPilot then
+		options = {
+			title = END_FLIGHT_TEXT.pilotTitle,
+			body = END_FLIGHT_TEXT.pilotBody,
+			confirmText = END_FLIGHT_TEXT.endConfirm,
+			danger = true,
+		}
+	else
+		options = {
+			title = END_FLIGHT_TEXT.passengerTitle,
+			body = if seatInfo.state == "Prelaunch"
+				then END_FLIGHT_TEXT.passengerPadBody
+				else END_FLIGHT_TEXT.passengerBody,
+			confirmText = END_FLIGHT_TEXT.leaveConfirm,
+			danger = true,
+		}
+	end
+	Kit.confirm(options, function(confirmed: boolean)
+		local now = currentSeat()
+		if confirmed and now ~= nil and now.craftId == id then
+			remotes.EndFlight:FireServer()
+		end
+	end)
+end
+
+--============================================================================
 -- Lifecycle
 --============================================================================
 
 function FlightController.Init()
-	for _, name in { "RequestStage", "LeaveSeat", "ReportPartsDestroyed", "RequestRails" } do -- CHANGED (Phase 5)
+	-- CHANGED (Phase 5): RequestRails; CHANGED (Phase 11): EndFlight
+	for _, name in { "RequestStage", "LeaveSeat", "ReportPartsDestroyed", "RequestRails", "EndFlight" } do
 		remotes[name] = Remotes.event(name)
 	end
 	pilotStateRemote = Remotes.unreliable("PilotState")
-	hud = FlightHUD.create()
+	-- CHANGED (Phase 11): the KSP-style HUD's clickable controls
+	hud = FlightHUD.create({
+		onEndFlight = endFlight,
+		onToggleSAS = function()
+			performAction("ToggleSAS")
+		end,
+	})
 	-- CHANGED (Phase 5): the map view draws this client's own craft from the exact local state
 	MapViewController.setOwnCraftProvider(function(): (number?, Protocol.State?)
 		local craft = sim
@@ -1078,6 +1246,12 @@ end
 -- the pilot (HudData.isPilot).
 function FlightController.performAction(actionId: string): boolean
 	return performAction(actionId)
+end
+
+-- CHANGED (Phase 11): asks to end the flight (pilot / owner: for everyone) or to leave it (passengers), exactly like the
+-- HUD's End Flight button (for future touch buttons).
+function FlightController.endFlight()
+	endFlight()
 end
 
 -- CHANGED (Phase 11): holds or releases a held Flight action (PitchDown, PitchUp, YawLeft, YawRight, RollLeft,

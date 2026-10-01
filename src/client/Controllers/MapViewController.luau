@@ -33,6 +33,9 @@
 	key is handled exactly once. Drag uses the mouseSensitivity and invertY settings. While UIState.isInputBlocked()
 	(main menu or a dialog) every map input is ignored and a drag in progress ends.
 	API additions: MapViewController.toggle(), MapViewController.setPilotBinding(active).
+	CHANGED (Phase 11): the map's labels use UI/Theme fonts and colours (KSP skin); the title card moved to the top-left
+	corner so the flight HUD's altimeter stays visible at the top centre, and its help line shows the current map key.
+	Behaviour is unchanged.
 ]]
 
 local GuiService = game:GetService("GuiService")
@@ -54,6 +57,7 @@ local DebugOverlay = require(script.Parent.DebugOverlay)
 local Keybinds = require(script.Parent.Parent.Settings.Keybinds) -- CHANGED (Phase 11)
 local Settings = require(script.Parent.Parent.Settings.Settings) -- CHANGED (Phase 11)
 local UIState = require(script.Parent.Parent.UI.UIState) -- CHANGED (Phase 11)
+local Theme = require(script.Parent.Parent.UI.Theme) -- CHANGED (Phase 11): label styling
 local PocketController = require(script.Parent.PocketController)
 local RemoteCraftRenderer = require(script.Parent.RemoteCraftRenderer)
 local UniverseRenderer = require(script.Parent.UniverseRenderer)
@@ -106,14 +110,25 @@ local OTHER_COLOR = Color3.fromRGB(150, 160, 190)
 local MOON_ORBIT_COLOR = Color3.fromRGB(110, 112, 125)
 local ATMOSPHERE_COLOR = Color3.fromRGB(120, 170, 255)
 local SOI_COLOR = Color3.fromRGB(180, 180, 200)
-local OWN_COLOR = Color3.fromRGB(255, 140, 40)
-local CRAFT_COLOR = Color3.fromRGB(242, 244, 252)
-local DEBRIS_COLOR = Color3.fromRGB(150, 158, 184)
-local APSIS_COLOR = Color3.fromRGB(80, 200, 255)
-local PANEL_COLOR = Color3.fromRGB(22, 26, 38)
-local TEXT_DIM = Color3.fromRGB(150, 158, 184)
-local FONT_BOLD = Enum.Font.BuilderSansBold
-local FONT_HEAVY = Enum.Font.BuilderSansExtraBold
+-- CHANGED (Phase 11): label colours and fonts from UI/Theme
+local OWN_COLOR = Theme.Colors.Warning
+local CRAFT_COLOR = Theme.Colors.Text
+local DEBRIS_COLOR = Theme.Colors.TextDim
+local APSIS_COLOR = Color3.fromRGB(80, 200, 255) -- the tracked trajectory's first patch colour
+local PANEL_COLOR = Theme.Colors.Panel
+local PANEL_STROKE = Theme.Colors.PanelStroke
+local TEXT_DIM = Theme.Colors.TextDim
+local TITLE_COLOR = Theme.Colors.Text
+local FOCUS_HEX = string.format(
+	"#%02X%02X%02X",
+	math.floor(Theme.Colors.Title.R * 255 + 0.5),
+	math.floor(Theme.Colors.Title.G * 255 + 0.5),
+	math.floor(Theme.Colors.Title.B * 255 + 0.5)
+)
+local FONT_BOLD = Theme.Fonts.Bold
+local FONT_HEAVY = Theme.Fonts.ExtraBold
+local OVERLAY_MARGIN = 12 -- px from the top-left corner (below the Roblox top bar)
+local OVERLAY_HEIGHT = 46
 --============================================================================
 
 type FocusKind = "Body" | "Craft"
@@ -192,6 +207,7 @@ local layoutScale = 0 -- scale the lines were last laid out at
 local overlay: ScreenGui
 local focusLabel: TextLabel
 local scaleLabel: TextLabel
+local helpLabel: TextLabel -- CHANGED (Phase 11): shows the current map key
 
 local dragging: Enum.UserInputType? = nil
 local dragDistance = 0
@@ -305,7 +321,7 @@ local function newMarker(name: string, color: Color3, clickable: boolean): Marke
 	button.Size = UDim2.new(1, 0, 0.5, -8)
 	button.BackgroundTransparency = 1
 	button.Font = FONT_BOLD
-	button.TextSize = 13
+	button.TextSize = Theme.TextSizes.Small + 1 -- CHANGED (Phase 11): Theme text size
 	button.TextColor3 = color
 	button.TextStrokeTransparency = 0.35
 	button.AutoButtonColor = false
@@ -325,24 +341,25 @@ local function buildOverlay()
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "MapViewUI"
 	gui.ResetOnSpawn = false
-	gui.DisplayOrder = 9 -- under the flight HUD (10)
+	gui.DisplayOrder = Theme.DisplayOrder.Map -- CHANGED (Phase 11): under the flight HUD
 	gui.Enabled = false
+	-- CHANGED (Phase 11): KSP panel look, top-left (the HUD's altimeter owns the top centre)
 	local panel = Instance.new("Frame")
-	panel.AnchorPoint = Vector2.new(0.5, 0)
-	panel.Position = UDim2.new(0.5, 0, 0, 12)
-	panel.Size = UDim2.fromOffset(0, 46)
+	panel.AnchorPoint = Vector2.new(0, 0)
+	panel.Position = UDim2.fromOffset(OVERLAY_MARGIN, OVERLAY_MARGIN)
+	panel.Size = UDim2.fromOffset(0, OVERLAY_HEIGHT)
 	panel.AutomaticSize = Enum.AutomaticSize.X
 	panel.BackgroundColor3 = PANEL_COLOR
-	panel.BackgroundTransparency = 0.12
+	panel.BackgroundTransparency = Theme.Transparency.Panel
 	panel.BorderSizePixel = 0
 	panel.Active = false
 	panel.Parent = gui
 	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 12)
+	corner.CornerRadius = UDim.new(0, Theme.Radius.Panel)
 	corner.Parent = panel
 	local stroke = Instance.new("UIStroke")
-	stroke.Color = OWN_COLOR
-	stroke.Thickness = 1.5
+	stroke.Color = PANEL_STROKE
+	stroke.Thickness = Theme.Stroke.Thin
 	stroke.Parent = panel
 	local pad = Instance.new("UIPadding")
 	pad.PaddingLeft = UDim.new(0, 16)
@@ -353,8 +370,8 @@ local function buildOverlay()
 	title.Size = UDim2.fromOffset(0, 26)
 	title.AutomaticSize = Enum.AutomaticSize.X
 	title.Font = FONT_HEAVY
-	title.TextSize = 20
-	title.TextColor3 = Color3.new(1, 1, 1)
+	title.TextSize = Theme.TextSizes.Title -- CHANGED (Phase 11): Theme text size and colour
+	title.TextColor3 = TITLE_COLOR
 	title.RichText = true
 	title.Text = ""
 	title.Parent = panel
@@ -365,17 +382,19 @@ local function buildOverlay()
 	help.Size = UDim2.fromOffset(0, 16)
 	help.AutomaticSize = Enum.AutomaticSize.X
 	help.Font = FONT_BOLD
-	help.TextSize = 12
+	help.TextSize = Theme.TextSizes.Small
 	help.TextColor3 = TEXT_DIM
-	help.Text = "Drag: rotate   Wheel: zoom   Click a body or craft: focus   M / Esc: close"
+	help.Text = "" -- CHANGED (Phase 11): set every frame with the current map key
 	help.Parent = panel
+	helpLabel = help
 	scaleLabel = Instance.new("TextLabel")
 	scaleLabel.BackgroundTransparency = 1
-	scaleLabel.AnchorPoint = Vector2.new(0.5, 0)
-	scaleLabel.Position = UDim2.new(0.5, 0, 0, 62)
+	scaleLabel.AnchorPoint = Vector2.new(0, 0)
+	scaleLabel.Position = UDim2.fromOffset(OVERLAY_MARGIN, OVERLAY_MARGIN + OVERLAY_HEIGHT + 4)
 	scaleLabel.Size = UDim2.fromOffset(240, 16)
+	scaleLabel.TextXAlignment = Enum.TextXAlignment.Left -- CHANGED (Phase 11): under the top-left card
 	scaleLabel.Font = FONT_BOLD
-	scaleLabel.TextSize = 12
+	scaleLabel.TextSize = Theme.TextSizes.Small
 	scaleLabel.TextColor3 = TEXT_DIM
 	scaleLabel.TextStrokeTransparency = 0.5
 	scaleLabel.Text = ""
@@ -445,7 +464,7 @@ local function buildMap()
 		marker.button.Position = UDim2.fromScale(0.5, 0)
 		marker.button.Size = UDim2.fromScale(1, 0.5)
 		marker.button.Text = body.DisplayName
-		marker.button.TextColor3 = Color3.new(1, 1, 1)
+		marker.button.TextColor3 = Theme.Colors.DigitText -- CHANGED (Phase 11)
 		local bodyId = body.Id
 		marker.button.Activated:Connect(function()
 			setFocus("Body", bodyId)
@@ -948,7 +967,13 @@ local function step(dt: number)
 	updateMarkers(ut, focusAbs)
 	updateCamera()
 
-	focusLabel.Text = `MAP  <font color="#FFC05A">{focusName}</font>`
+	focusLabel.Text = `MAP  <font color="{FOCUS_HEX}">{focusName}</font>` -- CHANGED (Phase 11): Theme title colour
+	-- CHANGED (Phase 11): the help line names the current map key
+	local helpText =
+		`Drag: rotate   Wheel: zoom   Click a body or craft: focus   {Keybinds.label("MapView")} / Esc: close`
+	if helpLabel.Text ~= helpText then
+		helpLabel.Text = helpText
+	end
 	scaleLabel.Text = string.format("1 stud = %s", formatDistance(1 / scale))
 	DebugOverlay.recordTiming("MapView", (os.clock() - t0) * 1000)
 end

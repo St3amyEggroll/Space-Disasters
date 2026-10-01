@@ -68,6 +68,10 @@ local DEFINITIONS: { [string]: Kind } = {
 	RequestSettings = "Reliable", -- client -> server () asks for the saved settings; answered with SettingsData
 	SettingsData = "Reliable", -- server -> client (json: string?) the saved settings re-sanitized, nil = none saved
 	SaveSettings = "Reliable", -- client -> server (json: string) SettingsSchema.encode output, <= MAX_JSON_BYTES
+	-- CHANGED (Phase 11): End Flight from the flight HUD (no pause menu)
+	EndFlight = "Reliable", -- client -> server () no arguments; the craft is the one whose seat the player sits in.
+	--   Its pilot (or its owner aboard) ends the flight for everyone: the craft is removed and everyone aboard goes
+	--   back to their plot. Anyone else only leaves: they go back to their plot and the craft flies on.
 }
 
 local Remotes = {}
