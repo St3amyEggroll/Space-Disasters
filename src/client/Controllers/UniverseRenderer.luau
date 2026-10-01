@@ -17,6 +17,20 @@
 	ScaledSpace and Surface folders and the RemoteCrafts copies are unparented and not updated) and the SkyCube
 	becomes a fully opaque starry box of a fixed size around the map camera, in universe axes. SkyLighting keeps
 	lighting the pocket as seen from the craft.
+
+	CHANGED (Phase 11): view override for the main menu (setViewOverride, driven by Render/MenuScene). While a frame
+	is set, ScaledSpace, Surface, SkyCube (automatic opacity) and SkyLighting are drawn with THAT frame and the real
+	camera CFrame, so Earth, the Mun and Sol appear around the menu camera, seen from a viewpoint in space. The
+	RemoteCrafts copies and the Effects folder are hidden like in map mode (effects keep ageing with the pocket's
+	own context). The pocket frame itself is untouched. Layers hidden by the map view and by the override are
+	tracked per reason, so either can end first.
+
+	API:
+	  UniverseRenderer.setMapMode(enabled, cubeHalfSize?)   MapViewController
+	  UniverseRenderer.isMapMode() -> boolean
+	  UniverseRenderer.drawDistance() -> number
+	  UniverseRenderer.setViewOverride(frame?)              CHANGED (Phase 11): nil restores the normal view
+	  UniverseRenderer.hasViewOverride() -> boolean         CHANGED (Phase 11)
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -61,6 +75,8 @@ local DRAW_DISTANCE_BY_QUALITY: { [number]: number } = {
 }
 local DEFAULT_DRAW_DISTANCE = 3000
 local QUALITY_POLL_S = 1
+local HIDE_MAP = "Map" -- CHANGED (Phase 11): hide reasons (hideLayer)
+local HIDE_MENU = "Menu"
 --============================================================================
 
 type RenderContext = RenderContext.RenderContext
@@ -76,22 +92,32 @@ local lastSummary = "Universe: waiting for first frame"
 local mapMode = false
 local mapFrame = Frames.new(Bodies.HOMEWORLD, Vec3d.zero(), CFrame.identity, Vector3.zero, 0) -- map axes = universe
 local layerRoot: Folder? = nil
-local hiddenLayers: { Instance } = {}
-local hiddenParents: { Instance? } = {}
+-- CHANGED (Phase 11): each hidden layer keeps its parent and every reason it is hidden for (map view, main menu)
+type HiddenLayer = { parent: Instance?, reasons: { [string]: boolean } }
+local hiddenLayers: { [Instance]: HiddenLayer } = {}
 
-local ctx: RenderContext = {
-	frame = PocketController.frame(),
-	ut = 0,
-	camera = CFrame.identity,
-	cameraAbs = Vec3d.new(0, 0, 0),
-	dominantBodyId = Bodies.HOMEWORLD,
-	cameraDominant = Vec3d.new(0, 0, 0),
-	altitude = 0,
-	sunDirection = Vector3.yAxis,
-	pocketId = 0,
-	drawDistance = DEFAULT_DRAW_DISTANCE,
-	dt = 0,
-}
+-- CHANGED (Phase 11): main menu view override (setViewOverride)
+local viewOverride: Frames.Frame? = nil
+
+-- CHANGED (Phase 11): one factory for the pocket context and the menu view context
+local function newContext(): RenderContext
+	return {
+		frame = PocketController.frame(),
+		ut = 0,
+		camera = CFrame.identity,
+		cameraAbs = Vec3d.new(0, 0, 0),
+		dominantBodyId = Bodies.HOMEWORLD,
+		cameraDominant = Vec3d.new(0, 0, 0),
+		altitude = 0,
+		sunDirection = Vector3.yAxis,
+		pocketId = 0,
+		drawDistance = DEFAULT_DRAW_DISTANCE,
+		dt = 0,
+	}
+end
+
+local ctx: RenderContext = newContext()
+local viewCtx: RenderContext = newContext() -- CHANGED (Phase 11): the main menu view
 
 local function refreshDrawDistance(dt: number)
 	qualityTimer += dt
@@ -122,6 +148,76 @@ local function timed(name: string, fn: () -> ())
 	DebugOverlay.recordTiming(name, (os.clock() - t0) * 1000)
 end
 
+-- CHANGED (Phase 11): fills a context for `frame` seen from `cameraCF` (was inline in step)
+local function fillContext(target: RenderContext, frame: Frames.Frame, cameraCF: CFrame, ut: number, dt: number)
+	local cameraAbs = Frames.pointFromWorkspace(frame, cameraCF.Position, target.cameraAbs)
+	local dominantId, cameraDominant = dominantBody(frame.refBodyId, cameraAbs, ut)
+
+	target.frame = frame
+	target.ut = ut
+	target.camera = cameraCF
+	target.cameraAbs = cameraAbs
+	target.dominantBodyId = dominantId
+	target.cameraDominant = cameraDominant
+	target.altitude = Vec3d.length(cameraDominant) - Bodies.get(dominantId).Radius
+	target.sunDirection = Frames.vectorToWorkspace(frame, Universe.sunDirection(ut)).Unit
+	target.pocketId = PocketController.pocketId()
+	target.drawDistance = drawDistance
+	target.dt = dt
+end
+
+-- CHANGED (Phase 11): hides a layer for a reason (it stays hidden until every reason is gone)
+local function hideLayer(layer: Instance?, reason: string)
+	if layer == nil then
+		return
+	end
+	local entry = hiddenLayers[layer]
+	if entry == nil then
+		entry = { parent = layer.Parent, reasons = {} }
+		hiddenLayers[layer] = entry
+		layer.Parent = nil
+	end
+	assert(entry)
+	entry.reasons[reason] = true
+end
+
+-- CHANGED (Phase 11): drops one hide reason everywhere and re-parents the layers nothing hides any more
+local function showLayers(reason: string)
+	for layer, entry in hiddenLayers do
+		if entry.reasons[reason] then
+			entry.reasons[reason] = nil
+			if next(entry.reasons) == nil then
+				hiddenLayers[layer] = nil
+				layer.Parent = entry.parent
+			end
+		end
+	end
+end
+
+-- CHANGED (Phase 11): the main menu view (header): the universe drawn from the override frame around the camera
+local function stepViewOverride(override: Frames.Frame, camera: Camera, dt: number)
+	fillContext(viewCtx, override, camera.CFrame, ctx.ut, dt)
+	timed("ScaledSpace", function()
+		ScaledSpace.update(viewCtx)
+	end)
+	timed("Surface", function()
+		Surface.update(viewCtx, ScaledSpace.isSurfaceMode())
+	end)
+	SkyCube.update(viewCtx, ScaledSpace.isSurfaceMode(), ScaledSpace.proxyMinAltitude(viewCtx.dominantBodyId))
+	timed("SkyLighting", function()
+		SkyLighting.update(viewCtx)
+	end)
+	-- effects keep ageing in the pocket (their folder is hidden)
+	timed("Effects", function()
+		Effects.step(ctx, PocketController.frameVelocity())
+	end)
+	lastSummary = string.format(
+		"Universe: main menu view  alt %.0f m  %s",
+		viewCtx.altitude,
+		if ScaledSpace.isSurfaceMode() then "surface" else "scaled"
+	)
+end
+
 local function step(dt: number)
 	local camera = Workspace.CurrentCamera
 	if camera == nil then
@@ -133,21 +229,16 @@ local function step(dt: number)
 	local frame = PocketController.frame()
 	local ut = PocketController.renderUT()
 	-- CHANGED (Phase 5): in map mode the universe is evaluated at the craft (the camera is at the map)
-	local cameraCF = if mapMode then CFrame.new(frame.slotOrigin) else camera.CFrame
-	local cameraAbs = Frames.pointFromWorkspace(frame, cameraCF.Position, ctx.cameraAbs)
-	local dominantId, cameraDominant = dominantBody(frame.refBodyId, cameraAbs, ut)
+	-- CHANGED (Phase 11): same under the main menu view (the camera is at the menu scene)
+	local override = viewOverride
+	local cameraCF = if mapMode or override then CFrame.new(frame.slotOrigin) else camera.CFrame
+	fillContext(ctx, frame, cameraCF, ut, dt) -- CHANGED (Phase 11): shared with the menu view
 
-	ctx.frame = frame
-	ctx.ut = ut
-	ctx.camera = cameraCF
-	ctx.cameraAbs = cameraAbs
-	ctx.dominantBodyId = dominantId
-	ctx.cameraDominant = cameraDominant
-	ctx.altitude = Vec3d.length(cameraDominant) - Bodies.get(dominantId).Radius
-	ctx.sunDirection = Frames.vectorToWorkspace(frame, Universe.sunDirection(ut)).Unit
-	ctx.pocketId = PocketController.pocketId()
-	ctx.drawDistance = drawDistance
-	ctx.dt = dt
+	-- CHANGED (Phase 11): main menu view
+	if override then
+		stepViewOverride(override, camera, dt)
+		return
+	end
 
 	-- CHANGED (Phase 5): map mode: only the star box (around the map camera) and the pocket's lighting
 	if mapMode then
@@ -187,7 +278,7 @@ local function step(dt: number)
 
 	lastSummary = string.format(
 		"Universe: near %s  alt %.0f m  %s  draw %d  base time %05.2f h",
-		Bodies.get(dominantId).DisplayName,
+		Bodies.get(ctx.dominantBodyId).DisplayName, -- CHANGED (Phase 11): the id now lives in ctx (fillContext)
 		ctx.altitude,
 		if ScaledSpace.isSurfaceMode() then "surface" else "scaled",
 		drawDistance,
@@ -204,30 +295,37 @@ function UniverseRenderer.setMapMode(enabled: boolean, cubeHalfSize: number?)
 	end
 	mapMode = enabled
 	if enabled then
-		table.clear(hiddenLayers)
-		table.clear(hiddenParents)
-		local candidates: { Instance? } = {
-			if layerRoot then layerRoot:FindFirstChild("ScaledSpace") else nil,
-			if layerRoot then layerRoot:FindFirstChild("Surface") else nil,
-			Workspace:FindFirstChild("RemoteCrafts"),
-			Effects.folder(), -- CHANGED (Phase 10)
-		}
-		for _, layer in candidates do
-			if layer then
-				table.insert(hiddenLayers, layer)
-				table.insert(hiddenParents, layer.Parent)
-				layer.Parent = nil
-			end
-		end
+		-- CHANGED (Phase 11): hidden per reason (hideLayer / showLayers), so the menu view can overlap
+		hideLayer(if layerRoot then layerRoot:FindFirstChild("ScaledSpace") else nil, HIDE_MAP)
+		hideLayer(if layerRoot then layerRoot:FindFirstChild("Surface") else nil, HIDE_MAP)
+		hideLayer(Workspace:FindFirstChild("RemoteCrafts"), HIDE_MAP)
+		hideLayer(Effects.folder(), HIDE_MAP) -- CHANGED (Phase 10)
 		SkyCube.setOverride(1, cubeHalfSize)
 	else
-		for index, layer in hiddenLayers do
-			layer.Parent = hiddenParents[index]
-		end
-		table.clear(hiddenLayers)
-		table.clear(hiddenParents)
+		showLayers(HIDE_MAP) -- CHANGED (Phase 11)
 		SkyCube.setOverride(nil)
 	end
+end
+
+--[[
+	CHANGED (Phase 11): the main menu view (header). `frame` maps the menu camera's surroundings to a viewpoint in
+	space (Render/MenuScene updates it in place every frame, before this renderer's step); nil restores the normal
+	view. While set, the other crafts' copies and the effects are hidden.
+]]
+function UniverseRenderer.setViewOverride(frame: Frames.Frame?)
+	local wasSet = viewOverride ~= nil
+	viewOverride = frame
+	if frame and not wasSet then
+		hideLayer(Workspace:FindFirstChild("RemoteCrafts"), HIDE_MENU)
+		hideLayer(Effects.folder(), HIDE_MENU)
+	elseif frame == nil and wasSet then
+		showLayers(HIDE_MENU)
+	end
+end
+
+-- CHANGED (Phase 11)
+function UniverseRenderer.hasViewOverride(): boolean
+	return viewOverride ~= nil
 end
 
 function UniverseRenderer.isMapMode(): boolean

@@ -27,6 +27,7 @@ local BOOT_ORDER = {
 	"FlightController",
 	"UniverseRenderer",
 	"MapViewController", -- CHANGED (Phase 5): map view (M)
+	"MainMenuController", -- CHANGED (Phase 11): main menu and its space scene (last: opens over everything)
 }
 --============================================================================
 
