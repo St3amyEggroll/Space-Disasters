@@ -31,6 +31,15 @@ export type HudData = {
 	burning: boolean,
 	inAtmosphere: boolean,
 	pressure: number, -- 0..1
+	-- CHANGED (Phase 5): orbit and navball
+	apoapsis: number?, -- m above sea level; nil on an open (escape) orbit or while landed
+	periapsis: number?, -- m above sea level (negative = below the surface); nil while landed
+	timeToApoapsis: number?, -- s; nil when not applicable
+	timeToPeriapsis: number?, -- s; nil when not applicable (open orbit past periapsis)
+	onRails: boolean,
+	attitude: CFrame?, -- craft axes -> universe axes (navball); nil hides the navball
+	horizon: CFrame?, -- local horizon frame (X east, Y up, Z north) in universe axes
+	velocity: Vector3?, -- orbital velocity, universe axes (prograde / retrograde markers)
 }
 
 -- ModuleScripts must return exactly one value; this module only exports types.

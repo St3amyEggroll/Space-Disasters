@@ -76,4 +76,38 @@ return function(t: TestKit.Context)
 		t.expectTrue(state == nil)
 		t.expectEqual(#Protocol.decodeStates(buffer.create(5)), 0)
 	end)
+
+	-- CHANGED (Phase 5)
+	t.test("rails round trip (101 bytes, doubles for r0 and v0)", function()
+		local rails: Protocol.RailsData = {
+			bodyId = 2,
+			epochUT = 98765.4321,
+			r0 = Vec3d.new(12345.678901234, -0.000123, 45678.9),
+			v0 = Vec3d.new(512.123456789012, -3.5, 0.000001),
+			rot = CFrame.Angles(0.4, 1.2, -0.7),
+			angVel = Vector3.new(0.01, -0.02, 0.5),
+			com = Vector3.new(0, -3.25, 0.5),
+			throttle = 0.25,
+			flags = 17,
+		}
+		local b = Protocol.encodeRails(321, rails)
+		t.expectEqual(buffer.len(b), Protocol.RAILS_BYTES)
+		local id, decoded = Protocol.decodeRails(b)
+		t.expectEqual(id, 321)
+		local d = decoded :: Protocol.RailsData
+		t.expectEqual(d.bodyId, 2)
+		t.expectEqual(d.epochUT, rails.epochUT)
+		t.expectEqual(d.r0.x, rails.r0.x)
+		t.expectEqual(d.v0.x, rails.v0.x) -- f64: exact
+		t.expectEqual(d.v0.z, rails.v0.z)
+		t.expectNear((d.rot.LookVector - rails.rot.LookVector).Magnitude, 0, 1e-5)
+		t.expectNear(d.angVel.Z, 0.5, 1e-6)
+		t.expectNear(d.com.Y, -3.25, 1e-6)
+		t.expectNear(d.throttle, 0.25, 1 / 255)
+		t.expectEqual(d.flags, 17)
+		local bad = Protocol.encodeRails(1, rails)
+		buffer.writef64(bad, 35, math.huge)
+		t.expectTrue((select(2, Protocol.decodeRails(bad))) == nil, "non-finite velocity rejected")
+		t.expectTrue((select(2, Protocol.decodeRails(buffer.create(77)))) == nil, "wrong size rejected")
+	end)
 end

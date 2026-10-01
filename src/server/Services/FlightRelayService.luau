@@ -29,6 +29,9 @@ local function broadcast()
 	local entries: { Protocol.Entry } = {}
 	for id, record in CraftService.all() do
 		local sim = record.sim
+		if record.state == "OnRails" then
+			continue -- CHANGED (Phase 5): crafts on rails are not streamed; clients sample their rail (CraftRails)
+		end
 		if sim and record.state == "Flying" then
 			table.insert(entries, { craftId = id, state = sim.state })
 		end

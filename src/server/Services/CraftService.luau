@@ -25,6 +25,8 @@ local CraftDesign = require(ReplicatedStorage.Shared.Craft.CraftDesign)
 local CraftGraph = require(ReplicatedStorage.Shared.Craft.CraftGraph)
 local FlightModel = require(ReplicatedStorage.Shared.Sim.FlightModel)
 local Protocol = require(ReplicatedStorage.Shared.Net.Protocol)
+local Rails = require(ReplicatedStorage.Shared.Sim.Rails) -- CHANGED (Phase 5)
+local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime) -- CHANGED (Phase 5)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
 local BuildService = require(script.Parent.BuildService)
@@ -61,6 +63,7 @@ export type CraftRecord = {
 	isDebris: boolean,
 	createdAt: number, -- os.clock()
 	restingSince: number?, -- os.clock() when a server-simulated craft came to rest
+	rails: Rails.Rails?, -- CHANGED (Phase 5): the rail while state == "OnRails" (RailsService owns it)
 }
 
 local CraftService = {}
@@ -199,6 +202,7 @@ local function onRollOut(player: Player)
 		isDebris = false,
 		createdAt = os.clock(),
 		restingSince = nil,
+		rails = nil, -- CHANGED (Phase 5)
 	}
 	padCraftByUser[player.UserId] = id
 	craftOnPad[padIndex] = id
@@ -304,8 +308,15 @@ function CraftService.announce(record: CraftRecord, toPlayer: Player?)
 	end
 	local remote = Remotes.event("CraftSpawned")
 	local designBuffer = CraftDesign.toBuffer(sim.physics.design)
-	local stateBuffer = Protocol.encodeState(record.id, sim.state)
-	local info = { ownerUserId = record.ownerUserId, pocketId = record.pocketId or 0, active = activeList(sim) }
+	-- CHANGED (Phase 5): crafts on rails carry their rail (late joiners render them from it; no state stream)
+	local rails = if record.state == "OnRails" then record.rails else nil
+	local state = if rails then Rails.stateAt(rails, UniverseTime.now()) else sim.state
+	local stateBuffer = Protocol.encodeState(record.id, state)
+	local info: { [string]: any } =
+		{ ownerUserId = record.ownerUserId, pocketId = record.pocketId or 0, active = activeList(sim) }
+	if rails then
+		info.rails = Protocol.encodeRails(record.id, rails)
+	end
 	if toPlayer then
 		remote:FireClient(toPlayer, record.id, designBuffer, stateBuffer, info)
 	else
@@ -336,6 +347,7 @@ function CraftService.spawnDebris(parent: CraftRecord, debris: FlightModel.Debri
 		isDebris = true,
 		createdAt = os.clock(),
 		restingSince = nil,
+		rails = nil, -- CHANGED (Phase 5)
 	}
 	crafts[id] = record
 	CraftService.announce(record)

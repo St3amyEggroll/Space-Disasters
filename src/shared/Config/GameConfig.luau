@@ -111,6 +111,24 @@ local GameConfig = {
 	SOI_CHECK_INTERVAL = 1, -- s of UT
 	SOI_BISECTION_TOLERANCE = 0.01, -- s
 	DEBRIS_DESPAWN_DIST = 30000,
+	-- CHANGED (Phase 5): rails, debris cleanup and the map view
+	RAILS_MIN_ALTITUDE = 500, -- m above sea level; rails need max(this, atmosphere top) and end below it
+	RAILS_ALTITUDE_HYSTERESIS = 100, -- m above that minimum before a craft may go on rails
+	RAILS_SAS_MAX_RATE = 0.05, -- rad/s; with SAS on, the craft must have settled below this to go on rails
+	RAILS_RETRY_S = 5, -- s a pilot waits before proposing rails again after the server refused
+	RAILS_POS_TOLERANCE = 50, -- m between a proposed rail and the server's last valid state
+	RAILS_VEL_TOLERANCE = 5, -- m/s, same
+	DEBRIS_CHECK_INTERVAL = 1, -- s between suborbital-debris despawn checks
+	MAP_SCALE = 0.002, -- studs per metre when the map opens (Kablamo: 60 studs in radius)
+	MAP_SCALE_MIN = 0.0001, -- fully zoomed out: the whole Kablamo-Dent system fits on screen
+	MAP_SCALE_MAX = 0.03, -- fully zoomed in (keeps Kablamo's ball under the 2048-stud part limit)
+	MAP_ZOOM_STEP = 1.2, -- scale factor per mouse-wheel notch (logarithmic zoom)
+	MAP_CAMERA_DISTANCE = 160, -- studs; the map camera never moves farther, zoom changes the scale instead
+	MAP_EXTENT = 650, -- studs around the focus where map objects are drawn (inside the map's star cube)
+	MAP_ORIGIN_OFFSET = 2000, -- studs between the pocket's slot origin and the map origin (up or down)
+	MAP_ORBIT_SEGMENTS = 256, -- line segments per orbit patch of the focused craft
+	MAP_OTHER_ORBIT_SEGMENTS = 64, -- line segments for other crafts' orbits
+	MAP_PREDICT_PATCHES = 3, -- conic patches predicted through SOI changes
 
 	--========================================================================
 	-- EVA

@@ -38,6 +38,8 @@ local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local CraftService = require(script.Parent.CraftService)
 local CrewService = require(script.Parent.CrewService)
 local PocketService = require(script.Parent.PocketService)
+local RailsService = require(script.Parent.RailsService) -- CHANGED (Phase 5)
+local Rails = require(ReplicatedStorage.Shared.Sim.Rails) -- CHANGED (Phase 5)
 
 type CraftRecord = CraftService.CraftRecord
 
@@ -55,6 +57,7 @@ local CRASH_ALTITUDE_SLACK = 150 -- m above the craft's size where a reported cr
 local LAUNCH_THROTTLE = 1
 local SEATED_START_DELAY_S = 0.3 -- s between a pilot sitting down and the flight starting
 local PAD_STEP_OFF = 6 -- studs beyond the pad edge where a pilot who leaves the seat on the pad is put
+local RAILS_HANDOFF_DT = 0.05 -- CHANGED (Phase 5): s before a pilot's first off-rails state the rail is validated at
 --============================================================================
 
 local FlightService = {}
@@ -442,6 +445,7 @@ local function onRequestStage(player: Player, craftId: unknown)
 	if sim == nil or record.pilot ~= player then
 		return
 	end
+	RailsService.takeOffRails(record) -- CHANGED (Phase 5): staging ends rails (no-op when not on rails)
 	local result = FlightModel.stage(sim)
 	if result then
 		CraftService.freePad(record.id) -- CHANGED (Phase 2a feedback): the pad is free once engines are lit
@@ -488,6 +492,22 @@ local function onPilotState(player: Player, packet: unknown)
 	local sim = if record then record.sim else nil
 	if record == nil or sim == nil or record.pilot ~= player then
 		return
+	end
+	-- CHANGED (Phase 5): a pilot state newer than the rail's epoch means the pilot left rails (input or thrust).
+	-- Older ones were sent before the craft went on rails and are dropped. The first state off rails is checked
+	-- against the rail itself.
+	if record.state == "OnRails" then
+		local rails = record.rails
+		if rails == nil or state.ut <= rails.epochUT then
+			return
+		end
+		local handoff = math.max(rails.epochUT, state.ut - RAILS_HANDOFF_DT)
+		local previous = lastValid[record.id]
+		RailsService.takeOffRails(record, handoff)
+		lastValid[record.id] = {
+			state = Rails.stateAt(rails, handoff),
+			fuel = if previous then previous.fuel else FlightModel.totalFuel(sim),
+		}
 	end
 	local valid = lastValid[record.id]
 	if valid then
@@ -550,6 +570,7 @@ local function onLeaveSeat(player: Player)
 	-- CHANGED (Phase 2a feedback): before ignition, standing up puts the craft back on the pad
 	local record = pilotSeatCraft(player)
 	if record and record.pilot == player and canReturnToPad(record) then
+		RailsService.takeOffRails(record) -- CHANGED (Phase 5): a craft on rails leaves them before going to the pad
 		returnToPad(record, player)
 		return
 	end

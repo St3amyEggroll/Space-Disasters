@@ -40,7 +40,8 @@ local DEFINITIONS: { [string]: Kind } = {
 	ReportPartsDestroyed = "Reliable", -- (craftId, blockIds: {number}, ut) pilot's sim saw impacts
 	FlightStart = "Reliable", -- server -> pilot (craftId, stateBuffer, stagesFired, designBuffer) start simulating
 	FlightOverride = "Reliable", -- server -> pilot (craftId, stateBuffer?, refuel: boolean) debug / reset
-	CraftSpawned = "Reliable", -- (craftId, designBuffer, stateBuffer, info: {ownerUserId, pocketId, active: {number}})
+	CraftSpawned = "Reliable", -- (craftId, designBuffer, stateBuffer, info: {ownerUserId, pocketId, active: {number}, rails: buffer?})
+	--   CHANGED (Phase 5): info.rails = Protocol.encodeRails when the craft is on rails (join snapshot included)
 	CraftRemoved = "Reliable", -- (craftId)
 	CraftStaged = "Reliable", -- (craftId, stageIndex, ut, ignited: {number}, decoupled: {number}, debris: {{craftId, blockIds}})
 	PartsDestroyed = "Reliable", -- (craftId, blockIds: {number}, ut, pieces: {{craftId, blockIds}})
@@ -48,6 +49,10 @@ local DEFINITIONS: { [string]: Kind } = {
 	PocketTransferAck = "Reliable", -- (transferId)
 	PilotState = "Unreliable", -- client -> server, Protocol.encodePilotState (20 Hz)
 	CraftStates = "Unreliable", -- server -> client, Protocol.encodeStates batches
+	-- CHANGED (Phase 5): rails (spec 7.8)
+	CraftRails = "Reliable", -- server -> client (railsBuffer) Protocol.encodeRails: the craft is on rails (new epoch)
+	CraftOffRails = "Reliable", -- server -> client (craftId, ut) the craft left rails; its state stream resumes
+	RequestRails = "Reliable", -- pilot -> server (railsBuffer) proposes rails for the piloted craft
 	BuildAck = "Reliable", -- (seq, kind: "place" | "remove" | "paint", partId, gx, gy, gz, rot, color: number)
 	--   color: the block's colour (0 = default); for "paint" it is the colour BEFORE the change (for undo)
 	--   sent only for ACCEPTED operations that carried a seq > 0; the client builds its undo stack from these
