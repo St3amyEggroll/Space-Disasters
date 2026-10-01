@@ -25,6 +25,7 @@ local BOOT_ORDER = {
 	"PocketController",
 	"FlightController",
 	"UniverseRenderer",
+	"MapViewController", -- CHANGED (Phase 5): map view (M)
 }
 --============================================================================
 

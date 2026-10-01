@@ -52,6 +52,7 @@ local HudData = require(script.Parent.Parent.Render.HudData)
 local Plumes = require(script.Parent.Parent.Render.Plumes)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local DebugOverlay = require(script.Parent.DebugOverlay)
+local MapViewController = require(script.Parent.MapViewController) -- CHANGED (Phase 5)
 local PocketController = require(script.Parent.PocketController)
 local RemoteCraftRenderer = require(script.Parent.RemoteCraftRenderer)
 
@@ -721,8 +722,9 @@ local function onOverride(id: unknown, stateBuffer: unknown, refuel: unknown)
 	if stateBuffer ~= nil then
 		local _, state = Protocol.decodeState(stateBuffer)
 		if state then
-			rails = nil -- CHANGED (Phase 5): the override replaces any rail
+			rails = nil -- CHANGED (Phase 5): the override replaces any rail (and may go on rails again at once)
 			idleTime = 0
+			railsRetryAt = 0
 			craft.state = state :: any
 			craft.sasTarget = nil
 		end
@@ -825,6 +827,14 @@ function FlightController.Init()
 	end
 	pilotStateRemote = Remotes.unreliable("PilotState")
 	hud = FlightHUD.create()
+	-- CHANGED (Phase 5): the map view draws this client's own craft from the exact local state
+	MapViewController.setOwnCraftProvider(function(): (number?, Protocol.State?)
+		local craft = sim
+		if craft and craftId then
+			return craftId, craft.state
+		end
+		return nil, nil
+	end)
 	PocketController.registerPrimaryProvider(function(id: number): PocketController.PrimaryState?
 		if sim and id == craftId then
 			return (sim :: Craft).state
@@ -871,7 +881,8 @@ function FlightController.Start()
 		bindKeys(piloting)
 		-- CHANGED (Phase 2a feedback): everyone aboard a flying craft gets the level camera, not only the pilot
 		local aboardFlying = seatInfo ~= nil and seatInfo.state ~= "Prelaunch"
-		if aboardFlying and chaseEnabled then
+		-- CHANGED (Phase 5): the map view drives the camera while it is open
+		if aboardFlying and chaseEnabled and not MapViewController.isOpen() then
 			ChaseCamera.start(cameraTarget)
 		elseif ChaseCamera.isActive() then
 			ChaseCamera.stop()
