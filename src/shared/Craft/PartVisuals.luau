@@ -77,9 +77,7 @@ local BASE_COLOR_ATTRIBUTE = "BaseColor"
 local GLASS_TRANSPARENCY = 0.5 -- cabin windows
 local POD_WINDOW_TRANSPARENCY = 0.2 -- pod windows are dark glass
 
-local SEAT_SIZE = Vector3.new(2, 1, 2)
 local SEAT_PROMPT_DISTANCE = 8
-local HATCH_PROMPT_DISTANCE = 6
 local PROMPT_KEY = Enum.KeyCode.E
 
 -- Fuel tanks and boosters
@@ -88,96 +86,149 @@ local TANK_CAP_HEIGHT = 0.3
 local STRIPE_HEIGHT = 0.35
 local TANK_TWO_STRIPE_HEIGHT = 8 -- tanks at least this tall (studs) get two stripe rings
 
--- Engines (fractions of S)
-local ENGINE_MOUNT_HEIGHT = 0.28 -- of S.Y
-local ENGINE_MOUNT_PLATE = 0.25 -- studs, lighter top plate of the mount
-local ENGINE_MOUNT_DIAMETER = 0.85 -- of S.X (the plate is full width)
-local ENGINE_THROAT_HEIGHT = 0.1 -- of S.Y
-local ENGINE_THROAT_DIAMETER = 0.35 -- of S.X
-local ENGINE_BELL_DIAMETERS = { 0.52, 0.72, 0.9 } -- of S.X, top to bottom
-local ENGINE_GLOW_DIAMETER = 0.76 -- of S.X
+-- CHANGED (Phase 2a remodel): faceted shells. Cones and bells are exact n-sided frusta (a centre plate plus two
+-- right-triangle wedges per side, so sides meet edge to edge) instead of stacked cylinders.
+local FACET_THICKNESS = 0.12 -- studs
+
+-- Engines (diameters / radii as fractions of the part diameter d, heights as fractions of S.Y below the top)
+local ENGINE_PLATE_DIAMETER = 0.97 -- dark mounting plate (the mating face)
+local ENGINE_PLATE_HEIGHT = 0.05
+local ENGINE_STRUT_TOP_RADIUS = 0.33 -- thrust frame: four struts from the plate to the chamber
+local ENGINE_STRUT_BOTTOM_RADIUS = 0.13
+local ENGINE_STRUT_DIAMETER = 0.05
+local ENGINE_CHAMBER_DIAMETER = 0.3
+local ENGINE_CHAMBER_TOP = 0.15
+local ENGINE_CHAMBER_BOTTOM = 0.36
+local ENGINE_CHAMBER_BAND = 0.05 -- dark band around the middle of the chamber
+local ENGINE_PUMP_DIAMETER = 0.13 -- turbopump beside the chamber (+X)
+local ENGINE_PUMP_OFFSET = 0.27
+local ENGINE_PUMP_TOP = 0.08
+local ENGINE_PUMP_BOTTOM = 0.3
+local ENGINE_PIPE_DIAMETER = 0.05
+local ENGINE_ACTUATOR_DIAMETER = 0.045 -- two gimbal actuators from the plate to the top of the bell
+local ENGINE_ACTUATOR_TOP_RADIUS = 0.3
+local ENGINE_THROAT_DIAMETER = 0.2
+local ENGINE_THROAT_BOTTOM = 0.42
+local ENGINE_NECK = { { d = 0.26, h = 0.04 }, { d = 0.33, h = 0.05 } } -- flare from the throat into the bell
+local ENGINE_BELL_FACETS = 10
+local ENGINE_BELL_TOP_APOTHEM = 0.165
+local ENGINE_BELL_EXIT_APOTHEM = 0.465
+local ENGINE_GLOW_DIAMETER = 0.2
 local GLOW_HEIGHT = 0.06 -- studs
+local BOTTOM_CLEARANCE = 0.1 -- studs between a bell exit and the bottom face of the cell (room for the tilted plates)
 
--- Solid booster
-local SRB_NOZZLE_HEIGHT = 1.4
-local SRB_NOZZLE_DIAMETER = 0.7 -- of S.X
-local SRB_GLOW_DIAMETER = 0.58 -- of S.X
-local SRB_NOSE_HEIGHT = 3
-local SRB_STRIPE_DROP = 1 -- stripe centre below the nose section
-local SRB_TIP_DIAMETER = 0.2 -- of S.X
+-- Solid booster (flat top: put a nose cone on it as a separate part). Studs unless noted.
+local SRB_COLLAR_HEIGHT = 0.25 -- dark mating collar on top
+local SRB_BODY_INSET = 0.3 -- body diameter = d - inset (leaves room for the lugs)
+local SRB_JOINT_HEIGHT = 0.2 -- dark segment joints
+local SRB_JOINTS = 3
+local SRB_BAND_HEIGHT = 0.45 -- safety orange band near the top
+local SRB_BAND_DROP = 1.1 -- band centre below the top
+local SRB_ROLL_PANEL = Vector3.new(0.9, 2.4, 0.08) -- dark roll-pattern panels near the top, on +X and -X
+local SRB_LUG_SIZE = Vector3.new(0.9, 0.55, 0.25) -- attach lugs on the +Z face, half sunk into the body
+local SRB_LUG_DROP = 2 -- lug centres this far from each end
+local SRB_AFT_RING_HEIGHT = 0.3
+local SRB_NOZZLE_HEIGHT = 1.15
+local SRB_NOZZLE_FACETS = 8
+local SRB_NOZZLE_TOP_APOTHEM = 0.17 -- of d
+local SRB_NOZZLE_EXIT_APOTHEM = 0.34 -- of d
+local SRB_GLOW_DIAMETER = 0.22 -- of d
 
--- Stacked decoupler: hull cylinder, hazard band (yellow rings around a dark separation groove) at mid-height
-local DECOUPLER_HAZARD_HEIGHT = 0.45 -- each yellow ring
-local DECOUPLER_GROOVE_HEIGHT = 0.3
-local DECOUPLER_GROOVE_INSET = 0.4 -- groove diameter = S.X - inset
+-- Stacked decoupler: dark collars, a hazard band (yellow with black slashes) under a dark separation groove with a
+-- ring of explosive bolts. Studs unless noted.
+local DECOUPLER_COLLAR_HEIGHT = 0.18
+local DECOUPLER_BODY_INSET = 0.12
+local DECOUPLER_BAND_BOTTOM = -0.8
+local DECOUPLER_BAND_TOP = 0.12
+local DECOUPLER_GROOVE_HEIGHT = 0.24
+local DECOUPLER_GROOVE_INSET = 0.3
+local DECOUPLER_SLASH_SIZE = Vector3.new(0.28, 0.95, 0.06)
+local DECOUPLER_SLASH_SPACING = 1.5 -- studs of circumference per slash
+local DECOUPLER_BOLT_DIAMETER = 0.26
+local DECOUPLER_BOLT_SPACING = 1.5 -- studs of circumference per bolt
 
--- Radial decoupler: plate on +Z, arm through the block, clamp pad on -Z
-local RADIAL_PLATE_SIZE = Vector3.new(3.2, 3.2, 0.4)
-local RADIAL_PLATE_STRIPE = Vector3.new(3.4, 0.6, 0.5) -- hazard strip across the plate
-local RADIAL_ARM_WIDTH = 1.2
-local RADIAL_BAND_SIZE = Vector3.new(1.5, 1.5, 0.5) -- hazard band on the arm (the separation joint)
-local RADIAL_PAD_SIZE = Vector3.new(2.4, 2.4, 0.3)
+-- Radial decoupler: hull plate on +Z with bolts, a piston with a hazard collar through the block, four struts, and
+-- a dark clamp pad on -Z. Studs.
+local RADIAL_PLATE_SIZE = Vector3.new(3, 3, 0.35)
+local RADIAL_BOLT_INSET = 0.4
+local RADIAL_BOLT_DIAMETER = 0.3
+local RADIAL_PISTON_DIAMETER = 1
+local RADIAL_COLLAR_DIAMETER = 1.4
+local RADIAL_COLLAR_LENGTH = 0.6
+local RADIAL_SEAM_LENGTH = 0.14
+local RADIAL_STRUT_DIAMETER = 0.28
+local RADIAL_STRUT_PLATE = 1.05 -- strut ends on the plate (x, y offsets)
+local RADIAL_STRUT_PAD = 0.75 -- strut ends on the pad
+local RADIAL_PAD_SIZE = Vector3.new(2.6, 2.6, 0.3)
 
--- Adapter
-local ADAPTER_SECTIONS = 5
+-- Size adapter
+local ADAPTER_FACETS = 12
+local ADAPTER_COLLAR_HEIGHT = 0.18 -- studs
 
--- Nose cones
-local NOSE_TIP_DIAMETER = 0.18 -- of S.X
+-- Nose cones: an ogive of two faceted bands on a dark collar, with an orange tip
+local NOSE_FACETS = 8
+local NOSE_COLLAR_HEIGHT = 0.045 -- of S.Y
+local NOSE_PROFILE = { -- height above the bottom (fraction of S.Y), side apothem (fraction of d)
+	{ y = 0.045, a = 0.46 },
+	{ y = 0.46, a = 0.32 },
+	{ y = 0.9, a = 0.055 },
+}
+local NOSE_TIP_CAP_DIAMETER = 0.13 -- of d, covers the top opening
+local NOSE_TIP_CAP_TOP = 0.93 -- of S.Y
+local NOSE_TIP_DIAMETER = 0.12 -- of d
 
 -- Fin (root on the +Z face, tip toward -Z, swept leading edge on top)
 local FIN_THICKNESS = 0.4
 local FIN_TIP_CHORD = 0.375 -- of S.Y
 local FIN_ROOT_PLATE = Vector3.new(1.2, 0.9, 0.3) -- X, Y (fraction of S.Y), Z thickness
 
--- Command pod (4x4x4 studs at one block)
-local POD_SHIELD_HEIGHT = 0.25
-local POD_SECTIONS = { -- diameter and height as fractions of S.X / S.Y, bottom to top above the heat shield
-	{ d = 1, h = 0.25 },
-	{ d = 0.85, h = 0.22 },
-	{ d = 0.7, h = 0.2 },
-	{ d = 0.53, h = 0.15 },
-}
-local POD_WINDOW_SECTION = 3
-local POD_TOP_HATCH_DIAMETER = 0.35 -- of S.X
-local POD_WINDOW_SIZE = Vector3.new(1.4, 0.5, 0.2)
+-- Command pod (4x4x4 studs at one block). CHANGED (Phase 2a remodel): a simple octagonal capsule on a heat
+-- shield, one framed window on the front, a docking ring and an orange hatch on top.
+local POD_FACETS = 8
+local POD_SHIELD_DIAMETER = 0.975 -- of d
+local POD_SHIELD_HEIGHT = 0.32 -- studs
+local POD_BASE_APOTHEM = 0.45 -- of d
+local POD_TOP_APOTHEM = 0.235 -- of d
+local POD_SHELL_TOP = 0.32 -- of S.Y above the centre
+local POD_RING_DIAMETER = 0.53 -- of d (covers the octagon's top opening)
+local POD_RING_HEIGHT = 0.2 -- studs
+local POD_HATCH_DIAMETER = 0.34 -- of d
+local POD_HATCH_HEIGHT = 0.15 -- studs
+local POD_WINDOW_SIZE = Vector2.new(0.75, 0.5) -- studs
+local POD_WINDOW_AT = 0.5 -- fraction up the front side
+local POD_WINDOW_FRAME = 0.08 -- studs of dark frame around the glass
 local POD_SEAT_SIZE = Vector3.new(2, 0.5, 2)
-
--- Crew cabin (8x8x8 studs at two blocks; 7x7x7 interior)
-local CABIN_WALL_THICKNESS = 0.5
-local CABIN_FLOOR_THICKNESS = 0.5
-local CABIN_ROOF_THICKNESS = 0.5
-local CABIN_WINDOW_WIDTH = 3
-local CABIN_WINDOW_SILL = 2.5 -- above the floor top
-local CABIN_WINDOW_HEIGHT = 3
-local CABIN_GLASS_THICKNESS = 0.2
-local CABIN_DOOR_WIDTH = 3
-local CABIN_DOOR_HEIGHT = 6
-local CABIN_HATCH_THICKNESS = 0.3
-local CABIN_HATCH_ATTACH_OFFSET = 1.5 -- studs from the door centre to the Outside/Inside teleport targets
-local CABIN_CONSOLE_SIZE = Vector3.new(3, 2.5, 1)
-local CABIN_PILOT_GAP = 0.5 -- between the console and the pilot seat
-local CABIN_BACKREST_THICKNESS = 0.3
-local CABIN_SIDE_SEAT_Z = -1.5 -- side seats sit forward, beside the pilot, clear of the back corner seat
-local CABIN_CORNER_SEAT_GAP = 0.25 -- corner seat distance from the back wall
 
 -- Utility
 local CHUTE_BASE_HEIGHT = 0.5
-local LADDER_RAIL_WIDTH = 0.2
-local LADDER_RUNG_THICKNESS = 0.2
-local LADDER_RUNG_SPACING = 1 -- humanoids climb rung ladders with gaps up to ~1.5 studs
-local LADDER_RUNG_STANDOFF = 0.7 -- studs between the mounting face and the rung centres
-local LEG_MOUNT_HEIGHT = 0.8
-local LEG_STRUT_DIAMETER = 0.6
-local LEG_SHOCK_DIAMETER = 1
-local LEG_SHOCK_HEIGHT = 2
-local LEG_FOOT_HEIGHT = 0.3
-local LEG_FOOT_DIAMETER = 0.9 -- of S.X
-local LEG_BRACE_THICKNESS = 0.3
+-- Landing leg (4x8x4 studs, mount on +Z). CHANGED (Phase 2a remodel): a sleeve on a hinged bracket with a piston
+-- and foot pad that slide down out of it. Parts that move carry GEAR_STOWED_ATTRIBUTE (their part-local
+-- CFrame when the leg is stowed; the built pose is deployed), animated on clients (Render/Gear).
+local GEAR_STOWED_ATTRIBUTE = "GearStowed"
+local LEG_AXIS_Z = 0.15 -- strut axis, studs from the centre toward the mount
+local LEG_MOUNT_SIZE = Vector3.new(1.6, 1.4, 1.2)
+local LEG_MOUNT_TOP = 0.3 -- studs below the top
+local LEG_HINGE_DIAMETER = 0.5
+local LEG_HINGE_LENGTH = 1.9
+local LEG_SLEEVE_DIAMETER = 0.95
+local LEG_SLEEVE_TOP = 3.3 -- studs above the centre
+local LEG_SLEEVE_BOTTOM = 0
+local LEG_COLLAR_DIAMETER = 1.1
+local LEG_COLLAR_HEIGHT = 0.2
+local LEG_BRACE_DIAMETER = 0.32
+local LEG_PISTON_DIAMETER = 0.62
+local LEG_PISTON_TOP = 0.3
+local LEG_SPRING_DIAMETER = 0.82
+local LEG_SPRING_HEIGHT = 0.35
+local LEG_ANKLE_DIAMETER = 0.7
+local LEG_FOOT_DIAMETER = 2.6
+local LEG_FOOT_HEIGHT = 0.28
+local LEG_STROKE = 3 -- studs the moving parts rise when stowed
 local EXT_SEAT_BASE = 0.3
 local EXT_SEAT_SIZE = Vector3.new(2.4, 1, 2)
 local EXT_SEAT_BACKREST = Vector3.new(2.4, 3, 0.3)
 
-local MIN_EXTENT = 1e-3 -- wall segments thinner than this are skipped
+local MIN_EXTENT = 1e-3 -- facet triangles narrower than this are skipped
 --============================================================================
 
 export type Mode = "Real" | "Cosmetic"
@@ -217,23 +268,6 @@ local LOOK = table.freeze({
 	Screen = look(PALETTE.Screen, NEON_MATERIAL),
 })
 
--- One section of a stacked cone: diameter as a fraction of the base diameter, height as a fraction of the span.
-type Layer = { d: number, h: number, look: Look? }
-
-local NOSE_LAYERS: { Layer } = {
-	{ d = 1, h = 0.1, look = LOOK.Metal },
-	{ d = 0.94, h = 0.26 },
-	{ d = 0.74, h = 0.24 },
-	{ d = 0.52, h = 0.22 },
-	{ d = 0.32, h = 0.18 },
-}
-
-local SRB_NOSE_LAYERS: { Layer } = {
-	{ d = 0.85, h = 0.4 },
-	{ d = 0.6, h = 0.35 },
-	{ d = 0.35, h = 0.25 },
-}
-
 type Ctx = {
 	def: Parts.PartDef,
 	size: Vector3, -- studs
@@ -242,14 +276,8 @@ type Ctx = {
 	bounds: Part,
 }
 
--- A rectangle on a wall: u runs along the wall, v is height (Y).
-type Rect = { u0: number, u1: number, v0: number, v1: number }
-
 local UPRIGHT = CFrame.Angles(0, 0, math.rad(90)) -- turns a Cylinder's X axis onto +Y
 local EXHAUST_ROTATION = CFrame.Angles(math.rad(180), 0, 0) -- UpVector -> -Y
-local FACE_PLUS_X = CFrame.Angles(0, -math.pi / 2, 0) -- LookVector +X
-local FACE_MINUS_X = CFrame.Angles(0, math.pi / 2, 0) -- LookVector -X
-local FACE_PLUS_Z = CFrame.Angles(0, math.pi, 0) -- LookVector +Z
 
 --============================================================================
 -- Primitives
@@ -317,14 +345,107 @@ local function wedge(ctx: Ctx, name: string, size: Vector3, cf: CFrame, style: L
 	return part
 end
 
--- Stacked cylinders from y0 to y1; each layer's diameter is baseD * layer.d (the layer's widest point).
-local function stack(ctx: Ctx, prefix: string, baseD: number, y0: number, y1: number, layers: { Layer }, style: Look)
-	local span = y1 - y0
-	local y = y0
-	for i, layer in layers do
-		local top = if i == #layers then y1 else y + layer.h * span
-		cylinder(ctx, `{prefix}{i}`, baseD * layer.d, y, top, layer.look or style, true)
-		y = top
+-- CHANGED (Phase 2a remodel): shaping helpers for the remodelled parts.
+
+-- Horizontal unit vectors at azimuth a: 0 points to the front (-Z), pi/2 to +X.
+local function radialAt(a: number): Vector3
+	return Vector3.new(math.sin(a), 0, -math.cos(a))
+end
+
+local function tangentAt(a: number): Vector3
+	return Vector3.new(math.cos(a), 0, math.sin(a))
+end
+
+-- Cylinder of diameter d whose axis runs from a to b.
+local function rod(ctx: Ctx, name: string, d: number, a: Vector3, b: Vector3, style: Look, collide: boolean): Part
+	local axis = b - a
+	local x = axis.Unit
+	local hint = if math.abs(x.Y) < 0.9 then Vector3.yAxis else Vector3.xAxis
+	local z = x:Cross(hint).Unit
+	local y = z:Cross(x)
+	local part = Instance.new("Part")
+	part.Shape = Enum.PartType.Cylinder
+	part.Size = Vector3.new(axis.Magnitude, d, d)
+	part.CFrame = CFrame.fromMatrix((a + b) / 2, x, y, z)
+	finish(ctx, part, name, style, collide)
+	return part
+end
+
+--[[
+	Exact faceted frustum: n flat sides between a ring of apothem a0 at height y0 and a ring of apothem a1 at y1
+	(the apothem is the distance from the axis to the middle of a side). Each side is a centre plate as wide as the
+	narrow end plus a right-triangle wedge on each edge, so neighbouring sides meet edge to edge with no gaps or
+	overlaps. Side 1 faces the front (-Z). The outer faces lie exactly on the n-gon; plates are FACET_THICKNESS
+	thick, inward. Keep the circumradius a / cos(pi / n) inside the part's box.
+]]
+local function facets(
+	ctx: Ctx,
+	prefix: string,
+	n: number,
+	y0: number,
+	a0: number,
+	y1: number,
+	a1: number,
+	style: Look,
+	collide: boolean
+)
+	local dy, da = y1 - y0, a1 - a0
+	local length = math.sqrt(dy * dy + da * da)
+	local halfTan = math.tan(math.pi / n)
+	local w0, w1 = 2 * a0 * halfTan, 2 * a1 * halfTan
+	local narrow = math.min(w0, w1)
+	local delta = math.abs(w0 - w1) / 2
+	local t = FACET_THICKNESS
+	for k = 0, n - 1 do
+		local az = 2 * math.pi * k / n
+		local u, tangent = radialAt(az), tangentAt(az)
+		local slope = (u * da + Vector3.yAxis * dy) / length
+		local normal = (u * dy - Vector3.yAxis * da) / length
+		local mid = u * a0 + Vector3.yAxis * y0 + slope * (length / 2) - normal * (t / 2)
+		box(
+			ctx,
+			`{prefix}{k + 1}`,
+			Vector3.new(narrow, length, t),
+			CFrame.fromMatrix(mid, tangent, slope, tangent:Cross(slope)),
+			style,
+			collide
+		)
+		if delta > MIN_EXTENT then
+			-- the triangle's right angle sits at the wide end, against the plate's edge
+			local wy = if w0 >= w1 then slope else -slope
+			for _, side in { 1, -1 } do
+				local wz = tangent * -side
+				local centre = mid + tangent * (side * (narrow + delta) / 2)
+				wedge(
+					ctx,
+					`{prefix}{k + 1}{if side > 0 then "R" else "L"}`,
+					Vector3.new(t, length, delta),
+					CFrame.fromMatrix(centre, wy:Cross(wz), wy, wz),
+					style,
+					collide
+				)
+			end
+		end
+	end
+end
+
+-- A point on side 1 (the front, -Z) of a faceted frustum, `at` of the way up it, `proud` studs out of the surface,
+-- as a CFrame whose X runs along the side and Y up the slope (Z points into the part).
+local function frontFacetFrame(y0: number, a0: number, y1: number, a1: number, at: number, proud: number): CFrame
+	local dy, da = y1 - y0, a1 - a0
+	local length = math.sqrt(dy * dy + da * da)
+	local u, tangent = radialAt(0), tangentAt(0)
+	local slope = (u * da + Vector3.yAxis * dy) / length
+	local normal = (u * dy - Vector3.yAxis * da) / length
+	local position = u * a0 + Vector3.yAxis * y0 + slope * (length * at) + normal * proud
+	return CFrame.fromMatrix(position, tangent, slope, tangent:Cross(slope))
+end
+
+-- Count balls of diameter d evenly around the Y axis at radius r and height y.
+local function boltRing(ctx: Ctx, prefix: string, count: number, r: number, y: number, d: number, style: Look)
+	for i = 1, count do
+		local a = 2 * math.pi * (i - 0.5) / count
+		ball(ctx, `{prefix}{i}`, d, radialAt(a) * r + Vector3.new(0, y, 0), style, false)
 	end
 end
 
@@ -375,158 +496,335 @@ local function seat(ctx: Ctx, index: number, size: Vector3, cf: CFrame): BasePar
 	return part
 end
 
--- Axis-aligned wall slab: axis is the wall's normal; u runs along Z for an "X" wall and along X for a "Z" wall.
-local function wallBox(ctx: Ctx, name: string, axis: "X" | "Z", offset: number, r: Rect, thickness: number, style: Look)
-	local ul, vl = r.u1 - r.u0, r.v1 - r.v0
-	if ul < MIN_EXTENT or vl < MIN_EXTENT then
-		return
-	end
-	local uc, vc = (r.u0 + r.u1) / 2, (r.v0 + r.v1) / 2
-	if axis == "X" then
-		box(ctx, name, Vector3.new(thickness, vl, ul), CFrame.new(offset, vc, uc), style, true)
-	else
-		box(ctx, name, Vector3.new(ul, vl, thickness), CFrame.new(uc, vc, offset), style, true)
-	end
-end
-
--- A wall with a rectangular opening, built from up to 4 segments around it.
-local function wallWithOpening(ctx: Ctx, prefix: string, axis: "X" | "Z", offset: number, wall: Rect, hole: Rect)
-	local t = CABIN_WALL_THICKNESS
-	local style = LOOK.Hull
-	wallBox(ctx, prefix .. "Below", axis, offset, { u0 = wall.u0, u1 = wall.u1, v0 = wall.v0, v1 = hole.v0 }, t, style)
-	wallBox(ctx, prefix .. "Above", axis, offset, { u0 = wall.u0, u1 = wall.u1, v0 = hole.v1, v1 = wall.v1 }, t, style)
-	wallBox(ctx, prefix .. "Left", axis, offset, { u0 = wall.u0, u1 = hole.u0, v0 = hole.v0, v1 = hole.v1 }, t, style)
-	wallBox(ctx, prefix .. "Right", axis, offset, { u0 = hole.u1, u1 = wall.u1, v0 = hole.v0, v1 = hole.v1 }, t, style)
-end
-
-local function windowWall(ctx: Ctx, prefix: string, axis: "X" | "Z", offset: number, wall: Rect, hole: Rect)
-	wallWithOpening(ctx, prefix, axis, offset, wall, hole)
-	wallBox(ctx, prefix .. "Window", axis, offset, hole, CABIN_GLASS_THICKNESS, LOOK.CabinGlass)
-end
-
 --============================================================================
 -- Builders (S = ctx.size in studs; everything stays inside +-S/2)
 --============================================================================
 
+-- CHANGED (Phase 2a remodel): a simple octagonal capsule on a dark heat shield, one framed window on the front,
+-- docking ring and orange hatch on top. Shell parts do not collide so the seated character sits inside.
 local function buildPod(ctx: Ctx)
 	local S = ctx.size
-	local hy = S.Y / 2
-	-- Shell parts do not collide so the seated character sits inside the capsule.
-	local y = -hy + POD_SHIELD_HEIGHT
-	cylinder(ctx, "HeatShield", S.X * POD_SECTIONS[1].d, -hy, y, LOOK.Dark, false)
-	local windowY, windowD = 0, S.X
-	for i, section in POD_SECTIONS do
-		local h = S.Y * section.h
-		cylinder(ctx, `Shell{i}`, S.X * section.d, y, y + h, LOOK.Hull, false)
-		if i == POD_WINDOW_SECTION then
-			windowY, windowD = y + h / 2, S.X * section.d
-		end
-		y += h
-	end
-	cylinder(ctx, "TopHatch", S.X * POD_TOP_HATCH_DIAMETER, y, hy, LOOK.Accent, false)
-	-- Front window (-Z) on the head-height section, sunk halfway into its front surface.
+	local hy, d = S.Y / 2, math.min(S.X, S.Z)
+	local shieldTop = -hy + POD_SHIELD_HEIGHT
+	cylinder(ctx, "HeatShield", d * POD_SHIELD_DIAMETER, -hy, shieldTop, LOOK.Dark, false)
+	local y0, a0 = shieldTop, d * POD_BASE_APOTHEM
+	local y1, a1 = S.Y * POD_SHELL_TOP, d * POD_TOP_APOTHEM
+	facets(ctx, "Shell", POD_FACETS, y0, a0, y1, a1, LOOK.Hull, false)
+	cylinder(ctx, "DockingRing", d * POD_RING_DIAMETER, y1, y1 + POD_RING_HEIGHT, LOOK.Dark, false)
+	cylinder(
+		ctx,
+		"Hatch",
+		d * POD_HATCH_DIAMETER,
+		y1 + POD_RING_HEIGHT,
+		y1 + POD_RING_HEIGHT + POD_HATCH_HEIGHT,
+		LOOK.Accent,
+		false
+	)
 	local window = POD_WINDOW_SIZE
-	box(ctx, "Window", window, CFrame.new(0, windowY, -windowD / 2 + window.Z / 4), LOOK.PodGlass, false)
+	local frame = POD_WINDOW_FRAME
+	box(
+		ctx,
+		"WindowFrame",
+		Vector3.new(window.X + 2 * frame, window.Y + 2 * frame, 0.04),
+		frontFacetFrame(y0, a0, y1, a1, POD_WINDOW_AT, 0.01),
+		LOOK.Dark,
+		false
+	)
+	box(
+		ctx,
+		"Window",
+		Vector3.new(window.X, window.Y, 0.05),
+		frontFacetFrame(y0, a0, y1, a1, POD_WINDOW_AT, 0.03),
+		LOOK.PodGlass,
+		false
+	)
 	if ctx.def.Seats >= 1 then
 		-- Bottom centre, facing -Z; a seated R15 (about 4 studs) keeps its head just inside the capsule.
-		seat(ctx, 1, POD_SEAT_SIZE, CFrame.new(0, -hy + POD_SHIELD_HEIGHT + POD_SEAT_SIZE.Y / 2, 0))
+		seat(ctx, 1, POD_SEAT_SIZE, CFrame.new(0, shieldTop + POD_SEAT_SIZE.Y / 2, 0))
 	end
 end
 
-local function buildCabin(ctx: Ctx)
+local function addExhaust(ctx: Ctx)
+	attachment(ctx.bounds, "Exhaust", CFrame.new(0, -ctx.size.Y / 2, 0) * EXHAUST_ROTATION)
+end
+
+-- CHANGED (Phase 2a remodel): mounting plate, thrust frame, combustion chamber with a turbopump, gimbal actuators,
+-- and a faceted bell that flares from the throat. The bell is hollow: from below you see its dark inside and the
+-- glow deep in the throat.
+local function buildEngine(ctx: Ctx)
 	local S = ctx.size
-	local hx, hy, hz = S.X / 2, S.Y / 2, S.Z / 2
-	local w = CABIN_WALL_THICKNESS
-	local floorTop = -hy + CABIN_FLOOR_THICKNESS
-	local roofBottom = hy - CABIN_ROOF_THICKNESS
-	local ix, iz = hx - w, hz - w -- inner half extents
-
-	box(
-		ctx,
-		"Floor",
-		Vector3.new(S.X, CABIN_FLOOR_THICKNESS, S.Z),
-		CFrame.new(0, (-hy + floorTop) / 2, 0),
-		LOOK.Floor,
-		true
-	)
-	box(
-		ctx,
-		"Roof",
-		Vector3.new(S.X, CABIN_ROOF_THICKNESS, S.Z),
-		CFrame.new(0, (roofBottom + hy) / 2, 0),
-		LOOK.Hull,
-		true
-	)
-
-	-- Side walls span the full depth; front and back walls fit between them.
-	local winHalf = CABIN_WINDOW_WIDTH / 2
-	local sill = floorTop + CABIN_WINDOW_SILL
-	local window: Rect = { u0 = -winHalf, u1 = winHalf, v0 = sill, v1 = sill + CABIN_WINDOW_HEIGHT }
-	local sideWall: Rect = { u0 = -hz, u1 = hz, v0 = floorTop, v1 = roofBottom }
-	local endWall: Rect = { u0 = -ix, u1 = ix, v0 = floorTop, v1 = roofBottom }
-	windowWall(ctx, "WallLeft", "X", -hx + w / 2, sideWall, window)
-	windowWall(ctx, "WallRight", "X", hx - w / 2, sideWall, window)
-	windowWall(ctx, "WallFront", "Z", -hz + w / 2, endWall, window)
-
-	-- Back wall (+Z) with the doorway, closed by the Hatch.
-	local doorHalf = CABIN_DOOR_WIDTH / 2
-	local door: Rect = { u0 = -doorHalf, u1 = doorHalf, v0 = floorTop, v1 = floorTop + CABIN_DOOR_HEIGHT }
-	local backZ = hz - w / 2
-	wallWithOpening(ctx, "WallBack", "Z", backZ, endWall, door)
-	local hatch = box(
-		ctx,
-		"Hatch",
-		Vector3.new(CABIN_DOOR_WIDTH, CABIN_DOOR_HEIGHT, CABIN_HATCH_THICKNESS),
-		CFrame.new(0, (door.v0 + door.v1) / 2, backZ),
-		LOOK.Accent,
-		true
-	)
-	-- Teleport targets at the door's centre height (about HumanoidRootPart height above the floor).
-	local outside = attachment(hatch, "HatchOutside", CFrame.new(0, 0, CABIN_HATCH_ATTACH_OFFSET) * FACE_PLUS_Z)
-	local inside = attachment(hatch, "HatchInside", CFrame.new(0, 0, -CABIN_HATCH_ATTACH_OFFSET))
-	if ctx.real then
-		prompt(outside, "EnterPrompt", "Enter", "Hatch", HATCH_PROMPT_DISTANCE)
-		prompt(inside, "ExitPrompt", "Exit", "Hatch", HATCH_PROMPT_DISTANCE)
+	local hy, d = S.Y / 2, math.min(S.X, S.Z)
+	local function below(fraction: number): number
+		return hy - S.Y * fraction
 	end
-
-	-- Console under the front window, pilot seat behind it.
-	local console = CABIN_CONSOLE_SIZE
-	local consoleZ = -iz + console.Z / 2
-	box(ctx, "Console", console, CFrame.new(0, floorTop + console.Y / 2, consoleZ), LOOK.Metal, true)
-	box(
+	local plateBottom = below(ENGINE_PLATE_HEIGHT)
+	cylinder(ctx, "MountPlate", d * ENGINE_PLATE_DIAMETER, plateBottom, hy, LOOK.Dark, true)
+	local chamberTop, chamberBottom = below(ENGINE_CHAMBER_TOP), below(ENGINE_CHAMBER_BOTTOM)
+	for i = 1, 4 do
+		local a = math.pi / 4 + (i - 1) * math.pi / 2
+		rod(
+			ctx,
+			`Strut{i}`,
+			d * ENGINE_STRUT_DIAMETER,
+			radialAt(a) * (d * ENGINE_STRUT_TOP_RADIUS) + Vector3.new(0, plateBottom, 0),
+			radialAt(a) * (d * ENGINE_STRUT_BOTTOM_RADIUS) + Vector3.new(0, chamberTop, 0),
+			LOOK.Dark,
+			false
+		)
+	end
+	cylinder(ctx, "Chamber", d * ENGINE_CHAMBER_DIAMETER, chamberBottom, chamberTop, LOOK.Metal, true)
+	local bandMid = (chamberTop + chamberBottom) / 2
+	local band = S.Y * ENGINE_CHAMBER_BAND / 2
+	cylinder(ctx, "ChamberBand", d * ENGINE_CHAMBER_DIAMETER + 0.06, bandMid - band, bandMid + band, LOOK.Dark, false)
+	-- turbopump on +X with a feed pipe into the chamber
+	local pumpX = d * ENGINE_PUMP_OFFSET
+	local pumpTop, pumpBottom = below(ENGINE_PUMP_TOP), below(ENGINE_PUMP_BOTTOM)
+	rod(
 		ctx,
-		"Screen",
-		Vector3.new(console.X - 1, 0.1, console.Z - 0.3),
-		CFrame.new(0, floorTop + console.Y + 0.05, consoleZ),
-		LOOK.Screen,
+		"Turbopump",
+		d * ENGINE_PUMP_DIAMETER,
+		Vector3.new(pumpX, pumpTop, 0),
+		Vector3.new(pumpX, pumpBottom, 0),
+		LOOK.Metal,
 		false
 	)
-
-	-- Seats: pilot front centre, two side seats forward against the side walls, one in the back-left corner.
-	-- The strip in front of the doorway (|x| <= door half width, back of the cabin) stays clear.
-	local seatY = floorTop + SEAT_SIZE.Y / 2
-	local pilotZ = -iz + console.Z + CABIN_PILOT_GAP + SEAT_SIZE.Z / 2
-	local sideX = ix - SEAT_SIZE.X / 2
-	local placements: { CFrame } = {
-		CFrame.new(0, seatY, pilotZ), -- pilot, faces the front (-Z)
-		CFrame.new(-sideX, seatY, CABIN_SIDE_SEAT_Z) * FACE_PLUS_X, -- left wall, faces in
-		CFrame.new(sideX, seatY, CABIN_SIDE_SEAT_Z) * FACE_MINUS_X, -- right wall, faces in
-		CFrame.new(-sideX, seatY, iz - SEAT_SIZE.Z / 2 - CABIN_CORNER_SEAT_GAP), -- back-left corner, faces front
-	}
-	for i = 1, math.min(ctx.def.Seats, #placements) do
-		seat(ctx, i, SEAT_SIZE, placements[i])
+	rod(
+		ctx,
+		"FeedPipe",
+		d * ENGINE_PIPE_DIAMETER,
+		Vector3.new(pumpX, pumpBottom + 0.05 * S.Y, 0),
+		Vector3.new(d * ENGINE_CHAMBER_DIAMETER / 2, bandMid - band - 0.04 * S.Y, 0),
+		LOOK.Dark,
+		false
+	)
+	-- throat and the neck flaring into the bell
+	local throatBottom = below(ENGINE_THROAT_BOTTOM)
+	cylinder(ctx, "Throat", d * ENGINE_THROAT_DIAMETER, throatBottom, chamberBottom, LOOK.Engine, true)
+	local y = throatBottom
+	for i, neck in ENGINE_NECK do
+		local h = S.Y * neck.h
+		cylinder(ctx, `Neck{i}`, d * neck.d, y - h, y, LOOK.Engine, true)
+		y -= h
 	end
-	if ctx.def.Seats >= 1 then
-		local backrestZ = pilotZ + SEAT_SIZE.Z / 2 + CABIN_BACKREST_THICKNESS / 2
+	local bellTop, bellBottom = y, -hy + BOTTOM_CLEARANCE
+	facets(
+		ctx,
+		"Bell",
+		ENGINE_BELL_FACETS,
+		bellBottom,
+		d * ENGINE_BELL_EXIT_APOTHEM,
+		bellTop,
+		d * ENGINE_BELL_TOP_APOTHEM,
+		LOOK.Engine,
+		true
+	)
+	cylinder(ctx, "Glow", d * ENGINE_GLOW_DIAMETER, bellTop - GLOW_HEIGHT, bellTop, LOOK.Neon, false)
+	-- gimbal actuators from the plate down to the top of the bell (front and back, clear of the pump)
+	for i, a in { 0, math.pi } do
+		rod(
+			ctx,
+			`Actuator{i}`,
+			d * ENGINE_ACTUATOR_DIAMETER,
+			radialAt(a) * (d * ENGINE_ACTUATOR_TOP_RADIUS) + Vector3.new(0, plateBottom, 0),
+			radialAt(a) * (d * ENGINE_BELL_TOP_APOTHEM * 1.15) + Vector3.new(0, bellTop - 0.02 * S.Y, 0),
+			LOOK.Metal,
+			false
+		)
+	end
+	addExhaust(ctx)
+end
+
+-- CHANGED (Phase 2a remodel): a segmented booster with a FLAT top (a nose cone is a separate part): dark top collar,
+-- joint rings, an orange band and roll-pattern panels near the top, attach lugs on +Z, and a short faceted nozzle.
+local function buildBooster(ctx: Ctx)
+	local S = ctx.size
+	local hy, d = S.Y / 2, math.min(S.X, S.Z)
+	local bodyD = d - SRB_BODY_INSET
+	local collarBottom = hy - SRB_COLLAR_HEIGHT
+	local nozzleTop = -hy + SRB_NOZZLE_HEIGHT
+	local aftTop = nozzleTop + SRB_AFT_RING_HEIGHT
+	cylinder(ctx, "TopCollar", d * 0.98, collarBottom, hy, LOOK.Dark, true)
+	cylinder(ctx, "Body", bodyD, aftTop, collarBottom, LOOK.Hull, true)
+	cylinder(ctx, "AftRing", d * 0.98, nozzleTop, aftTop, LOOK.Dark, true)
+	local span = collarBottom - aftTop
+	for i = 1, SRB_JOINTS do
+		local y = aftTop + span * i / (SRB_JOINTS + 1)
+		cylinder(ctx, `Joint{i}`, bodyD + 0.08, y - SRB_JOINT_HEIGHT / 2, y + SRB_JOINT_HEIGHT / 2, LOOK.Dark, false)
+	end
+	local bandY = hy - SRB_BAND_DROP
+	cylinder(ctx, "Band", bodyD + 0.06, bandY - SRB_BAND_HEIGHT / 2, bandY + SRB_BAND_HEIGHT / 2, LOOK.Accent, false)
+	local panel = SRB_ROLL_PANEL
+	local panelY = bandY - SRB_BAND_HEIGHT / 2 - panel.Y / 2 - 0.15
+	for i, a in { math.pi / 2, -math.pi / 2 } do
+		local u = radialAt(a)
 		box(
 			ctx,
-			"PilotBackrest",
-			Vector3.new(SEAT_SIZE.X, 2, CABIN_BACKREST_THICKNESS),
-			CFrame.new(0, floorTop + SEAT_SIZE.Y + 1, backrestZ),
-			LOOK.Seat,
+			`RollPanel{i}`,
+			panel,
+			CFrame.fromMatrix(
+				u * (bodyD / 2 + panel.Z / 2 - 0.02) + Vector3.new(0, panelY, 0),
+				tangentAt(a),
+				Vector3.yAxis
+			),
+			LOOK.Dark,
+			false
+		)
+	end
+	local lug = SRB_LUG_SIZE
+	for i, y in { hy - SRB_LUG_DROP, -hy + SRB_LUG_DROP } do
+		box(ctx, `Lug{i}`, lug, CFrame.new(0, y, S.Z / 2 - lug.Z / 2), LOOK.Metal, true)
+	end
+	local nozzleBottom = -hy + BOTTOM_CLEARANCE
+	facets(
+		ctx,
+		"Nozzle",
+		SRB_NOZZLE_FACETS,
+		nozzleBottom,
+		d * SRB_NOZZLE_EXIT_APOTHEM,
+		nozzleTop,
+		d * SRB_NOZZLE_TOP_APOTHEM,
+		LOOK.Engine,
+		true
+	)
+	cylinder(ctx, "Glow", d * SRB_GLOW_DIAMETER, nozzleTop - GLOW_HEIGHT, nozzleTop, LOOK.Neon, false)
+	addExhaust(ctx)
+end
+
+-- CHANGED (Phase 2a remodel): dark collars on both mating faces, a hazard band (yellow with black slashes) and
+-- a dark separation groove carrying a ring of explosive bolts.
+local function buildDecoupler(ctx: Ctx)
+	local S = ctx.size
+	local hy, d = S.Y / 2, math.min(S.X, S.Z)
+	local bodyD = d - DECOUPLER_BODY_INSET
+	local c = DECOUPLER_COLLAR_HEIGHT
+	local grooveTop = DECOUPLER_BAND_TOP + DECOUPLER_GROOVE_HEIGHT
+	cylinder(ctx, "CollarTop", d * 0.98, hy - c, hy, LOOK.Dark, true)
+	cylinder(ctx, "Upper", bodyD, grooveTop, hy - c, LOOK.Hull, true)
+	local grooveD = d - DECOUPLER_GROOVE_INSET
+	cylinder(ctx, "Groove", grooveD, DECOUPLER_BAND_TOP, grooveTop, LOOK.Dark, true)
+	cylinder(ctx, "Band", bodyD, DECOUPLER_BAND_BOTTOM, DECOUPLER_BAND_TOP, LOOK.Hazard, true)
+	cylinder(ctx, "Lower", bodyD, -hy + c, DECOUPLER_BAND_BOTTOM, LOOK.Hull, true)
+	cylinder(ctx, "CollarBottom", d * 0.98, -hy, -hy + c, LOOK.Dark, true)
+	-- black slashes leaning 45 degrees around the band
+	local slash = DECOUPLER_SLASH_SIZE
+	local count = math.max(6, math.floor(math.pi * bodyD / DECOUPLER_SLASH_SPACING))
+	local bandY = (DECOUPLER_BAND_BOTTOM + DECOUPLER_BAND_TOP) / 2
+	for i = 1, count do
+		local a = 2 * math.pi * (i - 0.5) / count
+		local surface = CFrame.fromMatrix(
+			radialAt(a) * (bodyD / 2 + slash.Z / 2 - 0.01) + Vector3.new(0, bandY, 0),
+			tangentAt(a),
+			Vector3.yAxis
+		)
+		box(ctx, `Slash{i}`, slash, surface * CFrame.Angles(0, 0, math.rad(45)), LOOK.Dark, false)
+	end
+	local bolts = math.max(6, math.floor(math.pi * grooveD / DECOUPLER_BOLT_SPACING))
+	boltRing(ctx, "Bolt", bolts, grooveD / 2, (DECOUPLER_BAND_TOP + grooveTop) / 2, DECOUPLER_BOLT_DIAMETER, LOOK.Metal)
+end
+
+-- CHANGED (Phase 2a remodel): hull plate with bolts on +Z (against the parent), a piston with a hazard collar and a
+-- black joint seam through the block, four struts, and a dark clamp pad on -Z.
+local function buildRadialDecoupler(ctx: Ctx)
+	local S = ctx.size
+	local hz = S.Z / 2
+	local plate = RADIAL_PLATE_SIZE
+	local plateFront = hz - plate.Z
+	box(ctx, "MountPlate", plate, CFrame.new(0, 0, hz - plate.Z / 2), LOOK.Hull, true)
+	local inset = plate.X / 2 - RADIAL_BOLT_INSET
+	local i = 0
+	for _, x in { -inset, inset } do
+		for _, y in { -inset, inset } do
+			i += 1
+			ball(ctx, `Bolt{i}`, RADIAL_BOLT_DIAMETER, Vector3.new(x, y, plateFront), LOOK.Metal, false)
+		end
+	end
+	local pad = RADIAL_PAD_SIZE
+	local padBack = -hz + pad.Z
+	box(ctx, "Pad", pad, CFrame.new(0, 0, -hz + pad.Z / 2), LOOK.Dark, true)
+	rod(
+		ctx,
+		"Piston",
+		RADIAL_PISTON_DIAMETER,
+		Vector3.new(0, 0, padBack),
+		Vector3.new(0, 0, plateFront),
+		LOOK.Metal,
+		true
+	)
+	local mid = (padBack + plateFront) / 2
+	local collar = RADIAL_COLLAR_LENGTH / 2
+	rod(
+		ctx,
+		"Collar",
+		RADIAL_COLLAR_DIAMETER,
+		Vector3.new(0, 0, mid - collar),
+		Vector3.new(0, 0, mid + collar),
+		LOOK.Hazard,
+		false
+	)
+	local seam = RADIAL_SEAM_LENGTH / 2
+	rod(
+		ctx,
+		"Seam",
+		RADIAL_COLLAR_DIAMETER + 0.04,
+		Vector3.new(0, 0, mid - seam),
+		Vector3.new(0, 0, mid + seam),
+		LOOK.Dark,
+		false
+	)
+	local k = 0
+	for _, sx in { -1, 1 } do
+		for _, sy in { -1, 1 } do
+			k += 1
+			rod(
+				ctx,
+				`Strut{k}`,
+				RADIAL_STRUT_DIAMETER,
+				Vector3.new(sx * RADIAL_STRUT_PLATE, sy * RADIAL_STRUT_PLATE, plateFront),
+				Vector3.new(sx * RADIAL_STRUT_PAD, sy * RADIAL_STRUT_PAD, padBack),
+				LOOK.Dark,
+				false
+			)
+		end
+	end
+end
+
+-- CHANGED (Phase 2a remodel): a faceted taper from the full diameter at the bottom to one block (the small stack
+-- size) at the top, with dark collars on both mating faces.
+local function buildAdapter(ctx: Ctx)
+	local S = ctx.size
+	local hy, d = S.Y / 2, math.min(S.X, S.Z)
+	local topD = math.min(GameConfig.GRID_SIZE, d)
+	local c = ADAPTER_COLLAR_HEIGHT
+	local fit = math.cos(math.pi / ADAPTER_FACETS) -- apothem that keeps the n-gon's corners inside the circle
+	cylinder(ctx, "CollarBottom", d * 0.985, -hy, -hy + c, LOOK.Dark, true)
+	cylinder(ctx, "CollarTop", topD * 0.985, hy - c, hy, LOOK.Dark, true)
+	facets(ctx, "Shell", ADAPTER_FACETS, -hy + c, d / 2 * fit - 0.03, hy - c, topD / 2 * fit - 0.03, LOOK.Hull, true)
+end
+
+-- CHANGED (Phase 2a remodel): an ogive of two faceted bands on a dark collar, with an orange tip.
+local function buildNose(ctx: Ctx)
+	local S = ctx.size
+	local hy, d = S.Y / 2, math.min(S.X, S.Z)
+	cylinder(ctx, "Collar", d * 0.98, -hy, -hy + S.Y * NOSE_COLLAR_HEIGHT, LOOK.Dark, true)
+	for i = 1, #NOSE_PROFILE - 1 do
+		local lower, upper = NOSE_PROFILE[i], NOSE_PROFILE[i + 1]
+		facets(
+			ctx,
+			`Cone{i}_`,
+			NOSE_FACETS,
+			-hy + S.Y * lower.y,
+			d * lower.a,
+			-hy + S.Y * upper.y,
+			d * upper.a,
+			LOOK.Hull,
 			true
 		)
 	end
+	local coneTop = -hy + S.Y * NOSE_PROFILE[#NOSE_PROFILE].y
+	local capTop = -hy + S.Y * NOSE_TIP_CAP_TOP
+	cylinder(ctx, "TipCap", d * NOSE_TIP_CAP_DIAMETER, coneTop, capTop, LOOK.Accent, false)
+	local tipD = d * NOSE_TIP_DIAMETER
+	ball(ctx, "Tip", tipD, Vector3.new(0, math.min(capTop, hy - tipD / 2), 0), LOOK.Accent, false)
 end
 
 local function buildTank(ctx: Ctx)
@@ -540,106 +838,6 @@ local function buildTank(ctx: Ctx)
 		local y = -hy + S.Y * i / (count + 1)
 		cylinder(ctx, `Stripe{i}`, d, y - STRIPE_HEIGHT / 2, y + STRIPE_HEIGHT / 2, LOOK.Stripe, true)
 	end
-end
-
-local function addExhaust(ctx: Ctx)
-	attachment(ctx.bounds, "Exhaust", CFrame.new(0, -ctx.size.Y / 2, 0) * EXHAUST_ROTATION)
-end
-
-local function buildEngine(ctx: Ctx)
-	local S = ctx.size
-	local hy, d = S.Y / 2, math.min(S.X, S.Z)
-	local mountBottom = hy - S.Y * ENGINE_MOUNT_HEIGHT
-	cylinder(ctx, "MountPlate", d, hy - ENGINE_MOUNT_PLATE, hy, LOOK.Metal, true)
-	cylinder(ctx, "Mount", d * ENGINE_MOUNT_DIAMETER, mountBottom, hy - ENGINE_MOUNT_PLATE, LOOK.Engine, true)
-	local throatBottom = mountBottom - S.Y * ENGINE_THROAT_HEIGHT
-	cylinder(ctx, "Throat", d * ENGINE_THROAT_DIAMETER, throatBottom, mountBottom, LOOK.Engine, true)
-	-- Bell sections widen downward; the glow disc sits under the last one, inside its rim.
-	local bellBottom = -hy + GLOW_HEIGHT
-	local sections = #ENGINE_BELL_DIAMETERS
-	local step = (throatBottom - bellBottom) / sections
-	for i, fraction in ENGINE_BELL_DIAMETERS do
-		local top = throatBottom - (i - 1) * step
-		local bottom = if i == sections then bellBottom else top - step
-		cylinder(ctx, `Bell{i}`, d * fraction, bottom, top, LOOK.Engine, true)
-	end
-	cylinder(ctx, "Glow", d * ENGINE_GLOW_DIAMETER, -hy, bellBottom, LOOK.Neon, false)
-	addExhaust(ctx)
-end
-
-local function buildBooster(ctx: Ctx)
-	local S = ctx.size
-	local hy, d = S.Y / 2, math.min(S.X, S.Z)
-	local nozzleTop = -hy + SRB_NOZZLE_HEIGHT
-	local noseBottom = hy - SRB_NOSE_HEIGHT
-	cylinder(ctx, "Body", d - HULL_INSET, nozzleTop, noseBottom, LOOK.Hull, true)
-	local stripeY = noseBottom - SRB_STRIPE_DROP
-	cylinder(ctx, "Stripe", d, stripeY - STRIPE_HEIGHT / 2, stripeY + STRIPE_HEIGHT / 2, LOOK.Stripe, true)
-	local tipD = d * SRB_TIP_DIAMETER
-	stack(ctx, "Nose", d, noseBottom, hy - tipD / 2, SRB_NOSE_LAYERS, LOOK.Hull)
-	ball(ctx, "Tip", tipD, Vector3.new(0, hy - tipD / 2, 0), LOOK.Accent, false)
-	cylinder(ctx, "Nozzle", d * SRB_NOZZLE_DIAMETER, -hy + GLOW_HEIGHT, nozzleTop, LOOK.Engine, true)
-	cylinder(ctx, "Glow", d * SRB_GLOW_DIAMETER, -hy, -hy + GLOW_HEIGHT, LOOK.Neon, false)
-	addExhaust(ctx)
-end
-
--- A hull-coloured cylinder with a hazard band (yellow rings around a dark separation groove) at mid-height.
-local function buildDecoupler(ctx: Ctx)
-	local S = ctx.size
-	local hy, d = S.Y / 2, math.min(S.X, S.Z)
-	local g = DECOUPLER_GROOVE_HEIGHT / 2
-	local bandTop = g + DECOUPLER_HAZARD_HEIGHT
-	cylinder(ctx, "Upper", d - HULL_INSET, bandTop, hy, LOOK.Hull, true)
-	cylinder(ctx, "HazardUpper", d, g, bandTop, LOOK.Hazard, true)
-	cylinder(ctx, "Band", d - DECOUPLER_GROOVE_INSET, -g, g, LOOK.Dark, true)
-	cylinder(ctx, "HazardLower", d, -bandTop, -g, LOOK.Hazard, true)
-	cylinder(ctx, "Lower", d - HULL_INSET, -hy, -bandTop, LOOK.Hull, true)
-end
-
--- Mounting plate on +Z (against the parent), an arm with a hazard band through the block, clamp pad on -Z.
-local function buildRadialDecoupler(ctx: Ctx)
-	local S = ctx.size
-	local hz = S.Z / 2
-	local plate = RADIAL_PLATE_SIZE
-	local plateZ = hz - plate.Z / 2
-	box(ctx, "MountPlate", plate, CFrame.new(0, 0, plateZ), LOOK.Hull, true)
-	local stripe = RADIAL_PLATE_STRIPE
-	box(ctx, "PlateStripe", stripe, CFrame.new(0, 0, hz - stripe.Z / 2), LOOK.Hazard, true)
-	local pad = RADIAL_PAD_SIZE
-	local padZ = -hz + pad.Z / 2
-	box(ctx, "Pad", pad, CFrame.new(0, 0, padZ), LOOK.Hull, true)
-	local armZ0, armZ1 = -hz + pad.Z, hz - plate.Z
-	box(
-		ctx,
-		"Arm",
-		Vector3.new(RADIAL_ARM_WIDTH, RADIAL_ARM_WIDTH, armZ1 - armZ0),
-		CFrame.new(0, 0, (armZ0 + armZ1) / 2),
-		LOOK.Metal,
-		true
-	)
-	box(ctx, "Band", RADIAL_BAND_SIZE, CFrame.new(0, 0, (armZ0 + armZ1) / 2), LOOK.Hazard, true)
-end
-
--- Tapers from the full diameter at the bottom to one block (the small stack size) at the top.
-local function buildAdapter(ctx: Ctx)
-	local S = ctx.size
-	local d = math.min(S.X, S.Z)
-	local topFraction = math.min(GameConfig.GRID_SIZE, d) / d
-	local layers: { Layer } = {}
-	for i = 1, ADAPTER_SECTIONS do
-		local t = (i - 1) / (ADAPTER_SECTIONS - 1)
-		local edge = i == 1 or i == ADAPTER_SECTIONS
-		layers[i] = { d = 1 + (topFraction - 1) * t, h = 1 / ADAPTER_SECTIONS, look = if edge then LOOK.Metal else nil }
-	end
-	stack(ctx, "Section", d, -S.Y / 2, S.Y / 2, layers, LOOK.Hull)
-end
-
-local function buildNose(ctx: Ctx)
-	local S = ctx.size
-	local hy, d = S.Y / 2, math.min(S.X, S.Z)
-	local tipD = math.min(d * NOSE_TIP_DIAMETER, S.Y / 2)
-	stack(ctx, "Cone", d, -hy, hy - tipD / 2, NOSE_LAYERS, LOOK.Hull)
-	ball(ctx, "Tip", tipD, Vector3.new(0, hy - tipD / 2, 0), LOOK.Accent, false)
 end
 
 local function buildFin(ctx: Ctx)
@@ -677,50 +875,81 @@ local function buildChute(ctx: Ctx)
 	attachment(ctx.bounds, "ChuteTop", CFrame.new(0, hy, 0))
 end
 
+-- CHANGED (Phase 2a remodel): bracket and hinge on the +Z face, a white sleeve with a brace, and a piston, spring
+-- collar, ankle and foot pad that slide down out of it. The moving parts carry their stowed pose in
+-- GEAR_STOWED_ATTRIBUTE (part-local CFrame; the built pose is deployed); clients animate them (Render/Gear).
 local function buildLeg(ctx: Ctx)
 	local S = ctx.size
 	local hy, hz = S.Y / 2, S.Z / 2
-	local footTop = -hy + LEG_FOOT_HEIGHT
-	local mountH = LEG_MOUNT_HEIGHT
-	-- Mount block on the +Z (mounting) face at the top, reaching back to the strut.
-	box(ctx, "Mount", Vector3.new(S.X * 0.6, mountH, hz), CFrame.new(0, hy - mountH / 2, hz / 2), LOOK.Metal, true)
-	cylinder(ctx, "Strut", LEG_STRUT_DIAMETER, footTop, hy, LOOK.Metal, true)
-	cylinder(ctx, "Shock", LEG_SHOCK_DIAMETER, footTop, footTop + LEG_SHOCK_HEIGHT, LOOK.Engine, true)
-	-- Diagonal brace from the back of the mount down to the strut.
-	local top = Vector3.new(0, hy - mountH, hz - 0.3)
-	local bottom = Vector3.new(0, -hy * 0.3, 0)
-	local delta = top - bottom
-	local angle = math.atan2(delta.Z, delta.Y) -- rotation about X that tilts +Y toward +Z
+	local z = LEG_AXIS_Z
+	local mount = LEG_MOUNT_SIZE
+	local mountY = hy - LEG_MOUNT_TOP - mount.Y / 2
+	box(ctx, "Mount", mount, CFrame.new(0, mountY, hz - mount.Z / 2), LOOK.Dark, true)
+	local hingeY = LEG_SLEEVE_TOP - LEG_HINGE_DIAMETER / 2
 	box(
 		ctx,
-		"Brace",
-		Vector3.new(LEG_BRACE_THICKNESS, delta.Magnitude, LEG_BRACE_THICKNESS),
-		CFrame.new((top + bottom) / 2) * CFrame.Angles(angle, 0, 0),
+		"HingePin",
+		Vector3.new(LEG_HINGE_LENGTH, LEG_HINGE_DIAMETER, LEG_HINGE_DIAMETER),
+		CFrame.new(0, hingeY, z),
 		LOOK.Metal,
 		false
+	).Shape =
+		Enum.PartType.Cylinder
+	cylinder(ctx, "Sleeve", LEG_SLEEVE_DIAMETER, LEG_SLEEVE_BOTTOM, LEG_SLEEVE_TOP, LOOK.Hull, true).CFrame += Vector3.new(
+		0,
+		0,
+		z
 	)
-	cylinder(ctx, "Foot", math.min(S.X, S.Z) * LEG_FOOT_DIAMETER, -hy, footTop, LOOK.Dark, true)
-	attachment(ctx.bounds, "Foot", CFrame.new(0, -hy, 0))
-end
-
-local function buildLadder(ctx: Ctx)
-	local S = ctx.size
-	local hx, hy, hz = S.X / 2, S.Y / 2, S.Z / 2
-	local railX = hx - LADDER_RAIL_WIDTH / 2
-	-- CHANGED (Phase 1 rework): hug the +Z (mounting) face so the ladder sits against what it is attached to;
-	-- the rungs stand a little off the face so hands and feet fit behind them.
-	local railZ = hz - LADDER_RAIL_WIDTH / 2
-	local rungZ = hz - LADDER_RUNG_STANDOFF
-	local rail = Vector3.new(LADDER_RAIL_WIDTH, S.Y, LADDER_RAIL_WIDTH)
-	box(ctx, "RailLeft", rail, CFrame.new(-railX, 0, railZ), LOOK.Metal, true)
-	box(ctx, "RailRight", rail, CFrame.new(railX, 0, railZ), LOOK.Metal, true)
-	-- Rungs every LADDER_RUNG_SPACING, offset half a spacing from the ends so stacked ladders keep the rhythm.
-	local rungSize = Vector3.new(S.X - 2 * LADDER_RAIL_WIDTH, LADDER_RUNG_THICKNESS, LADDER_RUNG_THICKNESS)
-	local count = math.floor(S.Y / LADDER_RUNG_SPACING + 0.5)
-	for i = 1, count do
-		local y = -hy + (i - 0.5) * LADDER_RUNG_SPACING
-		box(ctx, `Rung{i}`, rungSize, CFrame.new(0, y, rungZ), LOOK.Metal, true)
+	cylinder(
+		ctx,
+		"SleeveCollar",
+		LEG_COLLAR_DIAMETER,
+		LEG_SLEEVE_BOTTOM,
+		LEG_SLEEVE_BOTTOM + LEG_COLLAR_HEIGHT,
+		LOOK.Dark,
+		false
+	).CFrame += Vector3.new(
+		0,
+		0,
+		z
+	)
+	rod(
+		ctx,
+		"Brace",
+		LEG_BRACE_DIAMETER,
+		Vector3.new(0, mountY - mount.Y / 2 + 0.1, hz - 0.35),
+		Vector3.new(0, LEG_SLEEVE_BOTTOM + 0.9, z + LEG_SLEEVE_DIAMETER / 2 - 0.1),
+		LOOK.Dark,
+		false
+	)
+	-- moving parts: built deployed, stowed = raised by LEG_STROKE
+	local footTop = -hy + 0.02 + LEG_FOOT_HEIGHT
+	local ankleY = footTop + LEG_ANKLE_DIAMETER / 2 - 0.1
+	local stroke = Vector3.new(0, LEG_STROKE, 0)
+	local function moving(part: BasePart, stowed: CFrame)
+		part:SetAttribute(GEAR_STOWED_ATTRIBUTE, stowed)
 	end
+	local piston = cylinder(ctx, "Piston", LEG_PISTON_DIAMETER, ankleY, LEG_PISTON_TOP, LOOK.Metal, true)
+	piston.CFrame += Vector3.new(0, 0, z)
+	moving(piston, piston.CFrame + stroke)
+	local springY = LEG_SLEEVE_BOTTOM - LEG_SPRING_HEIGHT / 2 - 0.05
+	local spring = cylinder(
+		ctx,
+		"Spring",
+		LEG_SPRING_DIAMETER,
+		springY - LEG_SPRING_HEIGHT / 2,
+		springY + LEG_SPRING_HEIGHT / 2,
+		LOOK.Accent,
+		false
+	)
+	spring.CFrame += Vector3.new(0, 0, z)
+	moving(spring, spring.CFrame + stroke)
+	local ankle = ball(ctx, "Ankle", LEG_ANKLE_DIAMETER, Vector3.new(0, ankleY, z), LOOK.Dark, false)
+	moving(ankle, ankle.CFrame + stroke)
+	local foot = cylinder(ctx, "Foot", LEG_FOOT_DIAMETER, footTop - LEG_FOOT_HEIGHT, footTop, LOOK.Dark, true)
+	foot.CFrame += Vector3.new(0, 0, z)
+	moving(foot, foot.CFrame + stroke) -- stowed: the whole lower leg retracts up into the sleeve
+	attachment(ctx.bounds, "Foot", CFrame.new(0, -hy, 0))
 end
 
 -- Base plate across the cell, seat on it, backrest on the +Z (mounting) side.
@@ -748,7 +977,6 @@ end
 
 local BUILDERS: { [string]: (Ctx) -> () } = {
 	pod_mk1 = buildPod,
-	cabin_l = buildCabin,
 	tank_s_short = buildTank,
 	tank_s_long = buildTank,
 	tank_l_short = buildTank,
@@ -765,7 +993,6 @@ local BUILDERS: { [string]: (Ctx) -> () } = {
 	fin = buildFin,
 	chute_s = buildChute,
 	leg = buildLeg,
-	ladder = buildLadder,
 	seat_ext = buildExternalSeat,
 	block_1 = buildStructural,
 	beam_4 = buildStructural,
@@ -778,6 +1005,7 @@ local BUILDERS: { [string]: (Ctx) -> () } = {
 local PartVisuals = {}
 
 PartVisuals.PALETTE = PALETTE
+PartVisuals.GEAR_STOWED_ATTRIBUTE = GEAR_STOWED_ATTRIBUTE
 
 -- Builds a new Model for the part in part-local space (see the header). The caller parents and pivots it.
 function PartVisuals.build(def: Parts.PartDef, mode: Mode): Model

@@ -5,7 +5,7 @@
 | 0: Project setup and engine spikes | **Done. All spikes S1–S12 recorded in DECISIONS.md; Q1 answered (A)** |
 | 1: Base and builder | **Built (Plane Crazy rework). Waiting for Steamy's playtest** |
 | 2a: Flight in the pocket (fly, stage, crash) | **Built. Waiting for Steamy's playtest** |
-| 2b: Chutes, legs, landing rebase, recovery | Not started |
+| 2b: Chutes, legs, landing rebase, recovery | Skipped for now (Steamy) |
 | 3: Multiplayer crafts | Not started |
 | 4: Scaled space and visuals | Started early: scaled-space bodies, sky and lighting came with 2a (D26) |
 | 5: Orbits, rails, map, navball | Not started |
@@ -208,6 +208,7 @@ These place files already have `Lighting.Technology = Future`, `StreamingEnabled
 - 2026-09-30, Play Solo (Steamy): both bootstraps booted and Studio printed `[Tests] 24 passed, 0 failed` with no errors.
 - 2026-09-30, spikes S1–S10 (Steamy): all ran to completion, including the 2-player S3 and S9. Results are in `DECISIONS.md`. Two harness issues were fixed: S5 started twice on a double click, and the spike lock now waits for every client to finish.
 - 2026-09-30, follow-up spikes S11 (cull distance) and S12 (EditableMesh budget/sharing) (Steamy): results and decisions D10/D11 are in `DECISIONS.md`.
+- 2026-10-01 (Steamy): space looks good. Skip 2b. Delete the Crew Cabin and Ladder; remodel the pod (keep it simple), engines, booster (flat top), adapter, decouplers and nose cones; add an animated landing leg. Done in D34.
 - 2026-10-01, fifth Phase 2a check (Steamy, at 13.7 km): space is black with stars, the sun and Dent. The blue sky showed through wedge-shaped gaps between the sky panels: they were aimed at the camera instead of lying flat in the cube faces. Fixed.
 - 2026-10-01, fourth Phase 2a check (Steamy): the sky was Roblox's default cloud sky turned on its side, and space still wasn't black. Fixed in D33 (Roblox's sky kept upright for the ground; SkyCube draws black starry space; `/time` debug command).
 - 2026-10-01, third Phase 2a flight (Steamy): the sky no longer followed the rocket, but space stayed blue and the ground showed a blue/grey split sky. The rocket was invisible, with only a "Sit" prompt showing. Fixed in D32 (we paint the whole sky; models arriving in your pocket are un-hidden).

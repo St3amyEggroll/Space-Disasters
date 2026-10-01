@@ -151,4 +151,15 @@ return function(t: TestKit.Context)
 		local root = CraftDesign.rootBlock(design)
 		t.expectTrue(root ~= nil and root.type == "pod_mk1")
 	end)
+	-- CHANGED (Phase 2a remodel): removed parts (Crew Cabin, Ladder) are dropped from old saves
+	t.test("old saves with removed parts still load", function()
+		local text = '{"v":1,"name":"Old","blocks":[{"id":1,"t":"pod_mk1","x":0,"y":0,"z":0,"r":0},'
+			.. '{"id":2,"t":"cabin_l","x":0,"y":1,"z":0,"r":0},{"id":3,"t":"ladder","x":1,"y":0,"z":0,"r":0}]}'
+		local design = CraftDesign.fromJson(text)
+		t.expectTrue(design ~= nil, "loads")
+		if design then
+			t.expectEqual(#design.blocks, 1)
+			t.expectEqual(design.blocks[1].type, "pod_mk1")
+		end
+	end)
 end

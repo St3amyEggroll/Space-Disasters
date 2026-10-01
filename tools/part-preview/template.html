@@ -97,7 +97,9 @@ canvas:active { cursor: grabbing; }
   const CATEGORY_NAME = { Command: 'Command', FuelTank: 'Fuel tanks', Engine: 'Engines', Coupling: 'Coupling', Aero: 'Aero', Utility: 'Utility', Structural: 'Structure' };
   const byId = (data) => Object.fromEntries(data.parts.map(p => [p.id, p]));
   const cur = byId(CURRENT), nxt = byId(NEXT);
-  const ids = CURRENT.parts.map(p => p.id);
+  const ids = [...new Set([...NEXT.parts.map(p => p.id), ...CURRENT.parts.map(p => p.id)])];
+  const partOf = (id) => nxt[id] || cur[id];
+  const ALL_PARTS = ids.map(partOf);
 
   // ---------- state ----------
   const params = new URLSearchParams(location.hash.slice(1));
@@ -160,8 +162,17 @@ canvas:active { cursor: grabbing; }
       [0, 4, 3],             // left (-X)
       [1, 2, 5],             // right (+X)
     ];
+    // wind every triangle so its normal points away from a point inside the wedge
+    const inside = [0, -y / 3, z / 3];
     const pos = [];
-    for (const t of tri) for (const i of t) pos.push(...v[i]);
+    for (const t of tri) {
+      const [a, b, c] = t.map(i => v[i]);
+      const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+      const n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+      const m = [(a[0] + b[0] + c[0]) / 3 - inside[0], (a[1] + b[1] + c[1]) / 3 - inside[1], (a[2] + b[2] + c[2]) / 3 - inside[2]];
+      const order = n[0] * m[0] + n[1] * m[1] + n[2] * m[2] >= 0 ? [a, b, c] : [a, c, b];
+      for (const p of order) pos.push(...p);
+    }
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.computeVertexNormals();
@@ -263,7 +274,7 @@ canvas:active { cursor: grabbing; }
   allGroup.appendChild(allBtn);
   rail.appendChild(allGroup);
   for (const cat of CATEGORY_ORDER) {
-    const parts = CURRENT.parts.filter(p => p.category === cat);
+    const parts = ALL_PARTS.filter(p => p.category === cat);
     if (!parts.length) continue;
     const g = document.createElement('div');
     g.className = 'group';
@@ -308,7 +319,7 @@ canvas:active { cursor: grabbing; }
         ? `<span><b>${c}</b> building pieces in total</span>`
         : `<span>Current: <b>${c}</b> pieces</span><span>New: <b>${n}</b> pieces</span><span>Pieces are the Roblox parts each block is built from.</span>`;
     } else {
-      const p = cur[state.part];
+      const p = partOf(state.part);
       title.firstChild.textContent = p.name;
       sub.textContent = `${p.size.map(v => v / CURRENT.grid).join(' × ')} blocks · ${p.size.join(' × ')} studs · ${CATEGORY_NAME[p.category] || p.category}`;
       foot.innerHTML = NEXT.parts === CURRENT.parts
@@ -380,14 +391,14 @@ canvas:active { cursor: grabbing; }
         const labelH = 26;
         sets.forEach((set, k) => {
           const w = cellW / sets.length;
-          drawCell(set[id], cx + k * w, cy, w, cellH - labelH, 1.0);
+          if (set[id]) drawCell(set[id], cx + k * w, cy, w, cellH - labelH, 1.0);
         });
         if (makeLabels) {
           const l = document.createElement('div');
           l.className = 'cell-label';
           l.style.left = (cx + cellW / 2) + 'px';
           l.style.top = (cy + cellH - labelH + 2) + 'px';
-          l.textContent = cur[id].name;
+          l.textContent = partOf(id).name;
           labels.appendChild(l);
         }
       });
@@ -401,7 +412,7 @@ canvas:active { cursor: grabbing; }
     } else {
       sets.forEach((set, k) => {
         const w = W / sets.length;
-        drawCell(set[state.part], k * w, 0, w, H, 1);
+        if (set[state.part]) drawCell(set[state.part], k * w, 0, w, H, 1);
         if (makeLabels) tag(sets.length > 1 ? (k === 0 ? 'Current' : 'New') : (set === cur ? 'Current' : 'New'), set === cur ? 'cur' : 'new', k * w + 12);
       });
     }

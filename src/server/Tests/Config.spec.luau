@@ -34,7 +34,7 @@ return function(t: TestKit.Context)
 	end)
 
 	t.test("every part fits the grid and has stats", function()
-		t.expectEqual(#Parts.List, 23)
+		t.expectEqual(#Parts.List, 21) -- CHANGED (Phase 2a remodel): Crew Cabin and Ladder removed
 		for _, def in Parts.List do
 			t.expectTrue(def.DryMass > 0, def.Id .. " dry mass")
 			t.expectTrue(def.CrashTolerance > 0, def.Id .. " crash tolerance")

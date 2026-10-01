@@ -38,6 +38,7 @@ local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local DebugOverlay = require(script.Parent.DebugOverlay)
 local RemoteCraftRenderer = require(script.Parent.RemoteCraftRenderer)
+local Gear = require(script.Parent.Parent.Render.Gear)
 
 --============================================================================
 -- Tunables
@@ -49,7 +50,7 @@ local POSE_MOVE_MODE = Enum.BulkMoveMode.FireCFrameChanged
 --============================================================================
 
 -- What the pilot's simulation reports for its own craft (a subset of FlightModel.CraftState).
-export type PrimaryState = { bodyId: number, pos: Vec3d.Vec3d, rot: CFrame, ut: number }
+export type PrimaryState = { bodyId: number, pos: Vec3d.Vec3d, rot: CFrame, ut: number, flags: number? }
 export type PrimaryProvider = (craftId: number) -> PrimaryState?
 
 local PocketController = {}
@@ -72,6 +73,9 @@ type PoseCache = {
 	offsets: { CFrame }, -- each part relative to the craft reference frame
 	seats: { BasePart }, -- seats are moved one by one (CFrame writes carry a welded, seated character along)
 	seatOffsets: { CFrame },
+	gear: { Gear.GearPart }, -- CHANGED (Phase 2a remodel): landing-leg parts, posed by Gear
+	gearFraction: number, -- 1 = deployed
+	gearTime: number, -- os.clock() of the last gear update
 	cframes: { CFrame }, -- scratch for BulkMoveTo
 	dirty: boolean, -- a part was removed: drop missing parts before the next move
 	connection: RBXScriptConnection,
@@ -349,7 +353,7 @@ local function buildPoseCache(model: Model): PoseCache?
 		if descendant:IsA("Seat") then
 			table.insert(seats, descendant)
 			table.insert(seatOffsets, inverse * descendant.CFrame)
-		elseif descendant:IsA("BasePart") then
+		elseif descendant:IsA("BasePart") and not Gear.isMoving(descendant) then
 			table.insert(parts, descendant)
 			table.insert(offsets, inverse * descendant.CFrame)
 		end
@@ -362,6 +366,9 @@ local function buildPoseCache(model: Model): PoseCache?
 		offsets = offsets,
 		seats = seats,
 		seatOffsets = seatOffsets,
+		gear = Gear.collect(model, craftFrame),
+		gearFraction = 1,
+		gearTime = os.clock(),
 		cframes = table.create(#parts),
 		dirty = false,
 		connection = model.DescendantRemoving:Connect(function(descendant: Instance)
@@ -373,7 +380,7 @@ local function buildPoseCache(model: Model): PoseCache?
 	return cache
 end
 
-local function poseCraft(folder: Instance, craftId: number, pos: Vec3d.Vec3d, rot: CFrame)
+local function poseCraft(folder: Instance, craftId: number, pos: Vec3d.Vec3d, rot: CFrame, flags: number?)
 	local crafts = folder:FindFirstChild("Crafts")
 	local found = if crafts then crafts:FindFirstChild(`Craft_{craftId}`) else nil
 	local model: Model? = if found and found:IsA("Model") then found else nil
@@ -418,6 +425,12 @@ local function poseCraft(folder: Instance, craftId: number, pos: Vec3d.Vec3d, ro
 			seat.CFrame = target * cache.seatOffsets[index]
 		end
 	end
+	if #cache.gear > 0 then
+		local now = os.clock()
+		cache.gearFraction = Gear.approach(cache.gearFraction, Gear.target(flags), now - cache.gearTime)
+		cache.gearTime = now
+		Gear.pose(cache.gear, target, cache.gearFraction)
+	end
 end
 
 -- Recomputes the current pocket frame; call once per render frame before drawing.
@@ -457,7 +470,7 @@ function PocketController.update()
 					state.pos,
 					Universe.pocketRotation(state.bodyId, state.pos, renderUT)
 				)
-				poseCraft(folder, primary, state.pos, state.rot)
+				poseCraft(folder, primary, state.pos, state.rot, state.flags)
 				return
 			end
 		end

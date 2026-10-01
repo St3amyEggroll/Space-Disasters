@@ -24,6 +24,7 @@ local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local Plumes = require(script.Parent.Parent.Render.Plumes)
+local Gear = require(script.Parent.Parent.Render.Gear)
 local RenderContext = require(script.Parent.Parent.Render.RenderContext)
 
 type State = Protocol.State
@@ -47,6 +48,8 @@ type Entry = {
 	states: { State },
 	model: Model?,
 	root: BasePart?,
+	gear: { Gear.GearPart }, -- CHANGED (Phase 2a remodel): landing-leg parts (anchored, posed by Gear)
+	gearFraction: number,
 }
 
 local RemoteCraftRenderer = {}
@@ -154,6 +157,7 @@ local function destroyModel(entry: Entry)
 	end
 	entry.model = nil
 	entry.root = nil
+	entry.gear = {}
 end
 
 local function referenceCenter(design: Design): Vector3
@@ -183,8 +187,9 @@ local function buildModel(entry: Entry): Model
 	root.CanTouch = false
 	root.CFrame = CFrame.identity
 	root.Parent = model
+	entry.gear = Gear.collect(model, CFrame.identity) -- the root (craft reference frame) is at the identity here
 	for _, descendant in model:GetDescendants() do
-		if descendant:IsA("BasePart") and descendant ~= root then
+		if descendant:IsA("BasePart") and descendant ~= root and not Gear.isMoving(descendant) then
 			descendant.Anchored = false
 			descendant.Massless = true
 			local weld = Instance.new("WeldConstraint")
@@ -253,6 +258,10 @@ function RemoteCraftRenderer.render(ctx: RenderContext.RenderContext)
 		model.Parent = folder
 		local root = entry.root :: BasePart
 		root.CFrame = target
+		if #entry.gear > 0 then
+			entry.gearFraction = Gear.approach(entry.gearFraction, Gear.target(s.flags), ctx.dt)
+			Gear.pose(entry.gear, target, entry.gearFraction)
+		end
 
 		local burning: { [number]: number } = {}
 		if bit32.band(s.flags, 2) ~= 0 then
@@ -301,6 +310,8 @@ local function onSpawned(craftId: unknown, designBuffer: unknown, stateBuffer: u
 		states = if existing then existing.states else {},
 		model = nil,
 		root = nil,
+		gear = {},
+		gearFraction = 1,
 	}
 	if type(data.active) == "table" then
 		for _, id in data.active do

@@ -296,6 +296,28 @@ The flight camera no longer turns with the rocket.
   - A day is still `DAY_LENGTH_S` = 20 minutes.
 - **StarSky (D32) is removed.**
 
+### D34. Part remodel, removed parts, animated landing legs (Steamy)
+- **Removed:** the Crew Cabin (`cabin_l`) and the Ladder (`ladder`), at Steamy's request.
+  - Their definitions are gone, so palette and wire indices shift. Both ends share `Parts.List`, and saves store part ids, so that's safe.
+  - `CraftDesign.fromJson` drops blocks of unknown parts, so old saves still load without them.
+  - The Command Pod is now the only command part.
+- **Remodelled** (`PartVisuals`), only the parts Steamy chose:
+  - **Command Pod:** a simple octagonal capsule (Steamy asked for simple) on a heat shield, with one framed window, a docking ring and an orange hatch.
+  - **Engines:** mounting plate, thrust frame, chamber with turbopump, gimbal actuators, and a hollow faceted bell with a glow in the throat.
+  - **Solid Booster:** flat top (stack a nose cone on it), segment joints, an orange band, roll panels, lugs, and a faceted nozzle.
+  - **Decouplers:** collars, a hazard band with slashes, a separation groove with explosive bolts. The radial one is a bolted plate with a piston, hazard collar, struts and a clamp pad.
+  - **Size Adapter and nose cones:** faceted shells.
+  - **How the faceted shells are built:** exact n-sided frusta (a plate plus two triangle wedges per side, so sides meet edge to edge). Cones no longer look like stacked cylinders.
+  - Tanks, fin, chute, seat and blocks are unchanged.
+- **Landing leg:** a white sleeve on a hinged bracket.
+  - The piston, spring collar, ankle and foot pad slide 3 studs up into the sleeve when stowed.
+  - Every moving part stores its stowed part-local CFrame in the `GearStowed` attribute.
+  - **G** toggles the legs. The state is `FlightModel.FLAG_GEAR_UP` in `CraftState.flags`, so it streams to everyone.
+  - `Render/Gear` animates the real model (PocketController) and the cosmetic copies (RemoteCraftRenderer) over 1.2 s.
+  - The animation is visual only: ground contact still uses each leg block's full box.
+- **Tests:** every primitive, in both the deployed and stowed pose, must stay inside its part's box. Old saves with removed parts still load.
+- **Preview:** `tools/export-parts.luau` and `tools/part-preview` render the parts offline (the "Part Hangar" page).
+
 ---
 
 ## Phase 0 spike results

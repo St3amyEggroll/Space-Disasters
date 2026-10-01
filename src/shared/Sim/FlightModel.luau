@@ -81,6 +81,7 @@ local FLAG_SAS = 1
 local FLAG_BURNING = 2 -- at least one engine producing thrust (for plumes)
 local FLAG_CONTACT = 4 -- touching the ground this step
 local FLAG_CHUTES = 8 -- parachutes deployed (Phase 2b)
+local FLAG_GEAR_UP = 16 -- CHANGED (Phase 2a remodel): landing legs retracted (clear = deployed, the default)
 
 export type Engine = {
 	blockId: number,
@@ -156,6 +157,7 @@ FlightModel.FLAG_SAS = FLAG_SAS
 FlightModel.FLAG_BURNING = FLAG_BURNING
 FlightModel.FLAG_CONTACT = FLAG_CONTACT
 FlightModel.FLAG_CHUTES = FLAG_CHUTES
+FlightModel.FLAG_GEAR_UP = FLAG_GEAR_UP
 FlightModel.STEP = STEP
 
 --============================================================================
@@ -756,6 +758,18 @@ local function checkSoi(craft: Craft)
 		state.pos = newPos
 		state.bodyId = newBody
 	end
+end
+
+-- CHANGED (Phase 2a remodel): raises (true) or lowers the landing legs. Visual only for now: contact still uses each
+-- leg block's full box. The state travels in CraftState.flags, so every client animates the same legs.
+function FlightModel.setGearUp(craft: Craft, up: boolean)
+	craft.state.flags = if up
+		then bit32.bor(craft.state.flags, FLAG_GEAR_UP)
+		else bit32.band(craft.state.flags, bit32.bnot(FLAG_GEAR_UP))
+end
+
+function FlightModel.isGearUp(flags: number): boolean
+	return bit32.band(flags, FLAG_GEAR_UP) ~= 0
 end
 
 -- Advances the craft by one fixed step (FlightModel.STEP), with substeps near the surface.

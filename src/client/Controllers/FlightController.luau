@@ -74,6 +74,7 @@ local FLIGHT_KEYS = {
 	Enum.KeyCode.Z,
 	Enum.KeyCode.X,
 	Enum.KeyCode.T,
+	Enum.KeyCode.G, -- CHANGED (Phase 2a remodel): landing legs up / down
 	Enum.KeyCode.V,
 	Enum.KeyCode.F,
 	Enum.KeyCode.Space,
@@ -212,6 +213,11 @@ local function onAction(
 		stage()
 	elseif key == Enum.KeyCode.T then
 		sasOn = not sasOn
+	elseif key == Enum.KeyCode.G then
+		local craft = sim
+		if craft then
+			FlightModel.setGearUp(craft, not FlightModel.isGearUp(craft.state.flags))
+		end
 	elseif key == Enum.KeyCode.Z then
 		throttle = 1
 	elseif key == Enum.KeyCode.X then

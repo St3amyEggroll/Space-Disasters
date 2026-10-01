@@ -138,6 +138,43 @@ for _, def in Parts.List do
 		end
 	end
 	local size = def.Size * GameConfig.GRID_SIZE
+	-- landing gear: also export the stowed pose (parts carrying the GearStowed attribute)
+	local stowed = {}
+	local anyStowed = false
+	for i, d in model:GetDescendants() do
+		local _ = i
+		if d:IsA("BasePart") and d.Name ~= "Bounds" then
+			local cf = d:GetAttribute("GearStowed")
+			if typeof(cf) == "CFrame" then
+				anyStowed = true
+			end
+		end
+	end
+	if anyStowed then
+		for _, d in model:GetDescendants() do
+			local cf = if d:IsA("BasePart") then d:GetAttribute("GearStowed") else nil
+			if typeof(cf) == "CFrame" then
+				d.CFrame = cf
+			end
+		end
+		local stowedPrims = {}
+		for _, d in model:GetDescendants() do
+			if d:IsA("BasePart") and d.Name ~= "Bounds" then
+				local x, y, z, r00, r01, r02, r10, r11, r12, r20, r21, r22 = d.CFrame:GetComponents()
+				table.insert(stowedPrims, {
+					name = d.Name,
+					kind = if d:IsA("Part") then enumName(d.Shape) else d.ClassName,
+					size = { r(d.Size.X), r(d.Size.Y), r(d.Size.Z) },
+					cf = { r(x), r(y), r(z), r(r00), r(r01), r(r02), r(r10), r(r11), r(r12), r(r20), r(r21), r(r22) },
+					color = { math.round(d.Color.R * 255), math.round(d.Color.G * 255), math.round(d.Color.B * 255) },
+					material = enumName(d.Material),
+					transparency = r(d.Transparency),
+					paint = d:GetAttribute("Paint") == true,
+				})
+			end
+		end
+		stowed = stowedPrims
+	end
 	table.insert(parts, {
 		id = def.Id,
 		name = def.DisplayName,
@@ -145,6 +182,15 @@ for _, def in Parts.List do
 		size = { size.X, size.Y, size.Z },
 		prims = prims,
 	})
+	if #stowed > 0 then
+		table.insert(parts, {
+			id = def.Id .. "_stowed",
+			name = def.DisplayName .. " (stowed)",
+			category = def.Category,
+			size = { size.X, size.Y, size.Z },
+			prims = stowed,
+		})
+	end
 end
 
 fs.writeFile(outPath, serde.encode("json", { grid = GameConfig.GRID_SIZE, parts = parts }, false))

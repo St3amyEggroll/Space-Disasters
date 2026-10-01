@@ -74,7 +74,7 @@ export type PartDef = {
 	DragFactor: number, -- nose cones reduce drag when leading
 	CrashTolerance: number, -- m/s impact speed that destroys the part
 	UnlockId: string,
-	SortOrder: number, -- palette order AND the stable wire index (CraftDesign buffers); only ever append new parts
+	SortOrder: number, -- palette order AND the wire index (CraftDesign buffers; both ends share this list). Saves use Ids.
 }
 
 -- Fields every definition may omit; filled with defaults by define().
@@ -160,20 +160,8 @@ define({
 	Windows = true,
 	CrashTolerance = 12,
 })
-define({
-	Id = "cabin_l",
-	DisplayName = "Crew Cabin",
-	Category = "Command",
-	Size = Vector3.new(2, 2, 2),
-	DryMass = 2500,
-	Torque = 40000,
-	Seats = 4,
-	PilotSeat = true,
-	Walkable = true,
-	Hatch = true,
-	Windows = true,
-	CrashTolerance = 10,
-})
+-- CHANGED (Phase 2a remodel): the Crew Cabin ("cabin_l") was removed at Steamy's request; saved designs
+-- that still contain it load without those blocks (CraftDesign.fromJson).
 
 --============================================================================
 -- Fuel tanks
@@ -338,15 +326,7 @@ define({
 	Leg = { Spring = 50000, Damper = 8000 },
 	CrashTolerance = 12,
 })
-define({
-	Id = "ladder",
-	DisplayName = "Ladder",
-	Category = "Utility",
-	Size = Vector3.new(1, 1, 1),
-	DryMass = 10,
-	Climbable = true,
-	CrashTolerance = 10,
-})
+-- CHANGED (Phase 2a remodel): the Ladder ("ladder") was removed at Steamy's request.
 define({
 	Id = "seat_ext",
 	DisplayName = "External Seat",

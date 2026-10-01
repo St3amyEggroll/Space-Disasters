@@ -87,7 +87,7 @@ local DV = "Δv" -- delta-v label (swap for "dV" if a font lacks the glyph)
 local CONTROLS_TEXT = table.concat({
 	`<font color="{KEY_HEX}"><b>W/S</b></font> pitch   <font color="{KEY_HEX}"><b>A/D</b></font> yaw   <font color="{KEY_HEX}"><b>Q/E</b></font> roll`,
 	`<font color="{KEY_HEX}"><b>Shift/Ctrl</b></font> throttle   <font color="{KEY_HEX}"><b>Z</b></font> full   <font color="{KEY_HEX}"><b>X</b></font> cut`,
-	`<font color="{KEY_HEX}"><b>Space</b></font> stage   <font color="{KEY_HEX}"><b>T</b></font> SAS   <font color="{KEY_HEX}"><b>V</b></font> camera   <font color="{KEY_HEX}"><b>F</b></font> leave seat`,
+	`<font color="{KEY_HEX}"><b>Space</b></font> stage   <font color="{KEY_HEX}"><b>T</b></font> SAS   <font color="{KEY_HEX}"><b>G</b></font> legs   <font color="{KEY_HEX}"><b>V</b></font> camera   <font color="{KEY_HEX}"><b>F</b></font> leave seat`, -- CHANGED (Phase 2a remodel): G legs
 	`<font color="{KEY_HEX}"><b>Right-drag</b></font> orbit camera   <font color="{KEY_HEX}"><b>Wheel</b></font> zoom`,
 }, "\n")
 --============================================================================

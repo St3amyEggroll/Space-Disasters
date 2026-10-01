@@ -389,6 +389,10 @@ function CraftDesign.fromJson(text: string): (Design?, string?)
 		if type(entry) ~= "table" then
 			return nil, "malformed block"
 		end
+		-- CHANGED (Phase 2a remodel): parts that no longer exist (Crew Cabin, Ladder) are dropped from old saves
+		if type(entry.t) == "string" and Parts.find(entry.t) == nil then
+			continue
+		end
 		table.insert(design.blocks, {
 			id = entry.id,
 			type = entry.t,
