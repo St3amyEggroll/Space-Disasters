@@ -54,6 +54,7 @@ local SEED = 1337
 local OPACITY_STEP = 0.01 -- rewrite transparencies only when opacity moved more than this
 local MAX_GUI_DISTANCE = 1e6 -- studs (SurfaceGui.MaxDistance)
 local PANEL_DEPTH = 0.2 -- studs
+local PANEL_OVERLAP = 0.01 -- panels are 1% larger than their grid cell so no hairline seams show
 --============================================================================
 
 local SkyCube = {}
@@ -208,9 +209,12 @@ local function layout(h: number)
 				local b = (j - 0.5) * panelSize - h
 				local position = n * h + u * a + v * b
 				local panel = panels[index]
-				-- lookAt from the panel toward the centre: its -Z (Front) faces inward, +Y along u
-				panel.localCFrame = CFrame.lookAt(position, Vector3.zero, u)
-				panel.part.Size = Vector3.new(panelSize, panelSize, PANEL_DEPTH)
+				-- CHANGED (Phase 2a playtest 5): every panel lies flat in its cube face (front = -n, inward).
+				-- Aiming each panel at the centre tilted the off-centre ones, and the Roblox sky showed through
+				-- wedge-shaped gaps between them.
+				panel.localCFrame = CFrame.lookAt(position, position - n, u)
+				local overlap = panelSize * (1 + PANEL_OVERLAP)
+				panel.part.Size = Vector3.new(overlap, overlap, PANEL_DEPTH)
 			end
 		end
 	end
