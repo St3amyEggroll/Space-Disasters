@@ -51,6 +51,26 @@
 	and TerrainMesh.depthScale, so nothing behind the site is ever drawn in front of it. Its ground plate is thin
 	(the real one's 20-stud sides would show as a dark rim). Surface.isReady (the main menu's Play fade).
 
+	CHANGED (Review 3): review of the terrain polish.
+	  * The copy hid what is really there: drawn nearer than it is, it covers every true-scale thing in front of
+	    its image. In the base pocket that was the player's own character for seconds after every End Flight
+	    (stale meshes put the copy's plate 4-8 studs from the camera) and, 700 m out on foot, other players, the
+	    rockets on the pads and the plots (copy 14 studs away). Now the base pocket never draws it while the
+	    camera is near the site (SITE_NEAR_HALF / SITE_NEAR_HEIGHT): TerrainMesh keeps the real plate in its
+	    true-scale near band out to there (keepNear with SITE_KEEP_HALF / SITE_KEEP_RANGE), and while it does not
+	    (a jump home, until the near band is rebuilt) the scaled bands under the plate are hidden instead
+	    (TerrainMesh.hideScaledAt: the real plate fills the hole). Farther out the copy stays (the engine culls
+	    the real base's small parts there, and scaled ground would cover it).
+	  * Wherever it is drawn scaled, the copy is never nearer than the protected depth the scaled bands keep
+	    (TerrainMath.objectScale with TerrainMesh.protectDepth): a craft hovering over the site, its smoke trail
+	    or a dropped stage are no longer covered by the pads and towers (they were drawn 110-180 studs away in
+	    the climb, against 160 for the ground).
+	  * "Is the ground under the site at true scale" is asked over the real plate's outline (TerrainMesh.scaleOver,
+	    SITE_PLATE_*), not at 4 points 600 m out (often in the ring band past the plate: the copy was drawn over
+	    a correct real base).
+	  * The copy's content follows the Quality tier in every pocket (the base pocket forced High: a full ~1000-part
+	    rebuild at every launch on phones).
+
 	Positions are kept in doubles relative to their body and converted with Frames only after the reference is
 	subtracted (invariant I1).
 
@@ -67,6 +87,7 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local BaseLayout = require(ReplicatedStorage.Shared.Config.BaseLayout) -- CHANGED (Review 3)
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local HomeBase = require(ReplicatedStorage.Shared.Sites.HomeBase)
@@ -90,15 +111,27 @@ local BASE_POCKET_ID = 0
 local SITE_LATITUDE = 0 -- rad, the base pocket's surface point (PocketService)
 local SITE_LONGITUDE = 0
 local SITE_VIEW_DISTANCE = 25000 -- m, true camera distance to the site below which the copy is shown
-local SITE_MARGIN = 600 -- m, terrain this far around the site centre must be drawn for the copy (plate +-420)
 local PREBUILD_FACTOR = 1.4 -- CHANGED (Phase 8): build the terrain below this x the proxy handover altitude
 -- CHANGED (Night review): the copy drawn scaled like the terrain under it
 local SITE_SCALE_RATIO = 0.94 -- rescale steps (TerrainMath.scaleStep)
-local SITE_KEEP_HALF = 600 -- m: TerrainMesh keeps this square around the site inside its near band while it can
+-- CHANGED (Review 3): was 600 (the slack of the near band's leaves left the plate's edge in a ring band): the plate
+-- (SITE_PLATE_HALF) + half the near band's largest leaf (400 m; the near band takes leaves by their centre)
+local SITE_KEEP_HALF = 630 -- m: TerrainMesh keeps this square around the site inside its near band while it can ...
+-- CHANGED (Review 3): ... while the camera's nadir is within this of fitting it (the near square's room is
+-- 760 - SITE_KEEP_HALF = 130 m, so the plate stays in it out to 730 m > SITE_NEAR_HALF; the camera's nadir is then
+-- still >= 160 m inside the near band)
+local SITE_KEEP_RANGE = 600 -- m
 -- CHANGED (Terrain polish): the copy whenever the ground under the site is scaled (the base pocket too)
-local SITE_TRUE_SCALE = 0.9999 -- terrain factor at or above this: the site's ground is drawn at true scale
+-- CHANGED (Review 3): SITE_TRUE_SCALE removed (TerrainMath.siteCopyScale judges true scale)
 local SITE_REACH = 610 -- m from the site centre to its farthest part (plate corner +-420, 80-stud towers)
 local SITE_COPY_PLATE_THICKNESS = 0.6 -- studs: the copy's ground plate (the real one is 20 thick, sunk in the ground)
+-- CHANGED (Review 3): the ground under the site is judged over the real plate's outline (TerrainMesh.scaleOver)
+local SITE_PLATE_HALF = BaseLayout.SITE_HALF_EXTENT + 10 -- m: the real ground plate (+-420) and a margin
+local SITE_PLATE_STEPS = 8 -- outline samples per plate edge (~108 m apart: finer than any leaf next to it)
+-- CHANGED (Review 3): the base pocket never draws the copy while the camera is this near the site (site tangent
+-- x / z, and height above it): the real base is drawn, with everything standing on it
+local SITE_NEAR_HALF = 700 -- m
+local SITE_NEAR_HEIGHT = 300 -- m
 
 -- CHANGED (Phase 8): props per Quality tier: draw radius (m; at most ~0.7 x TerrainMesh's near-disc radius, so props
 -- only stand on true-scale terrain), part cap and density (share of Biome's props per hectare)
@@ -154,6 +187,27 @@ local SITE_UP = Frames.surfaceUp(SITE_LATITUDE, SITE_LONGITUDE)
 local SITE_POS = Vec3d.scale(SITE_UP, Bodies.get(Bodies.HOMEWORLD).Radius)
 local SITE_FRAME = Frames.new(Bodies.HOMEWORLD, SITE_POS, Frames.surfaceRotation(SITE_UP), Vector3.zero)
 
+-- CHANGED (Review 3): body-relative points on the real ground plate's outline (and its centre), for
+-- TerrainMesh.scaleOver / hideScaledAt.
+local function plateOutline(): { Vec3d }
+	local points: { Vec3d } = { SITE_POS }
+	for step = 0, SITE_PLATE_STEPS - 1 do
+		local a = -SITE_PLATE_HALF + 2 * SITE_PLATE_HALF * step / SITE_PLATE_STEPS
+		for _, p in
+			{
+				Vector3.new(a, 0, -SITE_PLATE_HALF),
+				Vector3.new(SITE_PLATE_HALF, 0, a),
+				Vector3.new(-a, 0, SITE_PLATE_HALF),
+				Vector3.new(-SITE_PLATE_HALF, 0, -a),
+			}
+		do
+			table.insert(points, Frames.pointFromWorkspace(SITE_FRAME, p))
+		end
+	end
+	return points
+end
+local SITE_PLATE_OUTLINE = plateOutline()
+
 -- Rigid transform from base-pocket workspace coordinates to the current pocket's workspace coordinates.
 local function siteTransform(frame: Frame, ut: number): CFrame
 	return Frames.relativeTransform(SITE_FRAME, frame, bodyOffsetFor(Bodies.HOMEWORLD, frame, ut))
@@ -185,7 +239,6 @@ type SiteScaleRecords = {
 }
 local siteRecords: SiteScaleRecords? = nil
 local siteScale = 1 -- the scale the copy is built at now
-local siteTier = "" -- CHANGED (Terrain polish): the tier whose content the copy was built with
 local siteLastCamera: Vector3? = nil
 
 --============================================================================
@@ -331,15 +384,35 @@ end
 	    Steamy's "a flat green surface slices through the base"), so the copy is drawn in every pocket, scaled
 	    like that ground or less: TerrainMesh.depthScale keeps it in front of every scaled band behind it (the
 	    hills and mountains drawn nearer than they are), so nothing behind the site covers it
+	CHANGED (Review 3): returns (wanted scale or nil, hide the scaled ground under the plate):
+	  * in the base pocket near the site (nearSite) never a copy: when the plate's ground is scaled anyway (a jump
+	    home, before the near band holds it) the scaled bands under it are hidden instead
+	  * a scaled copy is never nearer than the protected depth (TerrainMath.objectScale)
 ]]
-local function siteWantedScale(terrainScale: number, inBase: boolean, siteDistance: number): number?
-	if terrainScale >= SITE_TRUE_SCALE then
-		return if inBase then nil else 1
-	end
-	return math.min(terrainScale, TerrainMesh.depthScale(siteDistance + SITE_REACH))
+local function nearSite(ctx: RenderContext.RenderContext): boolean
+	local p = Frames.pointToWorkspace(SITE_FRAME, ctx.cameraDominant)
+	return math.max(math.abs(p.X), math.abs(p.Z)) <= SITE_NEAR_HALF and p.Y <= SITE_NEAR_HEIGHT
 end
 
-local function updateSite(ctx: RenderContext.RenderContext, surfaceMode: boolean)
+local function siteWantedScale(
+	ctx: RenderContext.RenderContext,
+	terrainScale: number,
+	siteDistance: number
+): (number?, boolean)
+	local inBase = ctx.pocketId == BASE_POCKET_ID
+	-- CHANGED (Review 3): the rules are TerrainMath.siteCopyScale (pure, tested offline)
+	return TerrainMath.siteCopyScale(
+		terrainScale,
+		inBase,
+		inBase and nearSite(ctx),
+		TerrainMesh.depthScale(siteDistance + SITE_REACH),
+		TerrainMesh.protectDepth(),
+		siteDistance - SITE_REACH
+	)
+end
+
+-- CHANGED (Review 3): returns the points under which TerrainMesh must hide its scaled bands (nil: none).
+local function updateSite(ctx: RenderContext.RenderContext, surfaceMode: boolean): { Vec3d }?
 	local parent = root
 	-- CHANGED (Night review): shown over scaled terrain too (drawn scaled like it, below); the terrain under it only
 	-- has to be drawn at all (scaleAt nil: no band holds it, e.g. beyond the horizon)
@@ -349,26 +422,27 @@ local function updateSite(ctx: RenderContext.RenderContext, surfaceMode: boolean
 		and surfaceMode
 		and ctx.dominantBodyId == Bodies.HOMEWORLD
 		and siteDistanceSq <= SITE_VIEW_DISTANCE * SITE_VIEW_DISTANCE
-	local terrainScale = if wanted then TerrainMesh.scaleAt(SITE_POS, SITE_MARGIN) else nil
-	if not wanted or parent == nil or terrainScale == nil then
+	-- CHANGED (Review 3): over the real plate's outline (was scaleAt(SITE_POS, 600): 4 points past the plate)
+	local terrainScale = if wanted then TerrainMesh.scaleOver(SITE_PLATE_OUTLINE) else nil
+	if not wanted or parent == nil then
 		hideSite()
-		return
+		return nil
 	end
-	local wantedScale = siteWantedScale(terrainScale, ctx.pocketId == BASE_POCKET_ID, math.sqrt(siteDistanceSq))
+	if terrainScale == nil then
+		hideSite()
+		-- CHANGED (Review 3): part of the plate in no band (stale meshes after a jump): in the base pocket near the
+		-- site the scaled bands under the rest of it are hidden all the same
+		return if ctx.pocketId == BASE_POCKET_ID and nearSite(ctx) then SITE_PLATE_OUTLINE else nil
+	end
+	local wantedScale, hole = siteWantedScale(ctx, terrainScale, math.sqrt(siteDistanceSq))
 	if wantedScale == nil then
 		hideSite()
-		return
-	end
-	-- CHANGED (Terrain polish): in the base pocket the copy covers the real base, so it carries all of it (plots
-	-- and decor too, whatever the tier); elsewhere the tier decides as before
-	local contentTier = if ctx.pocketId == BASE_POCKET_ID then SITE_FULL_TIER else Quality.tier()
-	if siteModel ~= nil and siteTier ~= contentTier then
-		destroySite()
+		return if hole then SITE_PLATE_OUTLINE else nil
 	end
 	local model, rootPart = siteModel, siteRoot
 	if model == nil or rootPart == nil then
-		local built, builtRoot = buildSiteCopy(contentTier) -- CHANGED (Night review)
-		siteTier = contentTier -- CHANGED (Terrain polish)
+		-- CHANGED (Review 3): the Quality tier's content in every pocket (Quality.onChanged drops the copy)
+		local built, builtRoot = buildSiteCopy(Quality.tier()) -- CHANGED (Night review)
 		model, rootPart = built, builtRoot
 		siteModel, siteRoot = built, builtRoot
 		siteRootBase = builtRoot.CFrame
@@ -403,6 +477,7 @@ local function updateSite(ctx: RenderContext.RenderContext, surfaceMode: boolean
 		siteLastTransform = m
 		siteLastCamera = camera
 	end
+	return nil
 end
 
 --============================================================================
@@ -427,7 +502,8 @@ function Surface.init(parent: Folder)
 	root = parent
 	-- CHANGED (Phase 8): terrain meshes / plates, collision near the character, props
 	TerrainMesh.init(parent)
-	TerrainMesh.keepNear(Bodies.HOMEWORLD, SITE_POS, SITE_KEEP_HALF) -- CHANGED (Night review): the site at true scale
+	-- CHANGED (Night review): the site at true scale; CHANGED (Review 3): + SITE_KEEP_RANGE
+	TerrainMesh.keepNear(Bodies.HOMEWORLD, SITE_POS, SITE_KEEP_HALF, SITE_KEEP_RANGE)
 	TerrainCollision.init(parent)
 	SurfaceProps.init(parent)
 	SurfaceProps.setGroundFilter(TerrainMesh.isTrueScaleAt) -- CHANGED (Night review): props on true-scale ground only
@@ -453,7 +529,8 @@ function Surface.update(
 		and ctx.altitude < PREBUILD_FACTOR * (proxyMinAltitude :: number)
 	TerrainMesh.update(ctx, surfaceMode, prebuild)
 	TerrainCollision.update(ctx)
-	updateSite(ctx, surfaceMode)
+	-- CHANGED (Review 3): + the scaled ground hidden under the real base's plate (near the site, base pocket)
+	TerrainMesh.hideScaledAt(updateSite(ctx, surfaceMode))
 	-- props only while the terrain around the camera is drawn at true scale
 	-- CHANGED (Night review): and only on chunks over true-scale ground (the ground filter), re-checked on changes
 	SurfaceProps.update(ctx, surfaceMode and TerrainMesh.isTrueScaleAt(ctx.cameraDominant, 0), TerrainMesh.version())
@@ -481,6 +558,7 @@ Surface._test = table.freeze({
 	siteFrame = SITE_FRAME,
 	sitePos = SITE_POS,
 	buildSiteCopy = buildSiteCopy, -- CHANGED (Night review)
+	plateOutline = SITE_PLATE_OUTLINE, -- CHANGED (Review 3)
 	PROPS_BY_TIER = PROPS_BY_TIER, -- CHANGED (Night review)
 })
 

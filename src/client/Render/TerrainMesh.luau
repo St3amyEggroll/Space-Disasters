@@ -76,6 +76,9 @@
 	  * depthScale(): the factor that keeps an object in front of every scaled band behind it (the launch-site copy)
 	  * no plates while meshes are on their way (PLATE_GRACE_S): the meshes on screen stay, or nothing; isReady()
 	    tells the main menu when the ground is drawn (it holds the Play fade on it)
+	  * CHANGED (Review 3): the haze colour follows the daylight at the camera (TerrainMath.daylight / hazeColour:
+	    HAZE_COLOR by day, a dark version of the atmosphere colour at night); a band is rebuilt when the daylight
+	    step it was baked for changes (it was a fixed bright day colour: a pale band on the horizon at night)
 	  * MESH_MATERIAL stays SmoothPlastic: a material's texture on a MeshPart is mapped by the mesh's UVs, which
 	    these meshes do not have (UVs across a 30 km band would also lose precision far from the origin), so
 	    Grass / Ground / Rock would only show one texel of their texture; the detail is in the vertex colours
@@ -87,8 +90,13 @@
 		TerrainMesh.scaleAt(pos, margin): number?  CHANGED (Night review): smallest scale factor of the ground drawn
 		                                           there (1: true scale or plates; nil: no band holds it)
 		TerrainMesh.version(): number              CHANGED (Night review): changes whenever the displayed bands change
-		TerrainMesh.keepNear(bodyId, pos, half)    CHANGED (Night review): keep that square in the near band when near
+		TerrainMesh.keepNear(bodyId, pos, half, range?)
+		                                           CHANGED (Night review): keep that square in the near band when near
+		                                           CHANGED (Review 3): + range (default KEEP_RANGE)
 		TerrainMesh.depthScale(far): number        CHANGED (Terrain polish): factor in front of every scaled band behind
+		TerrainMesh.protectDepth(): number         CHANGED (Review 3): studs scaled ground keeps from the camera
+		TerrainMesh.scaleOver(points): number?     CHANGED (Review 3): scaleAt over a list of points (cached)
+		TerrainMesh.hideScaledAt(points?)          CHANGED (Review 3): hide the scaled bands holding those points
 		TerrainMesh.isReady(): boolean             CHANGED (Terrain polish): the wanted ground is drawn as meshes
 		TerrainMesh.summary(): string              F3 debug line
 ]]
@@ -157,7 +165,7 @@ local PLATE_GRACE_S = 8 -- CHANGED (Terrain polish): s without mesh coverage bef
 -- CHANGED (Terrain polish): distance haze baked into the vertex colours (bodies with an atmosphere). Roblox's fog
 -- works on drawn distance, and scaled bands are drawn much nearer than they are, so each vertex is hazed by its
 -- true distance from the plan's camera instead: the far, coarse ground fades toward the sky.
-local HAZE_COLOR = { 0.63, 0.73, 0.87 }
+local HAZE_COLOR = { 0.63, 0.73, 0.87 } -- CHANGED (Review 3): by day (TerrainMath.hazeColour: darker toward night)
 local HAZE_DISTANCE = 26000 -- m: e-folding distance of the haze through sea-level air
 local HAZE_SCALE_HEIGHT = 2500 -- m: the haze thins with height like this
 local HAZE_MAX = 0.6 -- at most this share of a vertex colour is haze
@@ -231,6 +239,7 @@ type BandMesh = {
 	nearest: number, -- m from planCam to its nearest leaf (lower bound)
 	nearestNow: number, -- m from this frame's camera (lower bound: nearest minus how far the camera moved)
 	stitch: { [number]: number }, -- leaf key -> the seam code it was built with (TerrainMath.stitchCode)
+	light: number, -- CHANGED (Review 3): the daylight step its haze was baked for (TerrainMath.daylight)
 }
 
 type Plan = {
@@ -259,6 +268,7 @@ type Plan = {
 	rings: TerrainMath.RingContext?, -- ring bands around the near square (nil: one band per level)
 	ringBounds: { number }?, -- the ring bounds this plan's selection uses
 	stitch: { [number]: number }, -- leaf key -> seam code (TerrainMath.stitchCode) in this plan's selection
+	light: number, -- CHANGED (Review 3): the daylight step its bands' haze is baked for
 }
 
 type Plate = {
@@ -299,11 +309,17 @@ local nearBodyId: number? = nil
 local keepBody: number? = nil -- keepNear: a square kept inside the near band while the camera is near it
 local keepPos: Vec3d? = nil
 local keepHalf = 0
+local keepRange = KEEP_RANGE -- CHANGED (Review 3): per keepNear call (Surface: the base's plate out to its near zone)
 local recoverAt = math.huge -- when to probe for room to add a band back (after a budget refusal)
 local bandsVersion = 0 -- bumped whenever the displayed bands change
 -- CHANGED (Terrain polish): ring bands
 local ringBounds: { number }? = nil -- the displayed plan's ring bounds (the next plan keeps them while good)
 local drawBudget = BUDGET_FRACTION * DRAW_DISTANCE_CAP -- studs, from the latest frame's draw distance
+-- CHANGED (Review 3): the protected depth placeBands used (protectDepth) and the scaled bands hidden under the
+-- launch site's real plate (hideScaledAt: band id -> the band it hid)
+local protectNow = PROTECT_LOW_DEPTH
+local lightNow = 1 -- CHANGED (Review 3): the daylight step at the camera (TerrainMath.daylight), from update
+local holeHidden: { [number]: BandMesh } = {}
 
 local chunkCache: { [number]: Chunk } = {}
 local chunkStamp: { [number]: number } = {}
@@ -438,7 +454,7 @@ end
 	CHANGED (Night review): in the band's tangent frame (was universe axes), normals rotated along.
 ]]
 -- CHANGED (Terrain polish): the haze of a plan (camera body-relative, its height, the body radius)
-type Haze = { x: number, y: number, z: number, height: number, radius: number }
+type Haze = { x: number, y: number, z: number, height: number, radius: number, r: number, g: number, b: number }
 
 --[[
 	CHANGED (Terrain polish): share of haze in a vertex colour `d` m from the camera, the camera `hc` m and the
@@ -492,9 +508,10 @@ local function addChunk(
 				haze.height,
 				math.sqrt(wx * wx + wy * wy + wz * wz) - haze.radius
 			)
-			r += (HAZE_COLOR[1] - r) * amount
-			g += (HAZE_COLOR[2] - g) * amount
-			b += (HAZE_COLOR[3] - b) * amount
+			-- CHANGED (Review 3): toward the plan's haze colour (daylight)
+			r += (haze.r - r) * amount
+			g += (haze.g - g) * amount
+			b += (haze.b - b) * amount
 		end
 		vids[v] = mesh:AddVertex(
 			Vector3.new(
@@ -604,14 +621,19 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 	-- CHANGED (Terrain polish): distance haze from the plan's camera (bodies with an atmosphere)
 	local haze: Haze? = nil
 	local body = Bodies.get(p.bodyId)
-	if body.AtmosphereColor ~= nil then
+	local atmosphere = body.AtmosphereColor
+	if atmosphere ~= nil then
 		local cam = p.cam
+		local hr, hg, hb = TerrainMath.hazeColour(HAZE_COLOR, atmosphere, p.light) -- CHANGED (Review 3)
 		haze = {
 			x = cam.x,
 			y = cam.y,
 			z = cam.z,
 			height = Vec3d.length(cam) - body.Radius,
 			radius = body.Radius,
+			r = hr,
+			g = hg,
+			b = hb,
 		}
 	end
 	for index, c in chunks do
@@ -691,6 +713,7 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 		stitch = stitched,
 		nearest = math.max(nearest, 0),
 		nearestNow = math.max(nearest, 0),
+		light = p.light, -- CHANGED (Review 3)
 	}
 end
 
@@ -1003,9 +1026,13 @@ local function preparePlan(p: Plan, selection: Selection)
 		-- the other bands changed (a neighbour band's leaf split or merged), is rebuilt too
 		local rebuild = false
 		if old and not added and not removed then
+			-- CHANGED (Review 3): or for another daylight step
 			rebuild = Bodies.get(p.bodyId).AtmosphereColor ~= nil
-				and Vec3d.distance(p.cam, old.planCam)
-					> HAZE_REBUILD_FRACTION * math.max(old.nearest, HAZE_REBUILD_MIN)
+				and (
+					old.light ~= p.light
+					or Vec3d.distance(p.cam, old.planCam)
+						> HAZE_REBUILD_FRACTION * math.max(old.nearest, HAZE_REBUILD_MIN)
+				)
 			if not rebuild then
 				for key in new do
 					if (old.stitch[key] or 0) ~= (p.stitch[key] or 0) then
@@ -1134,11 +1161,19 @@ local function nearFor(config: Config, cam: Vec3d): Near?
 		return nil
 	end
 	local keep = if keepBody == config.bodyId then keepPos else nil
-	local target = TerrainMath.nearTarget(config, cam, keep, keepHalf, NEAR_HALF, KEEP_RANGE)
+	-- CHANGED (Review 3): the keepNear call's range (was always KEEP_RANGE)
+	local target, keeping = TerrainMath.nearTarget(config, cam, keep, keepHalf, NEAR_HALF, keepRange)
 	local current = nearSquare
 	if current and nearBodyId == config.bodyId then
 		local u, v = TerrainMath.nearOffset(current, target)
-		if math.max(math.abs(u), math.abs(v)) <= NEAR_RECENTRE then
+		local holds = true
+		if keeping and keep then
+			-- CHANGED (Review 3): while the keep square places the target, the square on screen must hold it
+			-- (its NEAR_RECENTRE slack left up to 100 m of the launch site's plate in a scaled ring band)
+			local ku, kv = TerrainMath.nearOffset(current, keep)
+			holds = math.max(math.abs(ku), math.abs(kv)) + keepHalf <= NEAR_HALF
+		end
+		if holds and math.max(math.abs(u), math.abs(v)) <= NEAR_RECENTRE then
 			return current
 		end
 	end
@@ -1243,6 +1278,7 @@ local function maybeSelect(config: Config, cam: Vec3d)
 			else nil,
 		ringBounds = nil,
 		stitch = {},
+		light = lightNow, -- CHANGED (Review 3)
 	}
 	plan = p
 	task.spawn(selectAndRun, p)
@@ -1288,8 +1324,8 @@ local function placeBands(ctx: RenderContext.RenderContext)
 	end
 	local height = SurfaceHeight.height(ctx.dominantBodyId, cam) -- above the ground under the camera
 	local t = math.clamp((height - PROTECT_LOW_HEIGHT) / (PROTECT_HIGH_HEIGHT - PROTECT_LOW_HEIGHT), 0, 1)
-	local scales =
-		TerrainMath.bandScales(placeMax, placeNearest, PROTECT_LOW_DEPTH + (PROTECT_HIGH_DEPTH - PROTECT_LOW_DEPTH) * t)
+	protectNow = PROTECT_LOW_DEPTH + (PROTECT_HIGH_DEPTH - PROTECT_LOW_DEPTH) * t -- CHANGED (Review 3): protectDepth
+	local scales = TerrainMath.bandScales(placeMax, placeNearest, protectNow)
 	for index, bm in placeOrder do
 		Vec3d.subInto(scratch, bm.origin, cam)
 		local k = scales[index]
@@ -1315,8 +1351,10 @@ local function placeBands(ctx: RenderContext.RenderContext)
 		Workspace:BulkMoveTo(moveParts, moveCFrames, BULK_MOVE_MODE)
 	end
 	local folder = meshFolder
-	for _, bm in bands do
-		if bm.part.Parent ~= folder then
+	for id, bm in bands do
+		-- CHANGED (Review 3): a band hidden under the launch site's plate stays hidden (hideScaledAt decides again
+		-- this frame, right after)
+		if bm.part.Parent ~= folder and holeHidden[id] ~= bm then
 			bm.part.Parent = folder
 		end
 	end
@@ -1597,6 +1635,19 @@ function TerrainMesh.update(ctx: RenderContext.RenderContext, show: boolean, pre
 		ringBounds = nil -- CHANGED (Terrain polish)
 	end
 	local cam = ctx.cameraDominant
+	-- CHANGED (Review 3): the daylight at the camera; bands baked for another step are rebuilt by the next plan
+	if Bodies.get(config.bodyId).AtmosphereColor ~= nil then
+		local up = Frames.vectorToWorkspace(ctx.frame, Vec3d.normalize(cam))
+		lightNow = TerrainMath.daylight(ctx.sunDirection:Dot(up))
+		if plan == nil and not forceSelect then
+			for _, bm in bands do
+				if bm.light ~= lightNow then
+					forceSelect = true
+					break
+				end
+			end
+		end
+	end
 	if meshEnabled then
 		finishPlan()
 		if meshEnabled then
@@ -1743,9 +1794,133 @@ end
 	CHANGED (Night review): keeps a square of +-half m (tangent) around body-relative `pos` on `keepBodyId` inside the
 	near band while the camera's nadir is within KEEP_RANGE of fitting it (Surface: the launch site, so the copy and
 	a craft on its pad are at true scale together on the pad and in the climb).
+	CHANGED (Review 3): `range` (m, default KEEP_RANGE) replaces KEEP_RANGE for this square: Surface keeps the base's
+	plate in the near band out to its near zone (no copy there: the real base, with everything on it, is drawn).
 ]]
-function TerrainMesh.keepNear(keepBodyId: number, pos: Vec3d, half: number)
+function TerrainMesh.keepNear(keepBodyId: number, pos: Vec3d, half: number, range: number?)
 	keepBody, keepPos, keepHalf = keepBodyId, Vec3d.clone(pos), half
+	keepRange = range or KEEP_RANGE
+end
+
+--[[
+	CHANGED (Review 3): the depth (studs) scaled bands keep their ground at this frame (bandScales' protected depth:
+	true-scale things nearer than this are never covered by a scaled band). Surface never draws the launch-site
+	copy nearer than this either (TerrainMath.objectScale).
+]]
+function TerrainMesh.protectDepth(): number
+	return protectNow
+end
+
+-- CHANGED (Review 3): does band `bm` hold the leaf under body-relative `pos`?
+local function bandHolds(config: Config, bm: BandMesh, pos: Vec3d): boolean
+	local face, fi, fj = SurfaceHeight.latticeCoords(config.bodyId, pos)
+	local x, y = math.floor(fi / TerrainMath.CHUNK), math.floor(fj / TerrainMath.CHUNK)
+	for depth = config.maxDepth, 0, -1 do
+		if bm.leaves[TerrainMath.nodeKey(config.bodyId, face, depth, x, y)] then
+			return true
+		end
+		x //= 2
+		y //= 2
+	end
+	return false
+end
+
+--[[
+	CHANGED (Review 3): the bands holding the ground under any of `points` (body-relative, the dominant body), and
+	whether every point is held by one. Which band holds a point only changes with the displayed bands, so the
+	answer is cached per points list until version() changes (Surface asks every frame for the base's plate).
+]]
+local overPoints: { Vec3d }? = nil
+local overVersion = -1
+local overBody: number? = nil
+local overBands: { BandMesh } = {}
+local overComplete = false
+local function bandsOver(points: { Vec3d }): ({ BandMesh }, boolean)
+	if points == overPoints and overVersion == bandsVersion and overBody == bodyId then
+		return overBands, overComplete
+	end
+	overPoints, overVersion, overBody = points, bandsVersion, bodyId
+	table.clear(overBands)
+	overComplete = false
+	local id = bodyId
+	local config = if id then TerrainMath.config(id) else nil
+	if config == nil then
+		return overBands, overComplete
+	end
+	local held: { [BandMesh]: boolean } = {}
+	overComplete = true
+	for _, pos in points do
+		local any = false
+		for _, bm in bands do
+			if bandHolds(config, bm, pos) then
+				any = true
+				if not held[bm] then
+					held[bm] = true
+					table.insert(overBands, bm)
+				end
+			end
+		end
+		overComplete = overComplete and any
+	end
+	return overBands, overComplete
+end
+
+--[[
+	CHANGED (Review 3): scaleAt over a list of points (the launch site's plate outline): the smallest factor of the
+	ground drawn under them, 1 when plates or nothing is drawn, nil when meshes are drawn but no band holds one.
+]]
+function TerrainMesh.scaleOver(points: { Vec3d }): number?
+	if not meshesShown then
+		return 1
+	end
+	local held, complete = bandsOver(points)
+	if not complete then
+		return nil
+	end
+	local scale = 1
+	for _, bm in held do
+		scale = math.min(scale, bm.scale)
+	end
+	return scale
+end
+
+--[[
+	CHANGED (Review 3): hides (this frame, until the next call) every scaled band that holds the ground under any of
+	`points` (body-relative, the dominant body); nil shows them all again. Surface calls it every frame after
+	update: in the base pocket, near the site, while the ground under the real base's plate is not drawn at true
+	scale (a jump home: the meshes on screen were built around the old camera), so no scaled ground is drawn in
+	front of the real base and the player on it (the plate fills the hole) until the near band holds it.
+]]
+function TerrainMesh.hideScaledAt(points: { Vec3d }?)
+	if points == nil and next(holeHidden) == nil then
+		return
+	end
+	local hide: { [BandMesh]: boolean } = {}
+	if points and meshesShown then
+		local held = bandsOver(points)
+		for _, bm in held do
+			if bm.scale < TRUE_SCALE then
+				hide[bm] = true
+			end
+		end
+	end
+	local folder = meshFolder
+	for bandId, bm in bands do
+		if hide[bm] then
+			holeHidden[bandId] = bm
+			bm.part.Parent = nil
+		elseif holeHidden[bandId] ~= nil then
+			holeHidden[bandId] = nil
+			if meshesShown and bm.part.Parent ~= folder then
+				bm.part.Parent = folder
+			end
+		end
+	end
+	for bandId in holeHidden do
+		if bands[bandId] == nil then
+			holeHidden[bandId] = nil
+		end
+	end
 end
 
 -- F3 debug line.

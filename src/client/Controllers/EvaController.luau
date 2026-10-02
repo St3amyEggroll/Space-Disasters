@@ -51,12 +51,20 @@
 	contact. Now:
 	  * the step runs at Camera - 1, BEFORE the camera; it refreshes the pocket frame itself first
 	    (PocketController.update, once per render frame, so UniverseRenderer draws with the very same frame);
-	  * while floating, physics never moves the root: PreSimulation zeroes its velocity, PostSimulation puts it back
-	    where it was drawn with the velocity relative to the pocket (what replicates, and what the server reads for
-	    the bubbles and Eva.plausibleMove), unless the pocket or its frame epoch changed in between (a transfer);
+	  * while floating, physics never moves the root: PostSimulation puts it back where it was drawn with the velocity
+	    relative to the pocket (what replicates, and what the server reads for the bubbles and Eva.plausibleMove),
+	    unless the pocket or its frame epoch changed in between (a transfer); CHANGED (Review 3): was also zeroed
+	    in PreSimulation;
 	  * the facing is wrapped (Eva.turnToward) and workspace.Gravity is only written when it really changes (it is a
 	    float: comparing it with a double rewrote it every frame).
 	Walking is unchanged (Roblox physics moves him and the camera follows the root as usual).
+	CHANGED (Review 3): no more PreSimulation zeroing. If the engine samples the character for replication before
+	PostSimulation, the server and the other players saw a velocity of 0 (Eva.plausibleMove and the bubbles judged
+	an astronaut standing still, remote players extrapolated him in jerks). The velocity now never reads 0: the
+	step moves the root by velocity x dt (and any contact push), and PostSimulation alone puts it back where it was
+	drawn. The camera still frames the placed root (the render step places it before the camera). The hold also
+	requires the character to be unseated and the root its own assembly's root (a seat weld: moving the root would
+	drag the seat and its craft).
 
 	Input is ignored while UIState blocks it (menus, dialogs) and while the map view is open. For touch buttons later:
 	  EvaController.performAction(id) -> boolean   "EvaLight", "ToggleHUD", "ReturnToPlot"
@@ -143,6 +151,7 @@ type Nearest = {
 -- CHANGED (EVA shake): where this frame's step drew the floating astronaut; physics must not move him from there
 type FloatPose = {
 	root: BasePart,
+	humanoid: Humanoid, -- CHANGED (Review 3): the hold ends when he sits
 	cframe: CFrame,
 	velocity: Vector3, -- relative to the pocket, pocket axes (what the server reads back)
 	pocketId: number,
@@ -569,10 +578,12 @@ local function stepFloat(dt: number, root: BasePart, humanoid: Humanoid, folder:
 	root.CFrame = cframe
 	root.AssemblyLinearVelocity = velocity
 	root.AssemblyAngularVelocity = Vector3.zero
-	-- CHANGED (EVA shake): held there through the physics step (holdForSimulation / restoreAfterSimulation)
+	-- CHANGED (EVA shake): held there through the physics step (restoreAfterSimulation)
+	-- CHANGED (Review 3): the velocity stays set during the step (no PreSimulation zeroing: it replicates)
 	local pose = poseScratch
 	if pose then
 		pose.root = root
+		pose.humanoid = humanoid -- CHANGED (Review 3)
 		pose.cframe = cframe
 		pose.velocity = velocity
 		pose.pocketId = PocketController.pocketId()
@@ -580,6 +591,7 @@ local function stepFloat(dt: number, root: BasePart, humanoid: Humanoid, folder:
 	else
 		pose = {
 			root = root,
+			humanoid = humanoid, -- CHANGED (Review 3)
 			cframe = cframe,
 			velocity = velocity,
 			pocketId = PocketController.pocketId(),
@@ -778,6 +790,10 @@ end
 	step, plus pushes from limbs touching hulls or terrain wedges). The pose still applies while he floats, the
 	character is the same and the pocket and its frame epoch did not change (a PocketTransfer in between moved the
 	root into the new frame itself; the next render step places him there).
+	CHANGED (Review 3): only physics' own step is undone (PostSimulation); the velocity is never zeroed, so whatever
+	samples the root for replication reads his real velocity. And the pose only applies while he is unseated and
+	the root is its own assembly's root: once a seat (or anything) is welded to him, writing the root's CFrame would
+	move that assembly, a craft included.
 ]]
 local function heldPose(): FloatPose?
 	local pose = floatPose
@@ -787,6 +803,8 @@ local function heldPose(): FloatPose?
 	if
 		mode ~= "Float"
 		or pose.root.Parent == nil
+		or pose.humanoid.SeatPart ~= nil -- CHANGED (Review 3)
+		or pose.root.AssemblyRootPart ~= pose.root -- CHANGED (Review 3)
 		or PocketController.pocketId() ~= pose.pocketId
 		or PocketController.frame().frameEpoch ~= pose.epoch
 	then
@@ -796,17 +814,9 @@ local function heldPose(): FloatPose?
 	return pose
 end
 
--- PreSimulation: no velocity during the physics step, so the step leaves the root where it was drawn.
-local function holdForSimulation()
-	local pose = heldPose()
-	if pose then
-		pose.root.AssemblyLinearVelocity = Vector3.zero
-		pose.root.AssemblyAngularVelocity = Vector3.zero
-	end
-end
-
--- PostSimulation: undo whatever the step did (contacts) and give the root back the velocity relative to the pocket,
--- which replicates with it: BubbleService / Eva.plausibleMove read position and velocity from the server's copy.
+-- PostSimulation: undo whatever the step did (velocity x dt, contacts) and give the root back the velocity relative
+-- to the pocket, which replicates with it: BubbleService / Eva.plausibleMove read position and velocity from the
+-- server's copy. CHANGED (Review 3): the only hold (PreSimulation no longer zeroes the velocity).
 local function restoreAfterSimulation()
 	local pose = heldPose()
 	if pose then
@@ -963,7 +973,7 @@ function EvaController.Start()
 	end)
 	RunService:BindToRenderStep(RENDER_STEP_NAME, RENDER_PRIORITY, step)
 	-- CHANGED (EVA shake): physics never moves a floating astronaut (Physics hold)
-	RunService.PreSimulation:Connect(holdForSimulation)
+	-- CHANGED (Review 3): PostSimulation only (PreSimulation zeroed the replicated velocity)
 	RunService.PostSimulation:Connect(restoreAfterSimulation)
 end
 

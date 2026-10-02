@@ -127,6 +127,12 @@ local NODE_CACHE_MAX = 6000 -- cached quadtree nodes before the cache is cleared
 local MIN_SCALE = 1e-4 -- smallest band scale factor
 local TRUE_SCALE_FACTOR = 0.9999 -- CHANGED (Terrain polish): a band factor at or above this is true scale
 local VERTEX_BYTES = 36 -- chunk vertex record: position, normal, colour (9 f32)
+-- CHANGED (Review 3): the baked distance haze follows the daylight (daylight / hazeColour)
+local HAZE_NIGHT_SUN = -0.1 -- sine of the sun's elevation at and below which the haze is the night colour ...
+local HAZE_DAY_SUN = 0.2 -- ... and at and above which it is the day colour
+local HAZE_LIGHT_STEP = 0.25 -- daylight is rounded to these steps (a band is rebuilt when its step changes)
+local HAZE_NIGHT_BRIGHTNESS = 0.1 -- night haze: the atmosphere colour this bright ...
+local HAZE_NIGHT_GREY = 0.5 -- ... and this much greyer (toward its own luminance)
 -- CHANGED (Night review): the near band (assignBands / select with a Near)
 local NEAR_BAND = 0 -- band id of the near square's leaves (the other bands are 1 + level)
 local NEAR_GRADE = 4 -- around the near square, node sizes grow at most this much per step (skirts close 4x seams)
@@ -667,6 +673,8 @@ end
 	CHANGED (Night review): where to centre a near square of +-nearHalf for a camera at `cam`: the ground under it,
 	except that a square of +-keepHalf around `keep` (the launch site) is kept inside it while the camera's nadir
 	is within `range` (tangent, per axis) of the positions that do that. Body-relative, on the body's sphere.
+	CHANGED (Review 3): also returns whether the keep square is what placed it (TerrainMesh then recentres a square
+	that no longer holds the keep square, whatever its slack).
 ]]
 function TerrainMath.nearTarget(
 	config: Config,
@@ -675,20 +683,20 @@ function TerrainMath.nearTarget(
 	keepHalf: number,
 	nearHalf: number,
 	range: number
-): Vec3d
+): (Vec3d, boolean)
 	local nadir = Vec3d.scale(Vec3d.normalize(cam), config.radius)
 	local room = nearHalf - keepHalf
 	if keep == nil or room < 0 then
-		return nadir
+		return nadir, false
 	end
 	local frame = TerrainMath.newNear(config, keep, keepHalf, 0)
 	local u, v, facing = nearCoords(frame, nadir.x, nadir.y, nadir.z)
 	if not facing or math.max(math.abs(u), math.abs(v)) > room + range then
-		return nadir
+		return nadir, false
 	end
 	local cu, cv = math.clamp(u, -room, room), math.clamp(v, -room, room)
 	local p = Vec3d.add(frame.origin, Vec3d.add(Vec3d.scale(frame.axes.x, cu), Vec3d.scale(frame.axes.z, cv)))
-	return Vec3d.scale(Vec3d.normalize(p), config.radius)
+	return Vec3d.scale(Vec3d.normalize(p), config.radius), true
 end
 
 -- CHANGED (Night review): tangent coordinates (x, z) of body-relative `pos` about the near origin.
@@ -1149,6 +1157,71 @@ function TerrainMath.bandScales(maxScales: { number }, nearest: { number }, prot
 		end
 	end
 	return scales
+end
+
+--[[
+	CHANGED (Review 3): the factor to draw a true-scale object (the launch-site copy) scaled about the camera by when
+	the ground under it is drawn at `terrainScale` (< 1): at most that (never behind its own ground), and in front
+	of every scaled band behind it (`depthScale`, TerrainMesh.depthScale) - but never nearer than `protect` studs
+	(TerrainMesh.protectDepth: bandScales keeps scaled ground that far away, so true-scale things nearer than that,
+	a craft hovering over the site, its smoke trail, a dropped stage, are never covered by it). `nearest` is the
+	object's true distance from the camera (m, a lower bound). Where the two disagree the protected depth wins:
+	ground behind the object may then cover a strip of it, as it would cover any true-scale object there.
+]]
+function TerrainMath.objectScale(terrainScale: number, depthScale: number, protect: number, nearest: number): number
+	return math.min(terrainScale, math.max(depthScale, protect / math.max(nearest, 1)))
+end
+
+--[[
+	CHANGED (Review 3): what Surface draws for the launch site, from the factor of the ground under the real plate
+	(`terrainScale`), whether the camera is in the base pocket (`inBase`, where the real base is) and near the site
+	(`nearSite`), and the objectScale inputs. Returns the copy's wanted factor (nil: no copy) and whether the scaled
+	ground under the plate must be hidden (TerrainMesh.hideScaledAt):
+	  * ground under the plate at true scale: nothing in the base pocket (the real base is right), a true-scale
+	    copy elsewhere (a craft on its pad stands on it)
+	  * scaled ground, base pocket, near the site: never the copy (it would be drawn in front of the player, the
+	    rockets on the pads and everyone on the base); that ground is hidden instead and the real plate shows
+	  * otherwise the copy at objectScale
+]]
+function TerrainMath.siteCopyScale(
+	terrainScale: number,
+	inBase: boolean,
+	nearSite: boolean,
+	depthScale: number,
+	protect: number,
+	nearest: number
+): (number?, boolean)
+	if terrainScale >= TRUE_SCALE_FACTOR then
+		return if inBase then nil else 1, false
+	end
+	if inBase and nearSite then
+		return nil, true
+	end
+	return TerrainMath.objectScale(terrainScale, depthScale, protect, nearest), false
+end
+
+--[[
+	CHANGED (Review 3): how much daylight the baked haze shows (0 night .. 1 day, in HAZE_LIGHT_STEP steps) for the
+	sine of the sun's elevation at the camera. The haze is baked into the vertex colours, and the scene's lighting
+	multiplies it like the ground's own colour, so a bright day haze made the far ground 2-3x brighter than the
+	near grass at night (a pale band under a dark sky).
+]]
+function TerrainMath.daylight(sunUp: number): number
+	local x = math.clamp((sunUp - HAZE_NIGHT_SUN) / (HAZE_DAY_SUN - HAZE_NIGHT_SUN), 0, 1)
+	local smooth = x * x * (3 - 2 * x)
+	return math.floor(smooth / HAZE_LIGHT_STEP + 0.5) * HAZE_LIGHT_STEP
+end
+
+-- CHANGED (Review 3): the haze colour for a daylight level: `day` (r, g, b) by day, a dark, greyer version of the
+-- body's atmosphere colour at night, blended in between.
+function TerrainMath.hazeColour(day: { number }, atmosphere: Color3, light: number): (number, number, number)
+	local grey = 0.3 * atmosphere.R + 0.59 * atmosphere.G + 0.11 * atmosphere.B
+	local function night(c: number): number
+		return HAZE_NIGHT_BRIGHTNESS * (c + (grey - c) * HAZE_NIGHT_GREY)
+	end
+	local nr, ng, nb = night(atmosphere.R), night(atmosphere.G), night(atmosphere.B)
+	local l = math.clamp(light, 0, 1)
+	return nr + (day[1] - nr) * l, ng + (day[2] - ng) * l, nb + (day[3] - nb) * l
 end
 
 --[[

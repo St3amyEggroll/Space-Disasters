@@ -20,6 +20,9 @@
 	          already at their plot (the server spawns them there). CHANGED (Terrain polish): the black first waits
 	          (TERRAIN_WAIT_S at most) until the ground around the base is drawn as meshes (Surface.isReady), so the
 	          game never opens on the blocky placeholder plates.
+	          CHANGED (Review 3): the menu stays open in UIState (controls off, the other UIs hidden) until the black
+	          starts to fade (the player walked blind while it waited), and the cover says "Preparing launch
+	          site..." once the wait takes longer than PREPARING_DELAY_S.
 	  Reopen  UIState.onMenuRequested (the builder's Menu button): ignored (with a toast) while the local character
 	          sits in a seat, a flight is active (piloting, a flight pocket) or the map view is open.
 	Keys: Enter = Play while the menu shows and no dialog is open. Settings opens UI/SettingsPanel; Credits /
@@ -58,6 +61,9 @@ local REOPEN_FADE_OUT_S = 0.3 -- to black before the scene appears on a reopen
 local REOPEN_FADE_IN_S = 0.6
 local CLOSE_FADE_S = 0.3 -- Play: to black ...
 local REVEAL_FADE_S = 0.35 -- ... then from black at the plot (about 0.6 s in all)
+-- CHANGED (Review 3): the status line while Play waits for the base's ground (TERRAIN_WAIT_S at most)
+local PREPARING_TEXT = "Preparing launch site..."
+local PREPARING_DELAY_S = 0.3 -- shown only when the wait is longer than this
 -- CHANGED (Terrain polish): the black stays until the ground around the base is drawn as meshes (no blocky plates
 -- first), at most this long
 local TERRAIN_WAIT_S = 6
@@ -220,16 +226,26 @@ function MainMenuController.play()
 			warn(`[MainMenuController] the menu scene failed to stop: {err}`)
 		end
 		restoreCoreGuis()
-		UIState.setMenuOpen(false) -- CHANGED (Phase 11 review): also switches the character controls back on
 		-- CHANGED (Terrain polish): stay black until the base's ground meshes are on screen (TERRAIN_WAIT_S at most)
 		task.spawn(function()
 			local started = os.clock()
+			local hinted = false
 			repeat
 				task.wait()
-			until not is("Closing") or os.clock() - started >= TERRAIN_WAIT_S or Surface.isReady()
+				-- CHANGED (Review 3): say why it stays black
+				if not hinted and os.clock() - started >= PREPARING_DELAY_S then
+					hinted = true
+					v.setStatus(PREPARING_TEXT)
+				end
+				-- CHANGED (Review 3): protected: a failing check must not leave the player behind a black screen
+				local checked, ready = pcall(Surface.isReady)
+			until not is("Closing") or os.clock() - started >= TERRAIN_WAIT_S or not checked or ready
+			v.setStatus(nil)
 			if not is("Closing") then
 				return
 			end
+			-- CHANGED (Review 3): moved here from before the wait (the controls were on behind the black)
+			UIState.setMenuOpen(false) -- CHANGED (Phase 11 review): also switches the character controls back on
 			v.fadeCover(0, REVEAL_FADE_S, function()
 				if is("Closing") then
 					state = "Closed"
