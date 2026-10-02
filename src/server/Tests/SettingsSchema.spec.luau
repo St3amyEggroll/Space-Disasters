@@ -35,6 +35,7 @@ return function(t: TestKit.Context)
 		t.expectEqual(values.musicVolume, 0.5)
 		t.expectEqual(values.effectsVolume, 0.8)
 		t.expectEqual(values.invertY, false)
+		t.expectEqual(values.cameraShake, true) -- CHANGED (Physics feel)
 		t.expectEqual(values.hudVisible, true)
 		t.expectEqual(values.units, "Metric")
 		t.expectEqual(values.hints, true)
@@ -140,6 +141,7 @@ return function(t: TestKit.Context)
 				mouseSensitivity = "fast",
 				invertY = "yes",
 				cameraSmoothing = true,
+				cameraShake = "off", -- CHANGED (Physics feel)
 				uiScale = {},
 				hudVisible = 0,
 				units = "Parsecs",
@@ -153,10 +155,12 @@ return function(t: TestKit.Context)
 		expectDefaults(SettingsSchema.sanitize(nil), "nil")
 		expectDefaults(SettingsSchema.sanitize("garbage"), "string")
 		expectDefaults(SettingsSchema.sanitize(42), "number")
-		local imperial = SettingsSchema.sanitize({ units = "Imperial", invertY = true, hints = false })
+		local imperial =
+			SettingsSchema.sanitize({ units = "Imperial", invertY = true, hints = false, cameraShake = false })
 		t.expectEqual(imperial.units, "Imperial")
 		t.expectEqual(imperial.invertY, true)
 		t.expectEqual(imperial.hints, false)
+		t.expectEqual(imperial.cameraShake, false) -- CHANGED (Physics feel)
 	end)
 
 	t.test("unknown fields and actions are dropped", function()
@@ -234,6 +238,12 @@ return function(t: TestKit.Context)
 		t.expectEqual(clean, true)
 		ok = SettingsSchema.sanitizeField("hudVisible", "true")
 		t.expectTrue(not ok)
+		-- CHANGED (Physics feel): the camera shake toggle
+		ok, clean = SettingsSchema.sanitizeField("cameraShake", false)
+		t.expectTrue(ok)
+		t.expectEqual(clean, false)
+		ok = SettingsSchema.sanitizeField("cameraShake", 1)
+		t.expectTrue(not ok)
 		ok = SettingsSchema.sanitizeField("nope", 1)
 		t.expectTrue(not ok, "unknown field")
 		ok, clean = SettingsSchema.sanitizeField("keybinds", { Stage = "Escape" })
@@ -252,6 +262,8 @@ return function(t: TestKit.Context)
 		t.expectEqual(values.units, "Imperial")
 		t.expectTrue(SettingsSchema.setField(values, "mouseSensitivity", 2))
 		t.expectEqual(SettingsSchema.getField(values, "mouseSensitivity"), 2)
+		t.expectTrue(SettingsSchema.setField(values, "cameraShake", false)) -- CHANGED (Physics feel)
+		t.expectEqual(SettingsSchema.getField(values, "cameraShake"), false)
 		t.expectTrue(not SettingsSchema.setField(values, "nope", 1))
 		t.expectTrue(SettingsSchema.getField(values, "nope") == nil)
 	end)
@@ -261,6 +273,7 @@ return function(t: TestKit.Context)
 		values.mouseSensitivity = 0.1 + 0.2 -- not representable exactly in decimal
 		values.invertY = true
 		values.cameraSmoothing = 0.9
+		values.cameraShake = false -- CHANGED (Physics feel)
 		values.uiScale = 1.25
 		values.hudVisible = false
 		values.units = "Imperial"

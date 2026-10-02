@@ -11,7 +11,7 @@
 	  trailSize(airSpeed, rate, width)        studs; trail puffs grow with speed so the trail stays continuous
 	  dustStrength(height, thrustFraction)    0..1 launch/landing dust under the craft
 	  heatFactor(density, speed)              0..1 re-entry heating (rho * v^3 on a log scale, gated by speed)
-	  vaporFactor(speed, pressure)            0..1 transonic vapour cone (around Mach 1, low in the air)
+	  vaporFactor(speed, pressure)            0..1 transonic vapour cone (around Mach 1, in all but the thinnest air)
 	  driftEmission(drift, randomSpeed)       how to aim a ParticleEmitter so its particles move with `drift` plus a
 	                                          random velocity of up to `randomSpeed` in any direction
 	  frameWithUp(position, up)               a CFrame whose UpVector is `up` (ParticleEmitter EmissionDirection Top)
@@ -26,7 +26,7 @@
 --============================================================================
 -- Engine plumes (lengths in studs for the reference 4-stud nozzle at model scale 1; Plumes scales them)
 local FLAME_LENGTH_MIN = 3 -- at minimum throttle
-local FLAME_LENGTH_MAX = 9 -- at full throttle
+local FLAME_LENGTH_MAX = 16 -- at full throttle -- CHANGED (Physics feel): was 9; longer flames read as more power
 local VACUUM_LENGTH_MULT = 1.6 -- the vacuum plume is this much longer
 local SOLID_LENGTH_MULT = 1.35 -- solid boosters get a longer flame
 local CORE_WIDTH0 = 0.55 -- x nozzle diameter, at the nozzle
@@ -57,11 +57,11 @@ local TRAIL_PRESSURE_FULL = 0.3 -- full trail at or below this altitude's pressu
 local TRAIL_PRESSURE_NONE = 0.004 -- no trail above this altitude (~5.5 km on Earth)
 local TRAIL_MAX_LENGTH = 900 -- studs of trail behind a fast craft
 local TRAIL_LIFETIME_MIN = 1.2 -- s
-local TRAIL_LIFETIME_MAX = 5 -- s (slow crafts: the smoke column lingers this long)
+local TRAIL_LIFETIME_MAX = 8 -- s (slow crafts: the smoke column lingers this long) -- CHANGED (Physics feel): was 5; a longer column to climb past
 local TRAIL_OVERLAP = 1.6 -- puff size / spacing between puffs, so the trail never breaks into dots
 local TRAIL_SIZE_MAX = 45 -- studs
 -- Launch / landing dust
-local DUST_MAX_HEIGHT = 40 -- m above the ground (exhaust height) where the dust starts
+local DUST_MAX_HEIGHT = 70 -- m above the ground (exhaust height) where the dust starts -- CHANGED (Physics feel): was 40; dust lingers longer under the climb
 local DUST_THRUST_CAP = 1.5 -- thrust fraction above which the dust stops growing
 local DUST_HEIGHT_POWER = 1.5 -- stronger the closer the nozzle is to the ground
 -- Re-entry heating
@@ -71,11 +71,13 @@ local HEAT_FLUX_MIN = 1.5e5 -- rho * v^3 where the glow starts (~6.2 km at 450 m
 local HEAT_FLUX_FULL = 3e6 -- rho * v^3 of full glow (~3.7 km at 450 m/s)
 -- Transonic vapour cone
 local SPEED_OF_SOUND = 340 -- m/s (no temperature model: one value everywhere)
-local VAPOR_MACH_START = 0.93
+local VAPOR_MACH_START = 0.85 -- CHANGED (Physics feel): was 0.93; the cone builds up earlier and lasts longer
 local VAPOR_MACH_PEAK = 1.0
 local VAPOR_MACH_END = 1.12
-local VAPOR_PRESSURE_MIN = 0.15 -- needs thick, moist air: nothing above ~1.9 km
-local VAPOR_PRESSURE_FULL = 0.5
+-- CHANGED (Physics feel): was 0.15 / 0.5, which no real ascent could reach (rockets pass Mach 1 well above 2 km);
+-- now the cone shows in all but the thinnest air (nothing above ~5.3 km on the 7 km-top Earth)
+local VAPOR_PRESSURE_MIN = 0.005
+local VAPOR_PRESSURE_FULL = 0.05
 -- Graphics quality
 local QUALITY_SCALE_MIN = 0.3 -- at quality 1
 local QUALITY_SCALE_AUTOMATIC = 0.8
@@ -179,6 +181,7 @@ function EffectsMath.dustStrength(height: number, thrustFraction: number): numbe
 end
 
 EffectsMath.DUST_MAX_HEIGHT = DUST_MAX_HEIGHT
+EffectsMath.TRAIL_LIFETIME_MAX = TRAIL_LIFETIME_MAX -- CHANGED (Physics feel): exposed so the spec follows the tunable
 
 -- 0..1 re-entry heating: rho * v^3 on a log scale, times a speed gate so a normal ascent does not glow.
 function EffectsMath.heatFactor(density: number, speed: number): number

@@ -87,7 +87,10 @@ return function(t: TestKit.Context)
 				t.expectTrue(size >= speed / rate, "puffs must cover the gap between them")
 			end
 			local life = EffectsMath.trailLifetime(speed)
-			t.expectTrue(life >= 1.2 - EPSILON and life <= 5 + EPSILON, "lifetime within its clamp")
+			t.expectTrue(
+				life >= 1.2 - EPSILON and life <= EffectsMath.TRAIL_LIFETIME_MAX + EPSILON,
+				"lifetime within its clamp"
+			)
 			t.expectTrue(speed * life <= 900 + EPSILON or life <= 1.2 + EPSILON, "trail length bounded")
 		end
 	end)
@@ -122,12 +125,21 @@ return function(t: TestKit.Context)
 		t.expectTrue(EffectsMath.heatFactor(10, 5000) <= 1 + EPSILON, "capped at 1")
 	end)
 
-	t.test("vapour cone: around Mach 1, low in the air only", function()
+	-- CHANGED (Physics feel): the cone now shows in all but the thinnest air (rockets pass Mach 1 high up), so the
+	-- checks use pressure ratios instead of altitudes and follow the atmosphere whatever its size.
+	t.test("vapour cone: around Mach 1, in all but the thinnest air", function()
 		t.expectTrue(EffectsMath.vaporFactor(340, 1) > 0.9, "peak at Mach 1 near sea level")
 		t.expectNear(EffectsMath.vaporFactor(250, 1), 0, EPSILON)
+		t.expectNear(EffectsMath.vaporFactor(280, 1), 0, EPSILON) -- Mach 0.82
 		t.expectNear(EffectsMath.vaporFactor(420, 1), 0, EPSILON)
-		t.expectNear(EffectsMath.vaporFactor(340, pressure(4000)), 0, EPSILON)
 		t.expectTrue(EffectsMath.vaporFactor(330, 1) > 0, "starts just below Mach 1")
+		t.expectTrue(EffectsMath.vaporFactor(300, 1) > 0, "builds up from about Mach 0.85")
+		t.expectTrue(EffectsMath.vaporFactor(340, 0.05) > 0.9, "full in moderately thin air")
+		t.expectTrue(EffectsMath.vaporFactor(340, 0.02) > 0.2, "still visible where real ascents go transonic")
+		t.expectNear(EffectsMath.vaporFactor(340, 0.004), 0, EPSILON)
+		t.expectNear(EffectsMath.vaporFactor(340, 0), 0, EPSILON)
+		local top = Atmosphere.top(HOMEWORLD)
+		t.expectNear(EffectsMath.vaporFactor(340, pressure(top - 2)), 0, EPSILON) -- the fade band thins it out
 	end)
 
 	t.test("drift emission: cone and speeds cover drift plus the random part", function()

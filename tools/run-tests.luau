@@ -105,6 +105,8 @@ local function loadModule(instance: any): any
 			Color3 = roblox.Color3,
 			Enum = roblox.Enum,
 			Instance = roblox.Instance,
+			UDim = roblox.UDim, -- CHANGED (Physics feel): HomeBase.spec builds the site (SurfaceGui labels)
+			UDim2 = roblox.UDim2,
 		},
 	})
 	local result = chunk()

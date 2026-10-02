@@ -64,9 +64,17 @@ local PAD_RING_WIDTH = 1.5
 local PAD_EDGE_INSET = 1.5
 local PAD_EDGE_WIDTH = 1.5
 local PAD_NUMBER_SIZE = 24
-local TOWER_GAP = 5 -- studs from the pad's back edge to the tower centre
-local TOWER_SIDE_OFFSET = 30 -- tower centre, studs along X from the pad centre
-local TOWER_HEIGHT = 40
+-- CHANGED (Physics feel): a taller tower closer to the rocket, so a climbing craft has something to pass. It stays
+-- outside the pad footprint (rockets up to the full 80-stud build footprint are centred on the pad).
+local TOWER_GAP = 4 -- studs from the pad's back edge to the tower centre (was 5; base stays 1 stud off the pad)
+local TOWER_SIDE_OFFSET = 20 -- tower centre, studs along X from the pad centre (was 30)
+local TOWER_HEIGHT = 80 -- was 40
+local TOWER_BAND_HEIGHT = 10 -- the column alternates orange / white segments this tall
+local TOWER_ARM_HEIGHT = 32 -- service arm height (where it was on the 40-stud tower)
+local TOWER_BEACON_FRACTIONS = { 0.3, 0.6 } -- beacons on the pad side of the column at these heights, plus the top
+local TOWER_BEACON_DIAMETER = 1.6
+local TOWER_BEACON_LIGHT_RANGE = 14 -- studs, PointLight of the top beacon
+local TOWER_BEACON_LIGHT_BRIGHTNESS = 2
 local LAMP_XS = { -300, -200, -100, 100, 200, 300 } -- street lamps (in the gaps between plot columns)
 local LAMP_HEIGHT = 16
 local LAUNCH_LAMP_ZS = { 150, 190 }
@@ -602,23 +610,23 @@ local function buildPad(parent: Instance, info: PadInfo, site: SiteGeometry)
 		COLOR_DARK,
 		Enum.Material.Concrete
 	)
-	box(
-		tower,
-		"TowerColumn",
-		Vector3.new(tx - 1.5, GROUND_TOP + 1, tz - 1.5),
-		Vector3.new(tx + 1.5, TOWER_HEIGHT, tz + 1.5),
-		COLOR_ORANGE,
-		Enum.Material.Metal
-	)
-	for _, y in { TOWER_HEIGHT * 0.35, TOWER_HEIGHT * 0.7 } do
+	-- CHANGED (Physics feel): the column is stacked from alternating orange / white segments (was one orange
+	-- column with two white bands), so its height reads at a glance
+	local columnBottom = GROUND_TOP + 1
+	local segment = 0
+	local y0 = columnBottom
+	while y0 < TOWER_HEIGHT - 1e-6 do
+		local y1 = math.min(y0 + TOWER_BAND_HEIGHT, TOWER_HEIGHT)
 		box(
 			tower,
-			"TowerBand",
-			Vector3.new(tx - 1.7, y, tz - 1.7),
-			Vector3.new(tx + 1.7, y + 1.5, tz + 1.7),
-			COLOR_WHITE,
+			if segment % 2 == 0 then "TowerColumn" else "TowerBand",
+			Vector3.new(tx - 1.5, y0, tz - 1.5),
+			Vector3.new(tx + 1.5, y1, tz + 1.5),
+			if segment % 2 == 0 then COLOR_ORANGE else COLOR_WHITE,
 			Enum.Material.Metal
 		)
+		segment += 1
+		y0 = y1
 	end
 	-- Service arm reaching toward the pad; stops half a stud short of the footprint.
 	local armFar = backEdgeZ + site.launchSide * 0.5
@@ -626,12 +634,38 @@ local function buildPad(parent: Instance, info: PadInfo, site: SiteGeometry)
 	box(
 		tower,
 		"TowerArm",
-		Vector3.new(tx - 0.5, TOWER_HEIGHT - 8, math.min(armFar, armNear)),
-		Vector3.new(tx + 0.5, TOWER_HEIGHT - 7, math.max(armFar, armNear)),
+		Vector3.new(tx - 0.5, TOWER_ARM_HEIGHT, math.min(armFar, armNear)), -- CHANGED (Physics feel): fixed height
+		Vector3.new(tx + 0.5, TOWER_ARM_HEIGHT + 1, math.max(armFar, armNear)),
 		COLOR_WHITE,
 		Enum.Material.Metal
 	)
-	ball(tower, "TowerBeacon", Vector3.new(tx, TOWER_HEIGHT + 0.8, tz), 1.6, COLOR_BEACON, Enum.Material.Neon)
+	-- CHANGED (Physics feel): lit beacons up the column on the pad side (still outside the pad footprint), and the
+	-- top one casts light
+	local beaconZ = tz - site.launchSide * (1.5 + TOWER_BEACON_DIAMETER / 2 - 0.2)
+	for _, fraction in TOWER_BEACON_FRACTIONS do
+		ball(
+			tower,
+			"TowerBeacon",
+			Vector3.new(tx, TOWER_HEIGHT * fraction, beaconZ),
+			TOWER_BEACON_DIAMETER,
+			COLOR_BEACON,
+			Enum.Material.Neon
+		)
+	end
+	local topBeacon = ball(
+		tower,
+		"TowerBeacon",
+		Vector3.new(tx, TOWER_HEIGHT + TOWER_BEACON_DIAMETER / 2, tz),
+		TOWER_BEACON_DIAMETER,
+		COLOR_BEACON,
+		Enum.Material.Neon
+	)
+	local light = Instance.new("PointLight")
+	light.Color = COLOR_BEACON
+	light.Range = TOWER_BEACON_LIGHT_RANGE
+	light.Brightness = TOWER_BEACON_LIGHT_BRIGHTNESS
+	light.Shadows = false
+	light.Parent = topBeacon
 
 	model.Parent = parent
 end

@@ -7,8 +7,8 @@
 	(Theme.DisplayOrder.Settings: above the menu and the HUD, below confirm dialogs and toasts).
 
 	Pages:
-	  Controls & Camera  mouse sensitivity, invert Y, camera smoothing; every rebindable key (SettingsSchema.ACTIONS,
-	                     grouped Flight / Builder): click a key button, then press the new key ("Press a key...";
+	  Controls & Camera  mouse sensitivity, invert Y, camera smoothing, camera shake (CHANGED (Physics feel));
+	                     every rebindable key (SettingsSchema.ACTIONS, grouped Flight / Builder): click a key button, then press the new key ("Press a key...";
 	                     Escape or clicking it again cancels; a reserved / unbindable key shows a toast and keeps
 	                     listening; taking another action's key swaps the two and says so); "Reset keys"
 	  Interface          UI size, Show HUD (with its live key), units, hints
@@ -249,6 +249,7 @@ local function buildControls(page: ScrollingFrame)
 		end
 		return percent(value)
 	end, true)
+	addToggle(page, "Camera shake", "cameraShake") -- CHANGED (Physics feel): subtle shake while engines burn
 
 	for _, context: SettingsSchema.Context in SettingsSchema.CONTEXTS do
 		Kit.section(page, CONTEXT_TITLES[context] or context)

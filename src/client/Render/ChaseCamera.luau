@@ -26,6 +26,17 @@
 	(0.5 = exactly those rates, 0 = SMOOTHING_SNAPPY_FACTOR times them, 1 = SMOOTHING_SMOOTH_FACTOR times them,
 	log-linear in between). While UIState.isInputBlocked() (main menu or a dialog) drag, wheel, stick and DPad zoom
 	are ignored and a drag in progress ends (the cursor is freed).
+
+	CHANGED (Physics feel): speed cues.
+	  * Zoom fit: the first Target of a flight that carries `size` (the craft's bounding radius) sets the zoom to
+	    FIT_RADIUS_MULT x size (clamped to the zoom limits) instead of CHASE_ZOOM_DEFAULT, so big rockets fill the
+	    view about as much as small ones. The player's own zoom changes are kept after that, also across a stop()
+	    / start() for the same flight (Target `key`, e.g. while the map view is open).
+	  * Shake: while engines burn, a subtle angular shake (smooth math.noise at SHAKE_FREQUENCY_* Hz) of
+	    SHAKE_THRUST_AMPLITUDE x thrustFraction x (1 + SHAKE_GROUND_BOOST x nearGround) plus
+	    SHAKE_Q_AMPLITUDE x clamp(dynamicPressure / SHAKE_Q_FULL, 0, 1) rad. It is applied on top of the computed
+	    camera CFrame every frame (the orbit state never sees it, so it cannot drift) and is off when Settings
+	    cameraShake is false.
 ]]
 
 local Players = game:GetService("Players")
@@ -56,12 +67,30 @@ local FOLLOW_SMOOTHING = 15 -- 1/s, exponential approach of the orbit centre to 
 local SMOOTHING_SNAPPY_FACTOR = 40 / 15
 local SMOOTHING_SMOOTH_FACTOR = 4 / 15
 local SNAP_DISTANCE = 500 -- studs; a target jump larger than this is snapped to instead of smoothed
+-- CHANGED (Physics feel): zoom fitted to the craft and camera shake (header)
+local FIT_RADIUS_MULT = 2.5 -- default zoom = this x the craft's bounding radius (about 1.25 x its length)
+local SHAKE_THRUST_AMPLITUDE = 0.004 -- rad at full thrust, high up
+local SHAKE_GROUND_BOOST = 2 -- x extra thrust shake right at the ground (rumble off the pad)
+local SHAKE_Q_AMPLITUDE = 0.003 -- rad at SHAKE_Q_FULL dynamic pressure and above
+local SHAKE_Q_FULL = 20000 -- Pa
+local SHAKE_FREQUENCY_LOW = 9 -- Hz, main noise component
+local SHAKE_FREQUENCY_HIGH = 14.5 -- Hz, faster flutter on top
+local SHAKE_HIGH_WEIGHT = 0.35 -- share of the fast component
+local SHAKE_ROLL_SHARE = 0.5 -- roll shake relative to pitch / yaw
+local SHAKE_NOISE_GAIN = 2 -- math.noise is about +-0.5: scale to about +-1
+local SHAKE_RESPONSE = 12 -- 1/s, how fast the shake amplitude follows its inputs (no hard pops)
 --============================================================================
 
 export type Target = {
 	position: Vector3, -- orbit centre, workspace
 	up: Vector3, -- unit "up" in the stable space (universe axes)
 	toWorkspace: CFrame, -- rotation from the stable space to workspace axes (the pocket frame's refRotInv)
+	-- CHANGED (Physics feel): optional speed-cue inputs (header)
+	key: number?, -- identifies the flight (craft id): a restart for the same key keeps the player's zoom
+	size: number?, -- studs, the craft's bounding radius (zoom fit at the start of a flight)
+	thrustFraction: number?, -- 0..1 of the craft's active engine thrust being produced now
+	nearGround: number?, -- 0..1, 1 = on the ground, 0 = high enough that the ground no longer adds shake
+	dynamicPressure: number?, -- Pa
 }
 
 local ChaseCamera = {}
@@ -78,6 +107,12 @@ local zoom = GameConfig.CHASE_ZOOM_DEFAULT -- displayed distance, studs
 local targetZoom = GameConfig.CHASE_ZOOM_DEFAULT
 local focus: Vector3? = nil -- smoothed orbit centre
 local lastTarget: Vector3? = nil
+-- CHANGED (Physics feel): zoom fit and shake
+local fitPending = false -- the next Target with a size sets the zoom
+local fittedKey: number? = nil -- flight the current zoom belongs to
+local shakeTime = 0 -- s, noise time
+local shakeAmplitude = 0 -- rad, smoothed
+local shakeSeed = 0 -- noise offset per flight
 
 local dragging = false
 local pendingDelta = Vector2.zero -- accumulated mouse drag since the last frame, pixels
@@ -177,6 +212,46 @@ local function horizontal(v: Vector3, up: Vector3): Vector3
 	return h.Unit
 end
 
+-- CHANGED (Physics feel): the zoom for a craft of bounding radius `size`.
+local function fittedZoom(size: number): number
+	return clampZoom(FIT_RADIUS_MULT * size)
+end
+
+-- CHANGED (Physics feel): first Target of a flight: fit the zoom unless the player already set one for it.
+local function applyFit(t: Target)
+	local size = t.size
+	if size == nil or size <= 0 then
+		return
+	end
+	fitPending = false
+	if t.key ~= nil and t.key == fittedKey then
+		zoom = targetZoom -- same flight (e.g. back from the map view): keep the player's zoom
+		return
+	end
+	fittedKey = t.key
+	targetZoom = fittedZoom(size)
+	zoom = targetZoom
+end
+
+-- CHANGED (Physics feel): rad of shake wanted for a Target (0 without the inputs).
+local function shakeFor(t: Target?): number
+	if t == nil then
+		return 0
+	end
+	local thrust = math.clamp(t.thrustFraction or 0, 0, 1)
+	local ground = math.clamp(t.nearGround or 0, 0, 1)
+	local q = math.max(t.dynamicPressure or 0, 0)
+	return SHAKE_THRUST_AMPLITUDE * thrust * (1 + SHAKE_GROUND_BOOST * ground)
+		+ SHAKE_Q_AMPLITUDE * math.clamp(q / SHAKE_Q_FULL, 0, 1)
+end
+
+-- CHANGED (Physics feel): smooth noise in about [-1, 1] on two frequencies, one channel per axis.
+local function shakeNoise(channel: number): number
+	local low = math.noise(shakeTime * SHAKE_FREQUENCY_LOW, channel * 7.31 + 0.5, shakeSeed)
+	local high = math.noise(shakeTime * SHAKE_FREQUENCY_HIGH, channel * 3.17 + 11.5, shakeSeed)
+	return SHAKE_NOISE_GAIN * (low * (1 - SHAKE_HIGH_WEIGHT) + high * SHAKE_HIGH_WEIGHT)
+end
+
 local function step(dt: number)
 	-- CHANGED (Phase 11): a menu or dialog frees the mouse and stops camera input
 	local blocked = UIState.isInputBlocked()
@@ -199,6 +274,9 @@ local function step(dt: number)
 		lastTarget = t.position
 		lastUp = t.up
 		lastToWorkspace = t.toWorkspace
+		if fitPending then
+			applyFit(t) -- CHANGED (Physics feel)
+		end
 	end
 	local target = lastTarget
 	if not target then
@@ -244,7 +322,20 @@ local function step(dt: number)
 
 	local offset = lastToWorkspace:VectorToWorldSpace(back * math.cos(pitch) + up * math.sin(pitch))
 	local upWorkspace = lastToWorkspace:VectorToWorldSpace(up)
-	camera.CFrame = CFrame.lookAt(current + offset * zoom, current, upWorkspace)
+	local cameraCFrame = CFrame.lookAt(current + offset * zoom, current, upWorkspace)
+
+	-- CHANGED (Physics feel): shake on top of the computed view (never fed back into the orbit)
+	local wanted = if values.cameraShake then shakeFor(t) else 0
+	shakeAmplitude += (wanted - shakeAmplitude) * (1 - math.exp(-SHAKE_RESPONSE * dt))
+	if shakeAmplitude > 1e-5 then
+		shakeTime += dt
+		cameraCFrame *= CFrame.Angles(
+			shakeNoise(1) * shakeAmplitude,
+			shakeNoise(2) * shakeAmplitude,
+			shakeNoise(3) * shakeAmplitude * SHAKE_ROLL_SHARE
+		)
+	end
+	camera.CFrame = cameraCFrame
 	camera.Focus = CFrame.new(current)
 end
 
@@ -273,8 +364,18 @@ function ChaseCamera.start(getTarget: () -> Target?)
 		back = horizontal(lastToWorkspace:VectorToObjectSpace(-camera.CFrame.LookVector), lastUp)
 	end
 	pitch = DEFAULT_PITCH
-	zoom = GameConfig.CHASE_ZOOM_DEFAULT
-	targetZoom = GameConfig.CHASE_ZOOM_DEFAULT
+	-- CHANGED (Physics feel): fitted to the craft on the first Target with a size (applyFit); the same flight
+	-- keeps the player's zoom
+	if first == nil or first.key == nil or first.key ~= fittedKey then
+		zoom = GameConfig.CHASE_ZOOM_DEFAULT
+		targetZoom = GameConfig.CHASE_ZOOM_DEFAULT
+	end
+	fitPending = true
+	if first then
+		applyFit(first)
+	end
+	shakeAmplitude = 0
+	shakeSeed = math.random() * 100
 	focus = nil
 	lastTarget = nil
 	pendingDelta = Vector2.zero

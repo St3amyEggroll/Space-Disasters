@@ -9,6 +9,8 @@
 	  mouseSensitivity  number   camera drag multiplier (chase camera, map view)
 	  invertY           boolean  dragging the mouse up tilts the camera the other way
 	  cameraSmoothing   number   0 = snappy .. 1 = very smooth (0.5 = the Phase 2a feel)
+	  cameraShake       boolean  subtle chase-camera shake while engines burn and in thick fast air
+	                             (CHANGED (Physics feel))
 	  uiScale           number   UI size multiplier
 	  hudVisible        boolean  flight HUD shown (the ToggleHUD key flips it)
 	  units             Units    "Metric" | "Imperial"
@@ -75,6 +77,7 @@ local UI_SCALE: Range = { min = 0.7, max = 1.4, default = 1 }
 local MUSIC_VOLUME: Range = { min = 0, max = 1, default = 0.5 }
 local EFFECTS_VOLUME: Range = { min = 0, max = 1, default = 0.8 }
 local DEFAULT_INVERT_Y = false
+local DEFAULT_CAMERA_SHAKE = true -- CHANGED (Physics feel): camera shake toggle
 local DEFAULT_HUD_VISIBLE = true
 local DEFAULT_UNITS: Units = "Metric"
 local DEFAULT_HINTS = true
@@ -206,6 +209,7 @@ export type Values = {
 	mouseSensitivity: number,
 	invertY: boolean,
 	cameraSmoothing: number,
+	cameraShake: boolean, -- CHANGED (Physics feel): camera shake toggle
 	uiScale: number,
 	hudVisible: boolean,
 	units: Units,
@@ -234,6 +238,7 @@ local FIELDS: { string } = {
 	"mouseSensitivity",
 	"invertY",
 	"cameraSmoothing",
+	"cameraShake", -- CHANGED (Physics feel): camera shake toggle
 	"uiScale",
 	"hudVisible",
 	"units",
@@ -253,6 +258,7 @@ local KINDS: { [string]: FieldKind } = {
 	mouseSensitivity = "Number",
 	invertY = "Boolean",
 	cameraSmoothing = "Number",
+	cameraShake = "Boolean", -- CHANGED (Physics feel): camera shake toggle
 	uiScale = "Number",
 	hudVisible = "Boolean",
 	units = "Units",
@@ -331,6 +337,7 @@ function SettingsSchema.defaults(): Values
 		mouseSensitivity = MOUSE_SENSITIVITY.default,
 		invertY = DEFAULT_INVERT_Y,
 		cameraSmoothing = CAMERA_SMOOTHING.default,
+		cameraShake = DEFAULT_CAMERA_SHAKE, -- CHANGED (Physics feel): camera shake toggle
 		uiScale = UI_SCALE.default,
 		hudVisible = DEFAULT_HUD_VISIBLE,
 		units = DEFAULT_UNITS,
@@ -384,6 +391,7 @@ function SettingsSchema.sanitize(raw: unknown): Values
 		mouseSensitivity = numberOr(source.mouseSensitivity, MOUSE_SENSITIVITY),
 		invertY = booleanOr(source.invertY, DEFAULT_INVERT_Y),
 		cameraSmoothing = numberOr(source.cameraSmoothing, CAMERA_SMOOTHING),
+		cameraShake = booleanOr(source.cameraShake, DEFAULT_CAMERA_SHAKE), -- CHANGED (Physics feel): camera shake toggle
 		uiScale = numberOr(source.uiScale, UI_SCALE),
 		hudVisible = booleanOr(source.hudVisible, DEFAULT_HUD_VISIBLE),
 		units = if isUnits(source.units) then source.units else DEFAULT_UNITS,
@@ -419,6 +427,8 @@ function SettingsSchema.getField(values: Values, field: string): any
 		return values.invertY
 	elseif field == "cameraSmoothing" then
 		return values.cameraSmoothing
+	elseif field == "cameraShake" then -- CHANGED (Physics feel): camera shake toggle
+		return values.cameraShake
 	elseif field == "uiScale" then
 		return values.uiScale
 	elseif field == "hudVisible" then
@@ -445,6 +455,8 @@ function SettingsSchema.setField(values: Values, field: string, clean: any): boo
 		values.invertY = clean
 	elseif field == "cameraSmoothing" then
 		values.cameraSmoothing = clean
+	elseif field == "cameraShake" then -- CHANGED (Physics feel): camera shake toggle
+		values.cameraShake = clean
 	elseif field == "uiScale" then
 		values.uiScale = clean
 	elseif field == "hudVisible" then
@@ -479,6 +491,7 @@ function SettingsSchema.encode(values: Values): string
 		mouseSensitivity = clean.mouseSensitivity,
 		invertY = clean.invertY,
 		cameraSmoothing = clean.cameraSmoothing,
+		cameraShake = clean.cameraShake, -- CHANGED (Physics feel): camera shake toggle
 		uiScale = clean.uiScale,
 		hudVisible = clean.hudVisible,
 		units = clean.units,

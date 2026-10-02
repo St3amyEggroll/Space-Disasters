@@ -8,7 +8,10 @@
 	(origin at the tile centre, axes = the tile's X / Z), grouped in CHUNK_CELLS x CHUNK_CELLS chunks. A cell
 	holds at most one prop, decided by hashing (body, tile, cell) and the Biome kind under it, so the same props
 	appear on every visit. Props stand ON the tile plane (the physical ground), so they touch it exactly.
-	Nothing is placed within SITE_CLEAR_RADIUS of the launch site.
+	CHANGED (Physics feel): trees and rocks now grow right up to the launch site, as a speed reference for a
+	climbing rocket: only a square of SITE_CLEAR_HALF_EXTENT (the site's ground plate plus SITE_CLEAR_MARGIN) in the
+	site's tangent plane is kept clear (was an 800 m sphere), so nothing stands on the plate, pads, plots or roads,
+	which all lie on the plate (BaseLayout). PROP_RADIUS and MAX_PROP_PARTS grew to match.
 
 	Chunks are generated lazily (nearest first, GEN_BUDGET_S per frame) and cached. Props are drawn from pooled
 	parts (MAX_PROP_PARTS hard cap), nearest chunks first, moved with one BulkMoveTo whenever the frame or the
@@ -22,6 +25,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
+local BaseLayout = require(ReplicatedStorage.Shared.Config.BaseLayout) -- CHANGED (Physics feel)
 local Biome = require(ReplicatedStorage.Shared.Sim.Biome)
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
@@ -37,15 +41,18 @@ type TileId = SurfaceHeight.TileId
 --============================================================================
 -- Tunables
 --============================================================================
-local PROP_RADIUS = 750 -- m (= studs), props farther than this from the camera are not drawn
+local PROP_RADIUS = 1000 -- m (= studs), props farther than this from the camera are not drawn -- CHANGED (Physics feel): was 750
 local CELL_SIZE = 28 -- m, one prop at most per cell
 local CHUNK_CELLS = 8 -- cells per chunk side (224 m chunks)
-local MAX_PROP_PARTS = 600 -- hard cap on pooled parts in use
+local MAX_PROP_PARTS = 1000 -- hard cap on pooled parts in use -- CHANGED (Physics feel): was 600
 local SHADOW_RADIUS = 220 -- m, props nearer than this cast shadows
 local REFRESH_DISTANCE = 35 -- m of camera movement before the prop set is re-chosen
 local GEN_BUDGET_S = 0.001 -- chunk generation work per frame
-local CHUNK_CACHE_MAX = 300 -- cached chunks before far ones are dropped
-local SITE_CLEAR_RADIUS = 800 -- m around the launch site kept clear
+local CHUNK_CACHE_MAX = 400 -- cached chunks before far ones are dropped -- CHANGED (Physics feel): was 300 (bigger radius)
+-- CHANGED (Physics feel): square clearing just outside the site plate (was an 800 m sphere)
+local SITE_CLEAR_MARGIN = 20 -- m beyond the plate edge (more than the widest prop's reach from its centre)
+local SITE_CLEAR_HALF_EXTENT = BaseLayout.SITE_HALF_EXTENT + SITE_CLEAR_MARGIN -- m, in the site's tangent plane
+local SITE_CLEAR_DEPTH = 200 -- m, only points this close to the site's plane count (not the far side of Earth)
 local TILE_EDGE_MARGIN = 8 -- m, no props this close to a tile edge (neighbouring planes diverge there)
 local PROP_SINK = 0.3 -- studs props are sunk into the ground
 local SCALE_MIN = 0.75
@@ -263,7 +270,24 @@ local CHUNK_SIZE = CELL_SIZE * CHUNK_CELLS
 local CELL_AREA_HA = CELL_SIZE * CELL_SIZE / 10000
 local MAX_CELL_CHANCE = Biome.propDensity("Forest") * CELL_AREA_HA -- densest biome: skip the Biome sample above it
 
-local SITE_POS = Vec3d.scale(Frames.surfaceUp(SITE_LATITUDE, SITE_LONGITUDE), Bodies.get(Bodies.HOMEWORLD).Radius)
+local SITE_UP = Frames.surfaceUp(SITE_LATITUDE, SITE_LONGITUDE)
+local SITE_POS = Vec3d.scale(SITE_UP, Bodies.get(Bodies.HOMEWORLD).Radius)
+-- CHANGED (Physics feel): the site's east / north axes (= base-pocket X / Z) for the square clearing
+local SITE_ROT = Frames.surfaceRotation(SITE_UP)
+local SITE_EAST = Vec3d.fromVector3(SITE_ROT.XVector)
+local SITE_NORTH = Vec3d.fromVector3(SITE_ROT.ZVector)
+
+-- CHANGED (Physics feel): is a body-relative ground point on Earth inside the launch site's square clearing?
+local function inSiteClearing(px: number, py: number, pz: number): boolean
+	local dx, dy, dz = px - SITE_POS.x, py - SITE_POS.y, pz - SITE_POS.z
+	local h = dx * SITE_UP.x + dy * SITE_UP.y + dz * SITE_UP.z
+	if math.abs(h) > SITE_CLEAR_DEPTH then
+		return false
+	end
+	local e = dx * SITE_EAST.x + dy * SITE_EAST.y + dz * SITE_EAST.z
+	local n = dx * SITE_NORTH.x + dy * SITE_NORTH.y + dz * SITE_NORTH.z
+	return math.abs(e) <= SITE_CLEAR_HALF_EXTENT and math.abs(n) <= SITE_CLEAR_HALF_EXTENT
+end
 
 local function chunkKey(bodyId: number, tileKey: number, ci: number, cj: number): number
 	return ((bodyId * 134217728 + tileKey) * 64 + (ci + 32)) * 64 + (cj + 32)
@@ -308,11 +332,8 @@ local function generateChunk(bodyId: number, info: TileInfo, ci: number, cj: num
 				continue
 			end
 			local px, py, pz = c.x + x * ax.x + z * az.x, c.y + x * ax.y + z * az.y, c.z + x * ax.z + z * az.z
-			if bodyId == Bodies.HOMEWORLD then
-				local dx, dy, dz = px - SITE_POS.x, py - SITE_POS.y, pz - SITE_POS.z
-				if dx * dx + dy * dy + dz * dz < SITE_CLEAR_RADIUS * SITE_CLEAR_RADIUS then
-					continue
-				end
+			if bodyId == Bodies.HOMEWORLD and inSiteClearing(px, py, pz) then -- CHANGED (Physics feel)
+				continue
 			end
 			local len = math.sqrt(px * px + py * py + pz * pz)
 			local _, _, _, kind = Biome.sample(bodyId, px / len, py / len, pz / len)
@@ -745,6 +766,8 @@ SurfaceProps._test = table.freeze({
 		return partsInUse
 	end,
 	PROP_SPECS = PROP_SPECS,
+	inSiteClearing = inSiteClearing, -- CHANGED (Physics feel)
+	SITE_CLEAR_HALF_EXTENT = SITE_CLEAR_HALF_EXTENT,
 })
 
 return table.freeze(SurfaceProps)
