@@ -32,6 +32,9 @@ echo "== luau-lsp analyze (spikes) =="
 	--no-strict-dm-types \
 	spikes
 
+echo "== compile check (Roblox limits, e.g. 200 locals) =="
+"$BIN/lune" run tools/compile-check src spikes tools
+
 echo "== lune tests =="
 "$BIN/lune" run tools/run-tests "$OUT/sourcemap.json"
 

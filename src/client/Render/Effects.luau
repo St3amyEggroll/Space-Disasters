@@ -17,7 +17,7 @@
 
 	Reports
 	  reportCraft(id, report) stores the craft's model, design, state and burning engines for this frame; step()
-	  turns them into instances. A craft that is not reported for STALE_FRAMES frames (not drawn: other pocket,
+	  turns them into instances. A craft that is not reported for TUNE.STALE_FRAMES frames (not drawn: other pocket,
 	  marker LOD, map view, hidden) has its continuous effects released, so hidden crafts never show effects. A
 	  "Stream" report never overrides a recent "Local" one (the pilot's own simulation wins).
 
@@ -87,164 +87,167 @@ local RenderContext = require(script.Parent.RenderContext)
 --============================================================================
 -- Tunables
 --============================================================================
+-- CHANGED (Studio fix): the tunables live in one table; as ~130 separate locals they pushed this module past
+-- Luau's 200-local limit ("Out of local registers") and the whole client failed to load in Studio.
+local TUNE = {}
 -- CHANGED (Effects v2): every count cap (trails, dust rings, heated crafts, burst / fireball / debris pools,
 -- explosions per event, lights) is now per tier in EffectsMath's BUDGETS; QUALITY_POLL_S went with Render/Quality.
-local FOLDER_NAME = "Effects"
-local STALE_FRAMES = 2 -- a craft not reported for this many frames has its continuous effects released
-local FORGET_AFTER_S = 10 -- records of crafts not reported for this long are dropped
-local PARK_CFRAME = CFrame.new(0, -10000, 0) -- where idle carrier parts wait (far below every pocket)
-local DEDUPE_S = 3 -- the same block's separation / explosion is not shown twice within this time
+TUNE.FOLDER_NAME = "Effects"
+TUNE.STALE_FRAMES = 2 -- a craft not reported for this many frames has its continuous effects released
+TUNE.FORGET_AFTER_S = 10 -- records of crafts not reported for this long are dropped
+TUNE.PARK_CFRAME = CFrame.new(0, -10000, 0) -- where idle carrier parts wait (far below every pocket)
+TUNE.DEDUPE_S = 3 -- the same block's separation / explosion is not shown twice within this time
 -- Pocket motion
-local ACCEL_SMOOTH_S = 0.25 -- s time constant of the pocket acceleration estimate
-local ACCEL_MAX = 60 -- m/s^2 clamp
-local ACCEL_RESET_DV = 50 -- m/s velocity jump in one frame that counts as a discontinuity (resets the estimate)
-local ACCEL_WRITE_EPSILON = 0.3 -- m/s^2 change before emitter accelerations are rewritten
-local SMOKE_BUOYANCY = 2.5 -- m/s^2 upward drift of smoke and fire (only in air)
+TUNE.ACCEL_SMOOTH_S = 0.25 -- s time constant of the pocket acceleration estimate
+TUNE.ACCEL_MAX = 60 -- m/s^2 clamp
+TUNE.ACCEL_RESET_DV = 50 -- m/s velocity jump in one frame that counts as a discontinuity (resets the estimate)
+TUNE.ACCEL_WRITE_EPSILON = 0.3 -- m/s^2 change before emitter accelerations are rewritten
+TUNE.SMOKE_BUOYANCY = 2.5 -- m/s^2 upward drift of smoke and fire (only in air)
 -- CHANGED (Effects v2): emitter speed / spread are only rewritten when they moved more than this (relative)
-local AIM_EPSILON = 0.03
+TUNE.AIM_EPSILON = 0.03
 -- Smoke trail
-local TRAIL_RATE_MAX = 55 -- puffs/s at full strength and quality
-local TRAIL_RANDOM_SPEED = 3 -- m/s random spread of trail puffs
-local TRAIL_WIDTH_MULT = 2.0 -- x nozzle diameter -- CHANGED (Physics feel): was 1.4; a fatter trail reads as speed
-local TRAIL_OFFSET_DIAMETERS = 2.2 -- the trail starts this many nozzle diameters behind the nozzle (flame tip)
-local TRAIL_GROWTH = 3.2 -- puffs grow to this x their start size
-local TRAIL_LIQUID_WEIGHT = 0.75 -- liquid engines leave a thinner trail than solid boosters -- CHANGED (Physics feel): was 0.45; liquid trails were too faint to show speed
-local TRAIL_TRANSPARENCY_SOLID = 0.2 -- CHANGED (Effects v2): was 0.25; boosters leave dense smoke
-local TRAIL_TRANSPARENCY_LIQUID = 0.45 -- CHANGED (Physics feel): was 0.6; denser liquid-engine trail
-local TRAIL_MIN_STRENGTH = 0.02
-local TRAIL_TEXTURE = "rbxasset://textures/particles/smoke_main.dds"
+TUNE.TRAIL_RATE_MAX = 55 -- puffs/s at full strength and quality
+TUNE.TRAIL_RANDOM_SPEED = 3 -- m/s random spread of trail puffs
+TUNE.TRAIL_WIDTH_MULT = 2.0 -- x nozzle diameter -- CHANGED (Physics feel): was 1.4; a fatter trail reads as speed
+TUNE.TRAIL_OFFSET_DIAMETERS = 2.2 -- the trail starts this many nozzle diameters behind the nozzle (flame tip)
+TUNE.TRAIL_GROWTH = 3.2 -- puffs grow to this x their start size
+TUNE.TRAIL_LIQUID_WEIGHT = 0.75 -- liquid engines leave a thinner trail than solid boosters -- CHANGED (Physics feel): was 0.45; liquid trails were too faint to show speed
+TUNE.TRAIL_TRANSPARENCY_SOLID = 0.2 -- CHANGED (Effects v2): was 0.25; boosters leave dense smoke
+TUNE.TRAIL_TRANSPARENCY_LIQUID = 0.45 -- CHANGED (Physics feel): was 0.6; denser liquid-engine trail
+TUNE.TRAIL_MIN_STRENGTH = 0.02
+TUNE.TRAIL_TEXTURE = "rbxasset://textures/particles/smoke_main.dds"
 -- CHANGED (Effects v2): warm where it leaves the flame, then white to grey; boosters' smoke is greyer
-local TRAIL_COLOR = ColorSequence.new({
+TUNE.TRAIL_COLOR = ColorSequence.new({
 	ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 222, 180)),
 	ColorSequenceKeypoint.new(0.08, Color3.fromRGB(247, 244, 238)),
 	ColorSequenceKeypoint.new(1, Color3.fromRGB(192, 192, 200)),
 })
-local TRAIL_COLOR_SOLID = ColorSequence.new({
+TUNE.TRAIL_COLOR_SOLID = ColorSequence.new({
 	ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 205, 150)),
 	ColorSequenceKeypoint.new(0.08, Color3.fromRGB(232, 228, 222)),
 	ColorSequenceKeypoint.new(1, Color3.fromRGB(165, 162, 162)),
 })
-local TRAIL_SOLID_COLOR_SHARE = 0.5 -- solid share of the thrust above which the booster smoke colour is used
+TUNE.TRAIL_SOLID_COLOR_SHARE = 0.5 -- solid share of the thrust above which the booster smoke colour is used
 -- Launch / landing dust
-local DUST_EMITTERS_MAX = 6 -- CHANGED (Effects v2): emitters built per ring; the tier uses Budget.dustEmitters
-local DUST_RATE_MAX = 90 -- puffs/s for the whole ring at full strength and quality
+TUNE.DUST_EMITTERS_MAX = 6 -- CHANGED (Effects v2): emitters built per ring; the tier uses Budget.dustEmitters
+TUNE.DUST_RATE_MAX = 90 -- puffs/s for the whole ring at full strength and quality
 -- CHANGED (Physics feel): x1.5 with every engine's thrust (was 200000), so launch dust looks the same per engine
-local DUST_REFERENCE_THRUST = 300000 -- N; thrust fraction 1 (about one Solid Booster)
-local DUST_OUT_SPEED = 38 -- m/s outward at full strength
-local DUST_RISE_SPEED = 5 -- m/s upward
-local DUST_RANDOM_SPEED = 9
-local DUST_SIZE = 7 -- studs start size at full strength for a 4-stud nozzle
-local DUST_GROWTH = 3 -- CHANGED (Effects v2): was 2.6; billows out more
-local DUST_LIFETIME = NumberRange.new(1.6, 3.2)
-local DUST_DRAG = 1.2 -- only while the pocket hardly moves (see header)
-local DUST_DRAG_FADE_SPEED = 20 -- m/s of drift at which the drag is gone
-local DUST_DOWN_MIN = 0.3 -- exhaust must point at least this much toward the ground (cos)
-local DUST_CHECK_MARGIN = 120 -- m; the ground is only looked up below max dust height + craft size + this
-local DUST_COLOR_INTERVAL = 0.5 -- s between ground colour samples
-local DUST_SMOKE_COLOR = Color3.fromRGB(200, 196, 188) -- mixed into the ground colour
-local DUST_GROUND_MIX = 0.55
-local DUST_WATER_COLOR = Color3.fromRGB(240, 246, 255) -- spray over the ocean
-local DUST_MIN_STRENGTH = 0.02
-local DUST_TRANSPARENCY = 0.3 -- CHANGED (Effects v2): was 0.35
-local DUST_TEXTURE = "rbxasset://textures/particles/smoke_main.dds"
+TUNE.DUST_REFERENCE_THRUST = 300000 -- N; thrust fraction 1 (about one Solid Booster)
+TUNE.DUST_OUT_SPEED = 38 -- m/s outward at full strength
+TUNE.DUST_RISE_SPEED = 5 -- m/s upward
+TUNE.DUST_RANDOM_SPEED = 9
+TUNE.DUST_SIZE = 7 -- studs start size at full strength for a 4-stud nozzle
+TUNE.DUST_GROWTH = 3 -- CHANGED (Effects v2): was 2.6; billows out more
+TUNE.DUST_LIFETIME = NumberRange.new(1.6, 3.2)
+TUNE.DUST_DRAG = 1.2 -- only while the pocket hardly moves (see header)
+TUNE.DUST_DRAG_FADE_SPEED = 20 -- m/s of drift at which the drag is gone
+TUNE.DUST_DOWN_MIN = 0.3 -- exhaust must point at least this much toward the ground (cos)
+TUNE.DUST_CHECK_MARGIN = 120 -- m; the ground is only looked up below max dust height + craft size + this
+TUNE.DUST_COLOR_INTERVAL = 0.5 -- s between ground colour samples
+TUNE.DUST_SMOKE_COLOR = Color3.fromRGB(200, 196, 188) -- mixed into the ground colour
+TUNE.DUST_GROUND_MIX = 0.55
+TUNE.DUST_WATER_COLOR = Color3.fromRGB(240, 246, 255) -- spray over the ocean
+TUNE.DUST_MIN_STRENGTH = 0.02
+TUNE.DUST_TRANSPARENCY = 0.3 -- CHANGED (Effects v2): was 0.35
+TUNE.DUST_TEXTURE = "rbxasset://textures/particles/smoke_main.dds"
 -- Re-entry heating and the vapour cone
-local AERO_MIN = 0.02
-local HEAT_QUANTUM = 0.05 -- heat steps at which colour / transparency sequences are rebuilt
+TUNE.AERO_MIN = 0.02
+TUNE.HEAT_QUANTUM = 0.05 -- heat steps at which colour / transparency sequences are rebuilt
 -- CHANGED (Effects v2): the plasma (sizes x the leading cross-section radius r; see EffectsMath.plasma)
-local SHELL_SPAN = 2 -- inner shell width, x r
-local SHELL_FORWARD = 0.2 -- inner shell centre, x its depth, upstream of the leading face
-local GLOW_SHELL_SPAN = 2.6 -- outer shell width, x r
-local GLOW_SHELL_DEPTH = 1.4 -- x the inner shell depth
-local GLOW_SHELL_FORWARD = 0.45
-local SHELL_FLICKER = 0.12 -- relative opacity flicker of the shells
-local SHELL_RESIZE = 0.05 -- relative size change before the shells are resized
-local CAP_RATE = 40 -- glow puffs/s on the shell at full heat
-local CAP_LIFETIME = NumberRange.new(0.12, 0.22)
-local CAP_SIZE0 = 1.1 -- x r
-local CAP_SIZE1 = 0.5
-local TONGUES_MAX = 8 -- beams built per heated craft (the tier enables Budget.tongues of them)
-local TONGUE_ROOT_RADIUS = 0.85 -- x r, around the leading face
-local TONGUE_ROOT_DOWNSTREAM = 0.15 -- x r, behind the leading face
-local TONGUE_TIP_RADIUS = 0.55 -- x r, the flames close in behind the craft
-local TONGUE_TIP_WIDTH = 0.1 -- x r
-local TONGUE_LENGTH_JITTER = 0.25 -- each tongue's length flickers down by up to this fraction
-local TONGUE_WIDTH_FLICKER = 0.15
-local TONGUE_BRIGHTNESS = 1.6
-local TONGUE_SEGMENTS = 6
-local HEAT_STREAK_RATE = 70 -- streaks/s at full heat
-local HEAT_STREAK_LIFETIME = 0.22 -- s
-local HEAT_STREAK_SQUASH = 1.8 -- ParticleEmitter.Squash: streaks stretched along their motion
-local EMBER_RATE = 35 -- embers/s at full heat
-local EMBER_LIFETIME = NumberRange.new(0.35, 0.8)
-local EMBER_SIZE = 0.35 -- studs x sqrt(r / 2)
-local EMBER_SHED = 0.12 -- embers leave the craft this fraction of the air speed slower than it
-local EMBER_PULL = 250 -- m/s^2 the air drags them back along the flow
-local EMBER_RANDOM = 25 -- m/s
-local EMBER_RIM = 0.9 -- x r, where embers peel off
-local HEAT_LIGHT = 5
-local HEAT_LIGHT_RANGE = 6 -- x r (capped at 60)
+TUNE.SHELL_SPAN = 2 -- inner shell width, x r
+TUNE.SHELL_FORWARD = 0.2 -- inner shell centre, x its depth, upstream of the leading face
+TUNE.GLOW_SHELL_SPAN = 2.6 -- outer shell width, x r
+TUNE.GLOW_SHELL_DEPTH = 1.4 -- x the inner shell depth
+TUNE.GLOW_SHELL_FORWARD = 0.45
+TUNE.SHELL_FLICKER = 0.12 -- relative opacity flicker of the shells
+TUNE.SHELL_RESIZE = 0.05 -- relative size change before the shells are resized
+TUNE.CAP_RATE = 40 -- glow puffs/s on the shell at full heat
+TUNE.CAP_LIFETIME = NumberRange.new(0.12, 0.22)
+TUNE.CAP_SIZE0 = 1.1 -- x r
+TUNE.CAP_SIZE1 = 0.5
+TUNE.TONGUES_MAX = 8 -- beams built per heated craft (the tier enables Budget.tongues of them)
+TUNE.TONGUE_ROOT_RADIUS = 0.85 -- x r, around the leading face
+TUNE.TONGUE_ROOT_DOWNSTREAM = 0.15 -- x r, behind the leading face
+TUNE.TONGUE_TIP_RADIUS = 0.55 -- x r, the flames close in behind the craft
+TUNE.TONGUE_TIP_WIDTH = 0.1 -- x r
+TUNE.TONGUE_LENGTH_JITTER = 0.25 -- each tongue's length flickers down by up to this fraction
+TUNE.TONGUE_WIDTH_FLICKER = 0.15
+TUNE.TONGUE_BRIGHTNESS = 1.6
+TUNE.TONGUE_SEGMENTS = 6
+TUNE.HEAT_STREAK_RATE = 70 -- streaks/s at full heat
+TUNE.HEAT_STREAK_LIFETIME = 0.22 -- s
+TUNE.HEAT_STREAK_SQUASH = 1.8 -- ParticleEmitter.Squash: streaks stretched along their motion
+TUNE.EMBER_RATE = 35 -- embers/s at full heat
+TUNE.EMBER_LIFETIME = NumberRange.new(0.35, 0.8)
+TUNE.EMBER_SIZE = 0.35 -- studs x sqrt(r / 2)
+TUNE.EMBER_SHED = 0.12 -- embers leave the craft this fraction of the air speed slower than it
+TUNE.EMBER_PULL = 250 -- m/s^2 the air drags them back along the flow
+TUNE.EMBER_RANDOM = 25 -- m/s
+TUNE.EMBER_RIM = 0.9 -- x r, where embers peel off
+TUNE.HEAT_LIGHT = 5
+TUNE.HEAT_LIGHT_RANGE = 6 -- x r (capped at 60)
 -- CHANGED (Effects v2): leading blocks' heat glow (High: Highlight fill on Block_<id> models)
-local TINT_MAX = 0.65 -- fill opacity at full soak
-local TINT_MIN = 0.03 -- soak below which the glow is released
-local TINT_REFRESH_S = 0.3 -- s between choices of the leading blocks
-local TINT_WEIGHTS = { 1, 0.8, 0.62, 0.48 } -- leading block first
-local TINT_EPSILON = 0.02
-local TINT_POOL_CRAFTS = 2 -- Highlights pooled = Budget.heatTint x this (Roblox draws at most 31 at once)
-local VAPOR_COLOR = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(235, 240, 248))
-local VAPOR_OPACITY = 0.6 -- peak opacity of the vapour cone
-local VAPOR_FLICKER = 0.14
+TUNE.TINT_MAX = 0.65 -- fill opacity at full soak
+TUNE.TINT_MIN = 0.03 -- soak below which the glow is released
+TUNE.TINT_REFRESH_S = 0.3 -- s between choices of the leading blocks
+TUNE.TINT_WEIGHTS = { 1, 0.8, 0.62, 0.48 } -- leading block first
+TUNE.TINT_EPSILON = 0.02
+TUNE.TINT_POOL_CRAFTS = 2 -- Highlights pooled = Budget.heatTint x this (Roblox draws at most 31 at once)
+TUNE.VAPOR_COLOR = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(235, 240, 248))
+TUNE.VAPOR_OPACITY = 0.6 -- peak opacity of the vapour cone
+TUNE.VAPOR_FLICKER = 0.14
 -- CHANGED (Effects v2): vapour collar puffs (Medium+)
-local COLLAR_RATE = 45
-local COLLAR_SPEED = 20 -- m/s back along the craft
-local COLLAR_LIFETIME = NumberRange.new(0.15, 0.3)
-local COLLAR_OPACITY = 0.5
-local FIRE_TEXTURE = "rbxasset://textures/particles/fire_main.dds"
-local SPARK_TEXTURE = "rbxasset://textures/particles/sparkles_main.dds"
-local SMOKE_TEXTURE = "rbxasset://textures/particles/smoke_main.dds"
+TUNE.COLLAR_RATE = 45
+TUNE.COLLAR_SPEED = 20 -- m/s back along the craft
+TUNE.COLLAR_LIFETIME = NumberRange.new(0.15, 0.3)
+TUNE.COLLAR_OPACITY = 0.5
+TUNE.FIRE_TEXTURE = "rbxasset://textures/particles/fire_main.dds"
+TUNE.SPARK_TEXTURE = "rbxasset://textures/particles/sparkles_main.dds"
+TUNE.SMOKE_TEXTURE = "rbxasset://textures/particles/smoke_main.dds"
 -- One-shot bursts (ignition, cut-off, separation, explosions)
-local BURST_SMOKE_COLOR = ColorSequence.new(Color3.fromRGB(240, 238, 232), Color3.fromRGB(158, 156, 154))
-local BURST_DARK_SMOKE_COLOR = ColorSequence.new({
+TUNE.BURST_SMOKE_COLOR = ColorSequence.new(Color3.fromRGB(240, 238, 232), Color3.fromRGB(158, 156, 154))
+TUNE.BURST_DARK_SMOKE_COLOR = ColorSequence.new({
 	ColorSequenceKeypoint.new(0, Color3.fromRGB(120, 92, 70)), -- CHANGED (Effects v2): lit by the fire at first
 	ColorSequenceKeypoint.new(0.25, Color3.fromRGB(70, 64, 60)),
 	ColorSequenceKeypoint.new(1, Color3.fromRGB(42, 40, 40)),
 })
-local BURST_FIRE_COLOR = ColorSequence.new({
+TUNE.BURST_FIRE_COLOR = ColorSequence.new({
 	ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 250, 210)),
 	ColorSequenceKeypoint.new(0.3, Color3.fromRGB(255, 180, 60)),
 	ColorSequenceKeypoint.new(0.7, Color3.fromRGB(230, 80, 20)),
 	ColorSequenceKeypoint.new(1, Color3.fromRGB(90, 30, 15)),
 })
-local BURST_SPARK_COLOR = ColorSequence.new(Color3.fromRGB(255, 240, 180), Color3.fromRGB(255, 120, 40))
-local BURST_LIGHT_COLOR = Color3.fromRGB(255, 190, 120)
-local BURST_ACTIVE_S = 4 -- a burst counts as live (accelerations rewritten, F3) this long
+TUNE.BURST_SPARK_COLOR = ColorSequence.new(Color3.fromRGB(255, 240, 180), Color3.fromRGB(255, 120, 40))
+TUNE.BURST_LIGHT_COLOR = Color3.fromRGB(255, 190, 120)
+TUNE.BURST_ACTIVE_S = 4 -- a burst counts as live (accelerations rewritten, F3) this long
 -- Stage separation
-local SEPARATION_SMOKE = 14 -- CHANGED (Effects v2): was 10
-local SEPARATION_SPARKS = 12 -- CHANGED (Effects v2): was 10
-local SEPARATION_LIGHT = 5
-local SEPARATION_FLASH_TIME = 0.15 -- CHANGED (Effects v2): pyro flash
+TUNE.SEPARATION_SMOKE = 14 -- CHANGED (Effects v2): was 10
+TUNE.SEPARATION_SPARKS = 12 -- CHANGED (Effects v2): was 10
+TUNE.SEPARATION_LIGHT = 5
+TUNE.SEPARATION_FLASH_TIME = 0.15 -- CHANGED (Effects v2): pyro flash
 -- Explosions
-local EXPLOSIONS_PER_SECOND = 10 -- refill rate of the explosion budget
-local EXPLOSION_BUDGET = 12 -- most explosions in one burst of events
-local FIREBALL_TIME = 0.5 -- s for a 4-stud block (grows with sqrt of the scale)
-local FIREBALL_SIZE0 = 2.5 -- studs x explosion scale
-local FIREBALL_SIZE1 = 9
+TUNE.EXPLOSIONS_PER_SECOND = 10 -- refill rate of the explosion budget
+TUNE.EXPLOSION_BUDGET = 12 -- most explosions in one burst of events
+TUNE.FIREBALL_TIME = 0.5 -- s for a 4-stud block (grows with sqrt of the scale)
+TUNE.FIREBALL_SIZE0 = 2.5 -- studs x explosion scale
+TUNE.FIREBALL_SIZE1 = 9
 -- CHANGED (Effects v2): the outer fireball of a main blast: bigger, slower, fading to soot
-local OUTER_FIREBALL_TIME = 1.6 -- x the core's duration
-local OUTER_FIREBALL_SIZE = 1.5 -- x the core's sizes
-local OUTER_FIREBALL_OPACITY = 0.6
-local FLASH_OPACITY = 0.85
-local BIT_SPEED_MIN = 15
-local BIT_SPEED_MAX = 40
-local BIT_LIFETIME_MIN = 0.8
-local BIT_LIFETIME_MAX = 1.6
-local BIT_SIZE = 0.7 -- studs x sqrt(scale)
-local BIT_COLOR = Color3.fromRGB(255, 150, 60)
-local BIT_AIR_COUPLING = 0.35 -- CHANGED (Effects v2): debris is heavy: it only partly follows the air at once
-local EXPLOSION_LIGHT = 10
-local EXPLOSION_LIGHT_TIME = 0.6
-local MAIN_BLAST_MIN_BLOCKS = 2 -- CHANGED (Effects v2): events with at least this many blocks get a main blast
-local CLASSIC_MAX_DRIFT = 30 -- m/s; not when the air streams past fast (the classic effect cannot move)
-local CLASSIC_CLEANUP_S = 3
+TUNE.OUTER_FIREBALL_TIME = 1.6 -- x the core's duration
+TUNE.OUTER_FIREBALL_SIZE = 1.5 -- x the core's sizes
+TUNE.OUTER_FIREBALL_OPACITY = 0.6
+TUNE.FLASH_OPACITY = 0.85
+TUNE.BIT_SPEED_MIN = 15
+TUNE.BIT_SPEED_MAX = 40
+TUNE.BIT_LIFETIME_MIN = 0.8
+TUNE.BIT_LIFETIME_MAX = 1.6
+TUNE.BIT_SIZE = 0.7 -- studs x sqrt(scale)
+TUNE.BIT_COLOR = Color3.fromRGB(255, 150, 60)
+TUNE.BIT_AIR_COUPLING = 0.35 -- CHANGED (Effects v2): debris is heavy: it only partly follows the air at once
+TUNE.EXPLOSION_LIGHT = 10
+TUNE.EXPLOSION_LIGHT_TIME = 0.6
+TUNE.MAIN_BLAST_MIN_BLOCKS = 2 -- CHANGED (Effects v2): events with at least this many blocks get a main blast
+TUNE.CLASSIC_MAX_DRIFT = 30 -- m/s; not when the air streams past fast (the classic effect cannot move)
+TUNE.CLASSIC_CLEANUP_S = 3
 --============================================================================
 
 type Vec3d = Vec3d.Vec3d
@@ -459,7 +462,7 @@ local fireballs: { Fireball } = {}
 local bits: { Bit } = {}
 local dedupe: { [string]: number } = {}
 local dedupeTimer = 0
-local explosionBudget = EXPLOSION_BUDGET
+local explosionBudget = TUNE.EXPLOSION_BUDGET
 local eventScratch: { Plumes.PlumeEvent } = {}
 local bitParts: { BasePart } = {}
 local bitCFrames: { CFrame } = {}
@@ -501,7 +504,7 @@ local function getFolder(): Folder
 		return current
 	end
 	local created = Instance.new("Folder")
-	created.Name = FOLDER_NAME
+	created.Name = TUNE.FOLDER_NAME
 	local universe = workspace:FindFirstChild("ClientUniverse")
 	created.Parent = universe or workspace
 	folder = created
@@ -519,7 +522,7 @@ local function carrierPart(name: string): Part
 	part.CanTouch = false
 	part.CastShadow = false
 	part.Locked = true
-	part.CFrame = PARK_CFRAME
+	part.CFrame = TUNE.PARK_CFRAME
 	part.Parent = getFolder()
 	return part
 end
@@ -573,7 +576,7 @@ local function fadeSequence(start: number): NumberSequence
 end
 
 local function moved(a: number, b: number): boolean
-	return math.abs(a - b) > AIM_EPSILON * math.max(math.abs(b), 1)
+	return math.abs(a - b) > TUNE.AIM_EPSILON * math.max(math.abs(b), 1)
 end
 
 -- Points an emitter (on its own attachment) so its particles move with `velocity` plus up to `randomSpeed`.
@@ -606,7 +609,7 @@ end
 local function firstTime(key: string): boolean
 	local seen = dedupe[key]
 	local time = os.clock()
-	if seen and time - seen < DEDUPE_S then
+	if seen and time - seen < TUNE.DEDUPE_S then
 		return false
 	end
 	dedupe[key] = time
@@ -692,8 +695,8 @@ local function takeTrail(): TrailSlot?
 	trailCount += 1
 	local part = carrierPart("Trail")
 	local attachment = newAttachment(part, "Emit")
-	local emitter = newEmitter(attachment, "Smoke", TRAIL_TEXTURE)
-	emitter.Color = TRAIL_COLOR
+	local emitter = newEmitter(attachment, "Smoke", TUNE.TRAIL_TEXTURE)
+	emitter.Color = TUNE.TRAIL_COLOR
 	emitter.LightEmission = 0.05
 	emitter.LightInfluence = 1
 	emitter.ZOffset = -1
@@ -726,13 +729,13 @@ local function takeDust(): DustSlot?
 	local part = carrierPart("Dust")
 	local attachments: { Attachment } = {}
 	local emitters: { ParticleEmitter } = {}
-	for index = 1, DUST_EMITTERS_MAX do
+	for index = 1, TUNE.DUST_EMITTERS_MAX do
 		local attachment = newAttachment(part, "Ring" .. index)
-		local emitter = newEmitter(attachment, "Dust", DUST_TEXTURE)
+		local emitter = newEmitter(attachment, "Dust", TUNE.DUST_TEXTURE)
 		emitter.LightEmission = 0
 		emitter.LightInfluence = 1
-		emitter.Lifetime = DUST_LIFETIME
-		emitter.Transparency = fadeSequence(DUST_TRANSPARENCY)
+		emitter.Lifetime = TUNE.DUST_LIFETIME
+		emitter.Transparency = fadeSequence(TUNE.DUST_TRANSPARENCY)
 		emitter.RotSpeed = NumberRange.new(-25, 25)
 		table.insert(attachments, attachment)
 		table.insert(emitters, emitter)
@@ -769,14 +772,14 @@ end
 
 -- CHANGED (Effects v2): tongues are built up to the tier's count (a higher tier later adds the missing ones).
 local function ensureTongues(aero: AeroSlot, count: number)
-	for index = #aero.tongues + 1, math.min(count, TONGUES_MAX) do
+	for index = #aero.tongues + 1, math.min(count, TUNE.TONGUES_MAX) do
 		local root = newAttachment(aero.part, "TongueRoot" .. index)
 		local tip = newAttachment(aero.part, "TongueTip" .. index)
-		local beam = newBeam(aero.part, "Tongue" .. index, root, tip, VAPOR_COLOR)
+		local beam = newBeam(aero.part, "Tongue" .. index, root, tip, TUNE.VAPOR_COLOR)
 		beam.LightEmission = 1
 		beam.LightInfluence = 0
-		beam.Brightness = TONGUE_BRIGHTNESS
-		beam.Segments = TONGUE_SEGMENTS
+		beam.Brightness = TUNE.TONGUE_BRIGHTNESS
+		beam.Segments = TUNE.TONGUE_SEGMENTS
 		table.insert(aero.tongues, {
 			root = root,
 			tip = tip,
@@ -805,34 +808,34 @@ local function takeAero(): AeroSlot?
 	local collar = newAttachment(part, "Collar")
 
 	-- glow puffs from the inner shell's volume, drifting downstream with it
-	local cap = newEmitter(shell, "Glow", FIRE_TEXTURE)
+	local cap = newEmitter(shell, "Glow", TUNE.FIRE_TEXTURE)
 	cap.LockedToPart = true
 	cap.LightEmission = 1
 	cap.LightInfluence = 0
-	cap.Lifetime = CAP_LIFETIME
+	cap.Lifetime = TUNE.CAP_LIFETIME
 	cap.Speed = NumberRange.new(0, 4)
 	cap.SpreadAngle = Vector2.new(50, 50)
 	cap.Transparency = fadeSequence(0.25)
 	cap.RotSpeed = NumberRange.new(-200, 200)
 
 	-- emitted from the carrier part's volume (a slab across the leading side), streaming backward (+Y)
-	local streaks = newEmitter(part, "Streaks", FIRE_TEXTURE)
+	local streaks = newEmitter(part, "Streaks", TUNE.FIRE_TEXTURE)
 	streaks.LockedToPart = true
 	streaks.LightEmission = 1
 	streaks.LightInfluence = 0
-	streaks.Lifetime = NumberRange.new(HEAT_STREAK_LIFETIME * 0.7, HEAT_STREAK_LIFETIME)
+	streaks.Lifetime = NumberRange.new(TUNE.HEAT_STREAK_LIFETIME * 0.7, TUNE.HEAT_STREAK_LIFETIME)
 	streaks.SpreadAngle = Vector2.new(6, 6)
 	streaks.Orientation = Enum.ParticleOrientation.VelocityParallel
-	streaks.Squash = NumberSequence.new(HEAT_STREAK_SQUASH)
+	streaks.Squash = NumberSequence.new(TUNE.HEAT_STREAK_SQUASH)
 	streaks.Transparency = fadeSequence(0.25)
 	streaks.Rotation = NumberRange.new(0, 0)
 	streaks.RotSpeed = NumberRange.new(0, 0)
 
 	-- embers: free particles that peel off the rim and are dragged away by the air
-	local embers = newEmitter(ember, "Embers", SPARK_TEXTURE)
+	local embers = newEmitter(ember, "Embers", TUNE.SPARK_TEXTURE)
 	embers.LightEmission = 1
 	embers.LightInfluence = 0
-	embers.Lifetime = EMBER_LIFETIME
+	embers.Lifetime = TUNE.EMBER_LIFETIME
 	embers.Orientation = Enum.ParticleOrientation.VelocityParallel
 	embers.Squash = NumberSequence.new(1.4)
 	embers.Transparency = fadeSequence(0)
@@ -843,14 +846,14 @@ local function takeAero(): AeroSlot?
 	})
 
 	-- vapour collar puffs: free particles that keep pace with the craft and slide back a little
-	local collarPuffs = newEmitter(collar, "Collar", SMOKE_TEXTURE)
-	collarPuffs.Color = VAPOR_COLOR
+	local collarPuffs = newEmitter(collar, "Collar", TUNE.SMOKE_TEXTURE)
+	collarPuffs.Color = TUNE.VAPOR_COLOR
 	collarPuffs.LightEmission = 0.15
 	collarPuffs.LightInfluence = 1
-	collarPuffs.Lifetime = COLLAR_LIFETIME
+	collarPuffs.Lifetime = TUNE.COLLAR_LIFETIME
 	collarPuffs.RotSpeed = NumberRange.new(-60, 60)
 
-	local vapor = newBeam(part, "Vapor", vaporStart, vaporEnd, VAPOR_COLOR)
+	local vapor = newBeam(part, "Vapor", vaporStart, vaporEnd, TUNE.VAPOR_COLOR)
 	vapor.LightEmission = 0.2
 	vapor.LightInfluence = 1
 
@@ -901,8 +904,8 @@ local function heatOff(aero: AeroSlot)
 	aero.tongueCount = 0
 	aero.shell.Transparency = 1
 	aero.glowShell.Transparency = 1
-	aero.shell.CFrame = PARK_CFRAME
-	aero.glowShell.CFrame = PARK_CFRAME
+	aero.shell.CFrame = TUNE.PARK_CFRAME
+	aero.glowShell.CFrame = TUNE.PARK_CFRAME
 	aero.light.Enabled = false
 	aero.heatLevel = -1
 	aero.heatRadius = -1
@@ -919,7 +922,7 @@ end
 local function releaseAero(slot: AeroSlot)
 	heatOff(slot)
 	vaporOff(slot)
-	slot.part.CFrame = PARK_CFRAME
+	slot.part.CFrame = TUNE.PARK_CFRAME
 	table.insert(freeAero, slot)
 end
 
@@ -935,7 +938,7 @@ local function takeTint(): TintSlot?
 	if slot then
 		return slot
 	end
-	if tintCount >= budget.heatTint * TINT_POOL_CRAFTS then
+	if tintCount >= budget.heatTint * TUNE.TINT_POOL_CRAFTS then
 		return nil
 	end
 	tintCount += 1
@@ -987,20 +990,20 @@ local function takeBurst(): Burst
 		local smokeAttachment = newAttachment(part, "Smoke")
 		local fireAttachment = newAttachment(part, "Fire")
 		local sparkAttachment = newAttachment(part, "Sparks")
-		local smoke = newEmitter(smokeAttachment, "Smoke", SMOKE_TEXTURE)
+		local smoke = newEmitter(smokeAttachment, "Smoke", TUNE.SMOKE_TEXTURE)
 		smoke.Enabled = false
 		smoke.LightInfluence = 1
 		smoke.LightEmission = 0.05
-		local fire = newEmitter(fireAttachment, "Fire", FIRE_TEXTURE)
+		local fire = newEmitter(fireAttachment, "Fire", TUNE.FIRE_TEXTURE)
 		fire.Enabled = false
-		fire.Color = BURST_FIRE_COLOR
+		fire.Color = TUNE.BURST_FIRE_COLOR
 		fire.LightEmission = 1
 		fire.LightInfluence = 0
 		fire.Transparency = fadeSequence(0.1)
 		fire.RotSpeed = NumberRange.new(-120, 120)
-		local sparks = newEmitter(sparkAttachment, "Sparks", SPARK_TEXTURE)
+		local sparks = newEmitter(sparkAttachment, "Sparks", TUNE.SPARK_TEXTURE)
 		sparks.Enabled = false
-		sparks.Color = BURST_SPARK_COLOR
+		sparks.Color = TUNE.BURST_SPARK_COLOR
 		sparks.LightEmission = 1
 		sparks.LightInfluence = 0
 		sparks.Transparency = fadeSequence(0)
@@ -1008,7 +1011,7 @@ local function takeBurst(): Burst
 		sparks.Squash = NumberSequence.new(1.6) -- CHANGED (Effects v2): was 1.2; streakier sparks
 		local light = Instance.new("PointLight")
 		light.Name = "Flash"
-		light.Color = BURST_LIGHT_COLOR
+		light.Color = TUNE.BURST_LIGHT_COLOR
 		light.Shadows = false
 		light.Enabled = false
 		light.Parent = part
@@ -1055,7 +1058,7 @@ local function spawnBurst(position: Vector3, drift: Vector3, inAir: boolean, spe
 	local burst = takeBurst()
 	burst.part.CFrame = CFrame.new(position)
 	burst.age = 0
-	burst.buoyancy = if inAir then smokeUp * SMOKE_BUOYANCY else Vector3.zero
+	burst.buoyancy = if inAir then smokeUp * TUNE.SMOKE_BUOYANCY else Vector3.zero
 	local accel = -frameAccel
 	local smokeCount = scaledCount(spec.smoke)
 	if smokeCount > 0 then
@@ -1109,7 +1112,7 @@ local function newFireball(): Fireball
 	part.CastShadow = false
 	part.Locked = true
 	part.Transparency = 1
-	part.CFrame = PARK_CFRAME
+	part.CFrame = TUNE.PARK_CFRAME
 	part.Parent = getFolder()
 	return {
 		part = part,
@@ -1134,12 +1137,12 @@ local FLASH_COLOR = Color3.fromRGB(255, 255, 240)
 
 local function fireballLook(kind: FireballKind, f: number): (Color3, number)
 	if kind == "Flash" then
-		return FLASH_COLOR, 1 - FLASH_OPACITY * (1 - f) * (1 - f)
+		return FLASH_COLOR, 1 - TUNE.FLASH_OPACITY * (1 - f) * (1 - f)
 	elseif kind == "Outer" then
 		local color = if f < 0.45
 			then OUTER_START:Lerp(OUTER_MID, f / 0.45)
 			else OUTER_MID:Lerp(OUTER_END, (f - 0.45) / 0.55)
-		return color, 1 - OUTER_FIREBALL_OPACITY * (1 - f ^ 1.3)
+		return color, 1 - TUNE.OUTER_FIREBALL_OPACITY * (1 - f ^ 1.3)
 	end
 	local color = if f < 0.4 then CORE_HOT:Lerp(CORE_MID, f / 0.4) else CORE_MID:Lerp(CORE_END, (f - 0.4) / 0.6)
 	return color, f ^ 1.5
@@ -1186,7 +1189,7 @@ local function newBit(): Bit
 	local part = Instance.new("Part")
 	part.Name = "Debris"
 	part.Material = Enum.Material.Neon
-	part.Color = BIT_COLOR
+	part.Color = TUNE.BIT_COLOR
 	part.Anchored = true
 	part.CanCollide = false
 	part.CanQuery = false
@@ -1194,8 +1197,8 @@ local function newBit(): Bit
 	part.CastShadow = false
 	part.Locked = true
 	part.Transparency = 1
-	part.Size = Vector3.one * BIT_SIZE
-	part.CFrame = PARK_CFRAME
+	part.Size = Vector3.one * TUNE.BIT_SIZE
+	part.CFrame = TUNE.PARK_CFRAME
 	local a0 = newAttachment(part, "TrailA")
 	a0.Position = Vector3.new(0, 0.25, 0)
 	local a1 = newAttachment(part, "TrailB")
@@ -1207,7 +1210,7 @@ local function newBit(): Bit
 	trail.FaceCamera = true
 	trail.LightEmission = 1
 	trail.LightInfluence = 0
-	trail.Color = BURST_SPARK_COLOR
+	trail.Color = TUNE.BURST_SPARK_COLOR
 	trail.Transparency = NumberSequence.new(0.2, 1)
 	trail.Enabled = false
 	trail.Parent = part
@@ -1220,7 +1223,7 @@ local function newBit(): Bit
 		life = 1,
 		velocity = Vector3.zero,
 		spin = Vector3.zero,
-		size = BIT_SIZE,
+		size = TUNE.BIT_SIZE,
 	}
 end
 
@@ -1249,10 +1252,10 @@ local function spawnBits(position: Vector3, scale: number, drift: Vector3, count
 		local bit = chosen :: Bit
 		bit.active = true
 		bit.age = 0
-		bit.life = rng:NextNumber(BIT_LIFETIME_MIN, BIT_LIFETIME_MAX)
-		bit.velocity = drift + randomUnit() * rng:NextNumber(BIT_SPEED_MIN, BIT_SPEED_MAX) * root
+		bit.life = rng:NextNumber(TUNE.BIT_LIFETIME_MIN, TUNE.BIT_LIFETIME_MAX)
+		bit.velocity = drift + randomUnit() * rng:NextNumber(TUNE.BIT_SPEED_MIN, TUNE.BIT_SPEED_MAX) * root
 		bit.spin = randomUnit() * rng:NextNumber(4, 12)
-		bit.size = BIT_SIZE * root * rng:NextNumber(0.6, 1.4)
+		bit.size = TUNE.BIT_SIZE * root * rng:NextNumber(0.6, 1.4)
 		bit.trail.Enabled = false
 		bit.part.Size = Vector3.one * bit.size
 		bit.part.Transparency = 0
@@ -1273,13 +1276,13 @@ local function clearOneShots()
 	for _, fireball in fireballs do
 		fireball.active = false
 		fireball.part.Transparency = 1
-		fireball.part.CFrame = PARK_CFRAME
+		fireball.part.CFrame = TUNE.PARK_CFRAME
 	end
 	for _, bit in bits do
 		bit.active = false
 		bit.trail.Enabled = false
 		bit.part.Transparency = 1
-		bit.part.CFrame = PARK_CFRAME
+		bit.part.CFrame = TUNE.PARK_CFRAME
 	end
 	for _, record in records do
 		if record.trail then
@@ -1349,7 +1352,7 @@ local function applyTier()
 	for _, slot in freeAero do
 		ensureTongues(slot, budget.tongues)
 	end
-	while #freeTints > budget.heatTint * TINT_POOL_CRAFTS do
+	while #freeTints > budget.heatTint * TUNE.TINT_POOL_CRAFTS do
 		local slot = table.remove(freeTints) :: TintSlot
 		slot.highlight:Destroy()
 		tintCount -= 1
@@ -1390,7 +1393,7 @@ local function plumeEvent(event: Plumes.PlumeEvent, drift: Vector3, pressure: nu
 			smokeSize0 = d * 0.8,
 			smokeSize1 = d * 2.8,
 			smokeLife = NumberRange.new(1, 1.6),
-			smokeColor = BURST_SMOKE_COLOR,
+			smokeColor = TUNE.BURST_SMOKE_COLOR,
 			smokeTransparency = 0.4,
 			fire = 0,
 			fireRandom = 0,
@@ -1415,7 +1418,7 @@ local function plumeEvent(event: Plumes.PlumeEvent, drift: Vector3, pressure: nu
 			smokeSize0 = d,
 			smokeSize1 = d * 3.2,
 			smokeLife = NumberRange.new(1.2, 2.2),
-			smokeColor = if event.solid then BURST_DARK_SMOKE_COLOR else BURST_SMOKE_COLOR,
+			smokeColor = if event.solid then TUNE.BURST_DARK_SMOKE_COLOR else TUNE.BURST_SMOKE_COLOR,
 			smokeTransparency = 1 - 0.55 * strength,
 			fire = 0,
 			fireRandom = 0,
@@ -1437,30 +1440,30 @@ end
 local function separation(position: Vector3, size: Vector3, outward: Vector3, drift: Vector3, inAir: boolean)
 	local s = math.max(size.Magnitude / 3, 1)
 	spawnBurst(position, drift, inAir, {
-		smoke = SEPARATION_SMOKE,
+		smoke = TUNE.SEPARATION_SMOKE,
 		smokeVelocity = outward * 6,
 		smokeRandom = 12,
 		smokeSize0 = s * 1.1,
 		smokeSize1 = s * 4.5,
 		smokeLife = NumberRange.new(0.8, 1.8),
-		smokeColor = BURST_SMOKE_COLOR,
+		smokeColor = TUNE.BURST_SMOKE_COLOR,
 		smokeTransparency = 0.15,
 		fire = 0,
 		fireRandom = 0,
 		fireSize0 = 0,
 		fireSize1 = 0,
 		fireLife = NumberRange.new(0.2),
-		sparks = SEPARATION_SPARKS,
+		sparks = TUNE.SEPARATION_SPARKS,
 		sparkVelocity = outward * 22,
 		sparkRandom = 28,
 		sparkSize = 0.4,
 		sparkLife = NumberRange.new(0.25, 0.55),
-		light = SEPARATION_LIGHT,
+		light = TUNE.SEPARATION_LIGHT,
 		lightRange = 6 * s,
 		lightDuration = 0.25,
 	})
 	-- CHANGED (Effects v2): the pyro bolts' flash
-	spawnFireball("Flash", position, SEPARATION_FLASH_TIME, s * 0.8, s * 2.2, drift)
+	spawnFireball("Flash", position, TUNE.SEPARATION_FLASH_TIME, s * 0.8, s * 2.2, drift)
 end
 
 -- CHANGED (Effects v2): `k` = explosion scale; `main` = the crash's main blast (outer fireball, more of everything).
@@ -1485,7 +1488,7 @@ local function explosion(
 		smokeSize0 = 3 * k,
 		smokeSize1 = 11 * k,
 		smokeLife = NumberRange.new(1.8, 3.5),
-		smokeColor = BURST_DARK_SMOKE_COLOR,
+		smokeColor = TUNE.BURST_DARK_SMOKE_COLOR,
 		smokeTransparency = 0.1,
 		fire = 14 * root * more,
 		fireRandom = 18 * root,
@@ -1497,25 +1500,25 @@ local function explosion(
 		sparkRandom = 50 * root,
 		sparkSize = 0.5 * root,
 		sparkLife = NumberRange.new(0.3, 0.9),
-		light = EXPLOSION_LIGHT,
+		light = TUNE.EXPLOSION_LIGHT,
 		lightRange = 18 * k,
-		lightDuration = EXPLOSION_LIGHT_TIME,
+		lightDuration = TUNE.EXPLOSION_LIGHT_TIME,
 	})
-	local duration = FIREBALL_TIME * math.sqrt(k)
-	spawnFireball("Core", position, duration, FIREBALL_SIZE0 * k, FIREBALL_SIZE1 * k, drift)
+	local duration = TUNE.FIREBALL_TIME * math.sqrt(k)
+	spawnFireball("Core", position, duration, TUNE.FIREBALL_SIZE0 * k, TUNE.FIREBALL_SIZE1 * k, drift)
 	if main then
 		spawnFireball(
 			"Outer",
 			position,
-			duration * OUTER_FIREBALL_TIME,
-			FIREBALL_SIZE0 * k * OUTER_FIREBALL_SIZE,
-			FIREBALL_SIZE1 * k * OUTER_FIREBALL_SIZE,
+			duration * TUNE.OUTER_FIREBALL_TIME,
+			TUNE.FIREBALL_SIZE0 * k * TUNE.OUTER_FIREBALL_SIZE,
+			TUNE.FIREBALL_SIZE1 * k * TUNE.OUTER_FIREBALL_SIZE,
 			drift
 		)
 	end
 	local debris = budget.debrisPerExplosion * (if main then 2 else 1)
 	spawnBits(position, k, debrisDrift, scaledCount(debris))
-	if budget.classicExplosion and drift.Magnitude < CLASSIC_MAX_DRIFT then
+	if budget.classicExplosion and drift.Magnitude < TUNE.CLASSIC_MAX_DRIFT then
 		local classic = Instance.new("Explosion")
 		classic.Position = position
 		classic.BlastRadius = 4 * k
@@ -1524,7 +1527,7 @@ local function explosion(
 		classic.ExplosionType = Enum.ExplosionType.NoCraters
 		classic.Visible = true
 		classic.Parent = getFolder()
-		task.delay(CLASSIC_CLEANUP_S, function()
+		task.delay(TUNE.CLASSIC_CLEANUP_S, function()
 			classic:Destroy()
 		end)
 	end
@@ -1552,21 +1555,22 @@ local function updateTrail(
 	end
 	local trail = slot :: TrailSlot
 	local emitter = trail.emitter
-	local rate = TRAIL_RATE_MAX * strength * quality
+	local rate = TUNE.TRAIL_RATE_MAX * strength * quality
 	trail.part.CFrame = CFrame.new(point)
-	aim(trail.attachment, emitter, point, record.drift, TRAIL_RANDOM_SPEED)
+	aim(trail.attachment, emitter, point, record.drift, TUNE.TRAIL_RANDOM_SPEED)
 	emitter.Rate = rate
-	emitter.Acceleration = -frameAccel + smokeUp * SMOKE_BUOYANCY * 0.3
+	emitter.Acceleration = -frameAccel + smokeUp * TUNE.SMOKE_BUOYANCY * 0.3
 	local size = EffectsMath.trailSize(airSpeed, rate, width)
 	if math.abs(size - trail.size) > 0.1 * trail.size then
 		trail.size = size
 		emitter.Size = NumberSequence.new({
 			NumberSequenceKeypoint.new(0, size * 0.6),
 			NumberSequenceKeypoint.new(0.15, size),
-			NumberSequenceKeypoint.new(1, size * TRAIL_GROWTH),
+			NumberSequenceKeypoint.new(1, size * TUNE.TRAIL_GROWTH),
 		})
 	end
-	local transparency = TRAIL_TRANSPARENCY_LIQUID + (TRAIL_TRANSPARENCY_SOLID - TRAIL_TRANSPARENCY_LIQUID) * solidShare
+	local transparency = TUNE.TRAIL_TRANSPARENCY_LIQUID
+		+ (TUNE.TRAIL_TRANSPARENCY_SOLID - TUNE.TRAIL_TRANSPARENCY_LIQUID) * solidShare
 	transparency = 1 - (1 - transparency) * math.sqrt(strength)
 	if math.abs(transparency - trail.transparency) > 0.04 then
 		trail.transparency = transparency
@@ -1579,19 +1583,19 @@ local function updateTrail(
 		emitter.Lifetime = NumberRange.new(lifetime * 0.8, lifetime)
 	end
 	-- CHANGED (Effects v2): booster smoke is greyer
-	local solidColor = solidShare > TRAIL_SOLID_COLOR_SHARE
+	local solidColor = solidShare > TUNE.TRAIL_SOLID_COLOR_SHARE
 	if solidColor ~= trail.solidColor then
 		trail.solidColor = solidColor
-		emitter.Color = if solidColor then TRAIL_COLOR_SOLID else TRAIL_COLOR
+		emitter.Color = if solidColor then TUNE.TRAIL_COLOR_SOLID else TUNE.TRAIL_COLOR
 	end
 end
 
 local function dustColorFor(bodyId: number, up: Vec3d): Color3
 	local r, g, b, kind = Biome.sample(bodyId, up.x, up.y, up.z)
 	if kind == "Ocean" then
-		return DUST_WATER_COLOR
+		return TUNE.DUST_WATER_COLOR
 	end
-	return Color3.new(r, g, b):Lerp(DUST_SMOKE_COLOR, 1 - DUST_GROUND_MIX)
+	return Color3.new(r, g, b):Lerp(TUNE.DUST_SMOKE_COLOR, 1 - TUNE.DUST_GROUND_MIX)
 end
 
 local function updateDust(
@@ -1614,8 +1618,8 @@ local function updateDust(
 	local frame = EffectsMath.frameWithUp(ground, upWs)
 	dust.part.CFrame = frame
 	local spread = math.sqrt(math.max(diameter, 1) / 4)
-	local size = DUST_SIZE * (0.6 + 0.4 * strength) * spread
-	local active = math.clamp(budget.dustEmitters, 1, DUST_EMITTERS_MAX)
+	local size = TUNE.DUST_SIZE * (0.6 + 0.4 * strength) * spread
+	local active = math.clamp(budget.dustEmitters, 1, TUNE.DUST_EMITTERS_MAX)
 	local rebuilt = active ~= dust.active -- CHANGED (Effects v2): emitters per ring follow the tier
 	local resize = rebuilt or math.abs(size - dust.size) > 0.1 * dust.size
 	if resize then
@@ -1625,9 +1629,9 @@ local function updateDust(
 	dust.color = color
 	dust.active = active
 	local driftSpeed = record.drift.Magnitude
-	local drag = DUST_DRAG * (1 - math.clamp(driftSpeed / DUST_DRAG_FADE_SPEED, 0, 1))
-	local rate = DUST_RATE_MAX / active * strength * quality
-	local outSpeed = DUST_OUT_SPEED * (0.5 + 0.5 * strength)
+	local drag = TUNE.DUST_DRAG * (1 - math.clamp(driftSpeed / TUNE.DUST_DRAG_FADE_SPEED, 0, 1))
+	local rate = TUNE.DUST_RATE_MAX / active * strength * quality
+	local outSpeed = TUNE.DUST_OUT_SPEED * (0.5 + 0.5 * strength)
 	for index, emitter in dust.emitters do
 		if index > active then
 			if rebuilt then
@@ -1642,17 +1646,17 @@ local function updateDust(
 			dust.attachments[index],
 			emitter,
 			origin,
-			outward * outSpeed + upWs * DUST_RISE_SPEED + record.drift,
-			DUST_RANDOM_SPEED
+			outward * outSpeed + upWs * TUNE.DUST_RISE_SPEED + record.drift,
+			TUNE.DUST_RANDOM_SPEED
 		)
 		emitter.Rate = rate
 		emitter.Drag = drag
 		emitter.Acceleration = -frameAccel
 		if resize then
-			emitter.Size = sizeSequence(size, size * DUST_GROWTH)
+			emitter.Size = sizeSequence(size, size * TUNE.DUST_GROWTH)
 		end
 		if recolor then
-			emitter.Color = ColorSequence.new(color, color:Lerp(DUST_SMOKE_COLOR, 0.4))
+			emitter.Color = ColorSequence.new(color, color:Lerp(TUNE.DUST_SMOKE_COLOR, 0.4))
 		end
 	end
 end
@@ -1724,9 +1728,9 @@ local function updateAero(
 		aero.part.Size = slab
 	end
 
-	if heat > AERO_MIN then
+	if heat > TUNE.AERO_MIN then
 		local shape = EffectsMath.plasma(heat)
-		local level = math.ceil(heat / HEAT_QUANTUM) * HEAT_QUANTUM
+		local level = math.ceil(heat / TUNE.HEAT_QUANTUM) * TUNE.HEAT_QUANTUM
 		local recolor = level ~= aero.heatLevel
 		local resized = math.abs(radius - aero.heatRadius) > 0.05 * math.max(aero.heatRadius, 0.1)
 		aero.heatLevel = level
@@ -1736,31 +1740,31 @@ local function updateAero(
 
 		-- the shock layer: a glowing ellipsoid hugging the windward face (half of it hides inside the hull)
 		local depth = radius * shape.shellDepth
-		local shellSize = Vector3.new(radius * SHELL_SPAN, depth * 2, radius * SHELL_SPAN)
-		local resizeShell = (shellSize - aero.shellSize).Magnitude > SHELL_RESIZE * shellSize.Magnitude
+		local shellSize = Vector3.new(radius * TUNE.SHELL_SPAN, depth * 2, radius * TUNE.SHELL_SPAN)
+		local resizeShell = (shellSize - aero.shellSize).Magnitude > TUNE.SHELL_RESIZE * shellSize.Magnitude
 		if resizeShell then
 			aero.shellSize = shellSize
 		end
-		local flick = EffectsMath.flicker(now, record.id, SHELL_FLICKER)
+		local flick = EffectsMath.flicker(now, record.id, TUNE.SHELL_FLICKER)
 		setShell(
 			aero.shell,
-			frame * CFrame.new(0, -depth * SHELL_FORWARD, 0),
+			frame * CFrame.new(0, -depth * TUNE.SHELL_FORWARD, 0),
 			shellSize,
 			resizeShell,
 			1 - math.clamp(shape.shellOpacity * flick, 0, 1)
 		)
 		if budget.shellGlow then
-			local glowDepth = depth * GLOW_SHELL_DEPTH
+			local glowDepth = depth * TUNE.GLOW_SHELL_DEPTH
 			setShell(
 				aero.glowShell,
-				frame * CFrame.new(0, -glowDepth * GLOW_SHELL_FORWARD, 0),
-				Vector3.new(radius * GLOW_SHELL_SPAN, glowDepth * 2, radius * GLOW_SHELL_SPAN),
+				frame * CFrame.new(0, -glowDepth * TUNE.GLOW_SHELL_FORWARD, 0),
+				Vector3.new(radius * TUNE.GLOW_SHELL_SPAN, glowDepth * 2, radius * TUNE.GLOW_SHELL_SPAN),
 				resizeShell,
 				1 - math.clamp(shape.glowOpacity * (2 - flick), 0, 1)
 			)
 		elseif aero.glowShell.Transparency < 1 then
 			aero.glowShell.Transparency = 1
-			aero.glowShell.CFrame = PARK_CFRAME
+			aero.glowShell.CFrame = TUNE.PARK_CFRAME
 		end
 		if recolor then
 			aero.shell.Color = EffectsMath.heatColor(level, 0)
@@ -1768,7 +1772,7 @@ local function updateAero(
 		end
 
 		-- flame tongues streaming back along the flow from the leading rim
-		local count = math.min(budget.tongues, TONGUES_MAX)
+		local count = math.min(budget.tongues, TUNE.TONGUES_MAX)
 		ensureTongues(aero, count)
 		local length = (2 * reach + radius * shape.tongueLength) * budget.tongueLength
 		local colors: ColorSequence? = if recolor then heatColors(level) else nil
@@ -1786,18 +1790,21 @@ local function updateAero(
 				tongue.angle = (index - 1) * (2 * math.pi / count) + 0.35
 				local c, s = math.cos(tongue.angle), math.sin(tongue.angle)
 				tongue.root.Position = Vector3.new(
-					c * radius * TONGUE_ROOT_RADIUS,
-					radius * TONGUE_ROOT_DOWNSTREAM,
-					s * radius * TONGUE_ROOT_RADIUS
+					c * radius * TUNE.TONGUE_ROOT_RADIUS,
+					radius * TUNE.TONGUE_ROOT_DOWNSTREAM,
+					s * radius * TUNE.TONGUE_ROOT_RADIUS
 				)
-				beam.Width1 = radius * TONGUE_TIP_WIDTH
+				beam.Width1 = radius * TUNE.TONGUE_TIP_WIDTH
 			end
 			local f = EffectsMath.flicker(now, tongue.seed + record.id, 1) -- 0..2
-			local reachBack = length * (1 - TONGUE_LENGTH_JITTER * 0.5 * f)
+			local reachBack = length * (1 - TUNE.TONGUE_LENGTH_JITTER * 0.5 * f)
 			local c, s = math.cos(tongue.angle), math.sin(tongue.angle)
-			tongue.tip.Position =
-				Vector3.new(c * radius * TONGUE_TIP_RADIUS, math.max(reachBack, radius), s * radius * TONGUE_TIP_RADIUS)
-			beam.Width0 = rootWidth * EffectsMath.flicker(now, tongue.seed * 1.7 + record.id, TONGUE_WIDTH_FLICKER)
+			tongue.tip.Position = Vector3.new(
+				c * radius * TUNE.TONGUE_TIP_RADIUS,
+				math.max(reachBack, radius),
+				s * radius * TUNE.TONGUE_TIP_RADIUS
+			)
+			beam.Width0 = rootWidth * EffectsMath.flicker(now, tongue.seed * 1.7 + record.id, TUNE.TONGUE_WIDTH_FLICKER)
 			if colors then
 				beam.Color = colors
 			end
@@ -1819,32 +1826,33 @@ local function updateAero(
 			local puffColors = colors or heatColors(level)
 			aero.cap.Color = puffColors
 			aero.streaks.Color = puffColors
-			aero.cap.Size = sizeSequence(radius * CAP_SIZE0 * (0.7 + 0.3 * level), radius * CAP_SIZE1)
+			aero.cap.Size = sizeSequence(radius * TUNE.CAP_SIZE0 * (0.7 + 0.3 * level), radius * TUNE.CAP_SIZE1)
 			aero.streaks.Size = sizeSequence(math.max(radius * 0.35, 0.4), radius * 0.15)
 		end
-		aero.cap.Rate = CAP_RATE * heat * quality
+		aero.cap.Rate = TUNE.CAP_RATE * heat * quality
 		if budget.streaks then
 			if math.abs(length - aero.heatLength) > 0.05 * math.max(aero.heatLength, 0.1) then
 				aero.heatLength = length
-				aero.streaks.Speed = NumberRange.new(length / HEAT_STREAK_LIFETIME * 0.8, length / HEAT_STREAK_LIFETIME)
+				aero.streaks.Speed =
+					NumberRange.new(length / TUNE.HEAT_STREAK_LIFETIME * 0.8, length / TUNE.HEAT_STREAK_LIFETIME)
 			end
-			aero.streaks.Rate = HEAT_STREAK_RATE * shape.streakRate * quality
+			aero.streaks.Rate = TUNE.HEAT_STREAK_RATE * shape.streakRate * quality
 		else
 			aero.streaks.Rate = 0
 		end
 		if budget.embers and shape.emberRate > 0 then
 			local angle = rng:NextNumber(0, 2 * math.pi)
 			local rim = frame:PointToWorldSpace(
-				Vector3.new(math.cos(angle) * radius * EMBER_RIM, 0, math.sin(angle) * radius * EMBER_RIM)
+				Vector3.new(math.cos(angle) * radius * TUNE.EMBER_RIM, 0, math.sin(angle) * radius * TUNE.EMBER_RIM)
 			)
 			-- they leave at the craft's velocity less a little, then the air drags them back along the flow
-			aim(aero.ember, aero.embers, rim, record.drift + velocityWs * (1 - EMBER_SHED), EMBER_RANDOM)
+			aim(aero.ember, aero.embers, rim, record.drift + velocityWs * (1 - TUNE.EMBER_SHED), TUNE.EMBER_RANDOM)
 			if resized then
-				local size = EMBER_SIZE * math.sqrt(math.max(radius, 0.5) / 2)
+				local size = TUNE.EMBER_SIZE * math.sqrt(math.max(radius, 0.5) / 2)
 				aero.embers.Size = sizeSequence(size, size * 0.3)
 			end
-			aero.embers.Acceleration = -forward * EMBER_PULL - frameAccel
-			aero.embers.Rate = EMBER_RATE * shape.emberRate * quality
+			aero.embers.Acceleration = -forward * TUNE.EMBER_PULL - frameAccel
+			aero.embers.Rate = TUNE.EMBER_RATE * shape.emberRate * quality
 		else
 			aero.embers.Rate = 0
 		end
@@ -1852,10 +1860,10 @@ local function updateAero(
 		-- the heat light (High, while the frame's budget lasts)
 		if heatLightsUsed < budget.heatLights then
 			heatLightsUsed += 1
-			aero.light.Brightness = HEAT_LIGHT * shape.light * flick
+			aero.light.Brightness = TUNE.HEAT_LIGHT * shape.light * flick
 			if recolor or resized then
 				aero.light.Color = EffectsMath.heatColor(level, 0.25)
-				aero.light.Range = math.min(radius * HEAT_LIGHT_RANGE, 60)
+				aero.light.Range = math.min(radius * TUNE.HEAT_LIGHT_RANGE, 60)
 			end
 			aero.light.Enabled = true
 		elseif aero.light.Enabled then
@@ -1865,18 +1873,18 @@ local function updateAero(
 		heatOff(aero)
 	end
 
-	if vapor > AERO_MIN then
-		local wobble = EffectsMath.flicker(now, record.id + 0.5, VAPOR_FLICKER)
+	if vapor > TUNE.AERO_MIN then
+		local wobble = EffectsMath.flicker(now, record.id + 0.5, TUNE.VAPOR_FLICKER)
 		local vaporY = reach * 0.8
 		aero.vaporStart.Position = Vector3.new(0, vaporY, 0)
 		aero.vaporEnd.Position = Vector3.new(0, vaporY + radius * 2.5, 0)
 		aero.vapor.Width0 = radius * 2.3
 		aero.vapor.Width1 = radius * 4.5 * wobble
-		local level = math.ceil(vapor / HEAT_QUANTUM) * HEAT_QUANTUM
+		local level = math.ceil(vapor / TUNE.HEAT_QUANTUM) * TUNE.HEAT_QUANTUM
 		local relevel = level ~= aero.vaporLevel
 		if relevel then
 			aero.vaporLevel = level
-			local start = 1 - VAPOR_OPACITY * level
+			local start = 1 - TUNE.VAPOR_OPACITY * level
 			aero.vapor.Transparency = NumberSequence.new({
 				NumberSequenceKeypoint.new(0, math.min(start + 0.25, 1)),
 				NumberSequenceKeypoint.new(0.3, start),
@@ -1890,14 +1898,14 @@ local function updateAero(
 			local ringRadius = radius * 1.05
 			local spot =
 				frame:PointToWorldSpace(Vector3.new(math.cos(angle) * ringRadius, vaporY, math.sin(angle) * ringRadius))
-			aim(aero.collar, aero.collarPuffs, spot, record.velocityWs - forward * COLLAR_SPEED, 3)
+			aim(aero.collar, aero.collarPuffs, spot, record.velocityWs - forward * TUNE.COLLAR_SPEED, 3)
 			if relevel or math.abs(ringRadius - aero.collarRadius) > 0.05 * aero.collarRadius then
 				aero.collarRadius = ringRadius
 				aero.collarPuffs.Size = sizeSequence(radius * 0.8, radius * 1.5)
-				aero.collarPuffs.Transparency = fadeSequence(1 - COLLAR_OPACITY * level)
+				aero.collarPuffs.Transparency = fadeSequence(1 - TUNE.COLLAR_OPACITY * level)
 			end
 			aero.collarPuffs.Acceleration = -frameAccel
-			aero.collarPuffs.Rate = COLLAR_RATE * vapor * quality
+			aero.collarPuffs.Rate = TUNE.COLLAR_RATE * vapor * quality
 		else
 			aero.collarPuffs.Rate = 0
 		end
@@ -1908,12 +1916,12 @@ end
 
 --[[
 	CHANGED (Effects v2): the leading blocks glow while they are hot and fade slowly after (High only). The blocks
-	are chosen every TINT_REFRESH_S along the last flow direction (craft-local), so the glow stays on the parts that
+	are chosen every TUNE.TINT_REFRESH_S along the last flow direction (craft-local), so the glow stays on the parts that
 	took the heat even after the plasma is gone.
 ]]
 local function updateTints(record: CraftRecord, model: Model, info: DesignInfo, dt: number)
 	local wanted = budget.heatTint
-	if wanted <= 0 or record.soak < TINT_MIN then
+	if wanted <= 0 or record.soak < TUNE.TINT_MIN then
 		if #record.tints > 0 then
 			releaseTints(record)
 		end
@@ -1921,7 +1929,7 @@ local function updateTints(record: CraftRecord, model: Model, info: DesignInfo, 
 	end
 	record.tintTimer -= dt
 	if record.tintTimer <= 0 then
-		record.tintTimer = TINT_REFRESH_S
+		record.tintTimer = TUNE.TINT_REFRESH_S
 		-- the most windward blocks along the flow (largest projection on the direction the air comes from)
 		table.clear(rankScratch)
 		local forward = record.tintForward
@@ -1931,7 +1939,7 @@ local function updateTints(record: CraftRecord, model: Model, info: DesignInfo, 
 		table.sort(rankScratch, function(a: BlockInfo, b: BlockInfo): boolean
 			return (a.pos - info.center):Dot(forward) > (b.pos - info.center):Dot(forward)
 		end)
-		local count = math.min(wanted, #rankScratch, #TINT_WEIGHTS)
+		local count = math.min(wanted, #rankScratch, #TUNE.TINT_WEIGHTS)
 		for index = 1, count do
 			local block = rankScratch[index]
 			local slot: TintSlot? = record.tints[index]
@@ -1943,7 +1951,7 @@ local function updateTints(record: CraftRecord, model: Model, info: DesignInfo, 
 				table.insert(record.tints, slot :: TintSlot)
 			end
 			local tint = slot :: TintSlot
-			tint.weight = TINT_WEIGHTS[index]
+			tint.weight = TUNE.TINT_WEIGHTS[index]
 			if tint.blockId ~= block.id or tint.highlight.Adornee == nil then
 				tint.blockId = block.id
 				local blockModel = model:FindFirstChild("Block_" .. block.id)
@@ -1962,13 +1970,13 @@ local function updateTints(record: CraftRecord, model: Model, info: DesignInfo, 
 		end
 		table.clear(rankScratch)
 	end
-	local level = math.ceil(record.soak / HEAT_QUANTUM) * HEAT_QUANTUM
+	local level = math.ceil(record.soak / TUNE.HEAT_QUANTUM) * TUNE.HEAT_QUANTUM
 	local recolor = level ~= record.tintLevel
 	record.tintLevel = level
 	local color = if recolor then EffectsMath.heatColor(level * 0.85, 0.3) else nil
 	for _, tint in record.tints do
-		local fill = 1 - TINT_MAX * record.soak * tint.weight
-		if math.abs(fill - tint.fill) > TINT_EPSILON then
+		local fill = 1 - TUNE.TINT_MAX * record.soak * tint.weight
+		if math.abs(fill - tint.fill) > TUNE.TINT_EPSILON then
 			tint.fill = fill
 			tint.highlight.FillTransparency = fill
 		end
@@ -2036,7 +2044,7 @@ local function processCraft(record: CraftRecord, report: CraftReport, ctx: Rende
 	-- 1800 m on Earth had no launch / landing dust); the exact terrain height below decides the rest
 	local _, groundTop = SurfaceHeight.bounds(s.bodyId)
 	local nearGround = altitude - math.max(groundTop, 0)
-		< EffectsMath.DUST_MAX_HEIGHT + 2 * info.half.Magnitude + DUST_CHECK_MARGIN
+		< EffectsMath.DUST_MAX_HEIGHT + 2 * info.half.Magnitude + TUNE.DUST_CHECK_MARGIN
 	local height, up: Vec3d?, upWs = 0, nil, Vector3.yAxis
 	if nearGround then
 		local h, normal = SurfaceHeight.height(s.bodyId, s.pos)
@@ -2065,7 +2073,7 @@ local function processCraft(record: CraftRecord, report: CraftReport, ctx: Rende
 		meanDir += direction * weight
 		if up then
 			local down = -direction:Dot(upWs)
-			if down > DUST_DOWN_MIN then
+			if down > TUNE.DUST_DOWN_MIN then
 				local nozzleHeight = height + (position - origin):Dot(upWs)
 				lowest = math.min(lowest, nozzleHeight)
 				dustThrust += weight * down
@@ -2083,11 +2091,11 @@ local function processCraft(record: CraftRecord, report: CraftReport, ctx: Rende
 		meanDir = if meanDir.Magnitude > 1e-6 then meanDir.Unit else -craftCFrame.UpVector
 		solidShare = solidThrust / thrust
 		trailStrength = EffectsMath.trailStrength(pressure)
-			* (TRAIL_LIQUID_WEIGHT + (1 - TRAIL_LIQUID_WEIGHT) * solidShare)
+			* (TUNE.TRAIL_LIQUID_WEIGHT + (1 - TUNE.TRAIL_LIQUID_WEIGHT) * solidShare)
 	end
-	if trailStrength > TRAIL_MIN_STRENGTH then
-		local width = math.max(maxDiameter, sumDiameter * 0.6) * TRAIL_WIDTH_MULT
-		local point = meanPos + meanDir * maxDiameter * TRAIL_OFFSET_DIAMETERS
+	if trailStrength > TUNE.TRAIL_MIN_STRENGTH then
+		local width = math.max(maxDiameter, sumDiameter * 0.6) * TUNE.TRAIL_WIDTH_MULT
+		local point = meanPos + meanDir * maxDiameter * TUNE.TRAIL_OFFSET_DIAMETERS
 		updateTrail(record, point, width, trailStrength, solidShare, airSpeed)
 	elseif record.trail then
 		releaseTrail(record.trail :: TrailSlot)
@@ -2097,12 +2105,12 @@ local function processCraft(record: CraftRecord, report: CraftReport, ctx: Rende
 	-- Launch / landing dust
 	local dustStrength = 0
 	if up and dustWeight > 0 then
-		dustStrength = EffectsMath.dustStrength(lowest, dustThrust / DUST_REFERENCE_THRUST)
+		dustStrength = EffectsMath.dustStrength(lowest, dustThrust / TUNE.DUST_REFERENCE_THRUST)
 	end
-	if dustStrength > DUST_MIN_STRENGTH and up then
+	if dustStrength > TUNE.DUST_MIN_STRENGTH and up then
 		record.dustColorTimer -= ctx.dt
 		if record.dustColorTimer <= 0 then
-			record.dustColorTimer = DUST_COLOR_INTERVAL
+			record.dustColorTimer = TUNE.DUST_COLOR_INTERVAL
 			-- CHANGED (Night review): the ground colour straight below the craft (was sampled along the terrain
 			-- triangle's normal, which on a slope points at ground kilometres away)
 			record.dustColor = dustColorFor(s.bodyId, Vec3d.normalize(s.pos))
@@ -2119,7 +2127,7 @@ local function processCraft(record: CraftRecord, report: CraftReport, ctx: Rende
 	-- Re-entry heating and the transonic vapour cone
 	local heat = EffectsMath.heatFactor(density, airSpeed)
 	local vapor = EffectsMath.vaporFactor(airSpeed, pressure)
-	if (heat > AERO_MIN or vapor > AERO_MIN) and airSpeed > 1 then
+	if (heat > TUNE.AERO_MIN or vapor > TUNE.AERO_MIN) and airSpeed > 1 then
 		updateAero(record, airVelocityWs, craftCFrame, info, heat, vapor)
 	elseif record.aero then
 		releaseAero(record.aero :: AeroSlot)
@@ -2128,7 +2136,7 @@ local function processCraft(record: CraftRecord, report: CraftReport, ctx: Rende
 
 	-- CHANGED (Effects v2): the leading blocks' heat glow lags the heat (and outlives the plasma)
 	record.soak = EffectsMath.heatSoak(record.soak, heat, ctx.dt)
-	if heat > AERO_MIN and airSpeed > 1 then
+	if heat > TUNE.AERO_MIN and airSpeed > 1 then
 		record.tintForward = craftCFrame:VectorToObjectSpace(airVelocityWs / airSpeed)
 	end
 	updateTints(record, model, info, ctx.dt)
@@ -2148,7 +2156,7 @@ local function sweep(record: CraftRecord, time: number): boolean
 		Plumes.clear(model)
 		record.model = nil
 	end
-	return time - record.reportTime > FORGET_AFTER_S
+	return time - record.reportTime > TUNE.FORGET_AFTER_S
 end
 
 --============================================================================
@@ -2168,7 +2176,7 @@ local function updateOneShots(dt: number)
 					burst.light.Brightness = burst.lightPeak * f * f
 				end
 			end
-			if burst.age < BURST_ACTIVE_S then
+			if burst.age < TUNE.BURST_ACTIVE_S then
 				stats.bursts += 1
 			end
 		end
@@ -2182,7 +2190,7 @@ local function updateOneShots(dt: number)
 			if f >= 1 then
 				fireball.active = false
 				part.Transparency = 1
-				part.CFrame = PARK_CFRAME
+				part.CFrame = TUNE.PARK_CFRAME
 			else
 				local grow = EffectsMath.fade(fireball.age, fireball.duration)
 				part.Size = Vector3.one * (fireball.size0 + (fireball.size1 - fireball.size0) * grow)
@@ -2205,7 +2213,7 @@ local function updateOneShots(dt: number)
 				bit.active = false
 				bit.trail.Enabled = false
 				part.Transparency = 1
-				part.CFrame = PARK_CFRAME
+				part.CFrame = TUNE.PARK_CFRAME
 			else
 				bit.velocity += bitAccel * dt
 				local f = bit.age / bit.life
@@ -2224,13 +2232,13 @@ end
 -- Every live burst gets -a_frame (plus its own buoyancy / gravity) whenever the estimate moved (trails and dust
 -- are rewritten every frame by their own updates).
 local function writeAccelerations()
-	if (frameAccel - writtenAccel).Magnitude < ACCEL_WRITE_EPSILON then
+	if (frameAccel - writtenAccel).Magnitude < TUNE.ACCEL_WRITE_EPSILON then
 		return
 	end
 	writtenAccel = frameAccel
 	local accel = -frameAccel
 	for _, burst in bursts do
-		if burst.age < BURST_ACTIVE_S then
+		if burst.age < TUNE.BURST_ACTIVE_S then
 			burst.smoke.Acceleration = accel + burst.buoyancy
 			burst.fire.Acceleration = accel + burst.buoyancy
 			burst.sparks.Acceleration = accel + gravityWs
@@ -2246,7 +2254,7 @@ end
 -- CHANGED (Effects v2): and follows the Render/Quality tier from now on.
 function Effects.init(parent: Instance)
 	local created = Instance.new("Folder")
-	created.Name = FOLDER_NAME
+	created.Name = TUNE.FOLDER_NAME
 	created.Parent = parent
 	folder = created
 	applyTier()
@@ -2285,7 +2293,7 @@ function Effects.reportCraft(craftId: number, report: CraftReport)
 			trail = nil,
 			dust = nil,
 			aero = nil,
-			dustColor = DUST_SMOKE_COLOR,
+			dustColor = TUNE.DUST_SMOKE_COLOR,
 			dustColorTimer = 0,
 			soak = 0,
 			tintForward = Vector3.yAxis,
@@ -2312,7 +2320,7 @@ end
 	Blocks of a drawn craft separated ("Separate": decouplers that fired) or were destroyed ("Explode"). Call BEFORE
 	the blocks are removed from `design` (their positions come from it). Ignored for crafts not drawn recently
 	(hidden), for a source that is not the one drawing the craft (the pilot predicts its own events; the server's
-	echo is ignored) and for blocks already shown within DEDUPE_S.
+	echo is ignored) and for blocks already shown within TUNE.DEDUPE_S.
 ]]
 function Effects.blockEvent(
 	craftId: number,
@@ -2322,7 +2330,7 @@ function Effects.blockEvent(
 	source: Source
 )
 	local record = records[craftId]
-	if record == nil or record.processedFrame < frameCounter - STALE_FRAMES or record.source ~= source then
+	if record == nil or record.processedFrame < frameCounter - TUNE.STALE_FRAMES or record.source ~= source then
 		return
 	end
 	if not tierApplied then
@@ -2360,10 +2368,10 @@ function Effects.blockEvent(
 		table.sort(candidates, function(a, b)
 			return a.size.Magnitude > b.size.Magnitude
 		end)
-		local debrisVelocity = looseVelocity(record, EffectsMath.airCoupling(record.pressure) * BIT_AIR_COUPLING)
+		local debrisVelocity = looseVelocity(record, EffectsMath.airCoupling(record.pressure) * TUNE.BIT_AIR_COUPLING)
 		local perEvent = budget.explosionsPerEvent
 		-- CHANGED (Effects v2): a main blast at the wreck's centre, sized by its span and the blocks lost
-		if #candidates >= MAIN_BLAST_MIN_BLOCKS then
+		if #candidates >= TUNE.MAIN_BLAST_MIN_BLOCKS then
 			local lo, hi = Vector3.one * math.huge, -Vector3.one * math.huge
 			local sum = Vector3.zero
 			for _, block in candidates do
@@ -2405,7 +2413,7 @@ function Effects.step(ctx: RenderContext, frameVelocity: Vec3d)
 	Plumes.beginFrame()
 	heatLightsUsed = 0
 	plumeEventsLeft = budget.plumeEvents -- CHANGED (Night review)
-	explosionBudget = math.min(explosionBudget + EXPLOSIONS_PER_SECOND * dt, EXPLOSION_BUDGET)
+	explosionBudget = math.min(explosionBudget + TUNE.EXPLOSIONS_PER_SECOND * dt, TUNE.EXPLOSION_BUDGET)
 
 	-- Pocket motion: a pocket switch or rebase invalidates every particle position
 	local velWs = Frames.vectorToWorkspace(frame, frameVelocity)
@@ -2419,13 +2427,13 @@ function Effects.step(ctx: RenderContext, frameVelocity: Vec3d)
 		frameAccel = Vector3.zero
 	elseif previousVel then
 		local dv = velWs - previousVel
-		if dv.Magnitude > ACCEL_RESET_DV then
+		if dv.Magnitude > TUNE.ACCEL_RESET_DV then
 			frameAccel = Vector3.zero
 		else
-			local alpha = 1 - math.exp(-dt / ACCEL_SMOOTH_S)
+			local alpha = 1 - math.exp(-dt / TUNE.ACCEL_SMOOTH_S)
 			frameAccel = frameAccel:Lerp(dv / dt, alpha)
-			if frameAccel.Magnitude > ACCEL_MAX then
-				frameAccel = frameAccel.Unit * ACCEL_MAX
+			if frameAccel.Magnitude > TUNE.ACCEL_MAX then
+				frameAccel = frameAccel.Unit * TUNE.ACCEL_MAX
 			end
 		end
 	end
@@ -2444,7 +2452,7 @@ function Effects.step(ctx: RenderContext, frameVelocity: Vec3d)
 
 	-- Continuous per-craft effects
 	stats.crafts, stats.trails, stats.dust, stats.aero, stats.tints = 0, 0, 0, 0, 0
-	local recent = frameCounter - STALE_FRAMES
+	local recent = frameCounter - TUNE.STALE_FRAMES
 	for id, record in records do
 		local report: CraftReport? = nil
 		if record.localReport and record.localFrame >= recent then
@@ -2476,7 +2484,7 @@ function Effects.step(ctx: RenderContext, frameVelocity: Vec3d)
 	if dedupeTimer >= 1 then
 		dedupeTimer = 0
 		for key, seen in dedupe do
-			if now - seen > DEDUPE_S then
+			if now - seen > TUNE.DEDUPE_S then
 				dedupe[key] = nil
 			end
 		end

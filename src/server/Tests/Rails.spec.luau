@@ -73,7 +73,9 @@ return function(t: TestKit.Context)
 			Vec3d.distance(onRails.pos, craft.state.pos) < 1,
 			"position differs by " .. Vec3d.distance(onRails.pos, craft.state.pos)
 		)
-		t.expectNear((onRails.rot.UpVector - craft.state.rot.UpVector).Magnitude, 0, 1e-3)
+		-- CHANGED (Studio fix): Roblox's CFrame math is single precision, so 60 s of integrated spin drifts a little
+		-- more there (1.4e-3 measured in Studio) than in Lune; 5e-3 rad is still a tiny attitude error
+		t.expectNear((onRails.rot.UpVector - craft.state.rot.UpVector).Magnitude, 0, 5e-3)
 	end)
 
 	t.test("holding attitude freezes rotation without changing the orbit", function()
