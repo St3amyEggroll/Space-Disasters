@@ -188,21 +188,211 @@ return function(t: TestKit.Context)
 		t.expectTrue(radius > 10, "sideways the cross-section is the rocket's length")
 	end)
 
-	t.test("quality scale and explosion scale stay in range", function()
-		local previous = 0
-		for level = 1, 10 do
-			local scale = EffectsMath.qualityScale(level)
-			t.expectTrue(scale >= previous, "monotonic in the quality level")
-			t.expectTrue(scale > 0 and scale <= 1, "within (0, 1]")
-			previous = scale
-		end
-		t.expectNear(EffectsMath.qualityScale(10), 1, EPSILON)
-		local automatic = EffectsMath.qualityScale(0)
-		t.expectTrue(automatic > 0 and automatic <= 1, "automatic quality within range")
+	-- CHANGED (Effects v2): qualityScale is gone (Render/Quality gives the one tier); budgets per tier instead
+	t.test("explosion scale stays in range", function()
 		t.expectNear(EffectsMath.explosionScale(Vector3.new(4, 4, 4)), 1, 1e-6) -- Vector3 is 32-bit
 		t.expectTrue(EffectsMath.explosionScale(Vector3.new(8, 8, 8)) > 1.5, "bigger blocks, bigger blasts")
 		t.expectTrue(EffectsMath.explosionScale(Vector3.new(400, 400, 400)) <= 3, "capped")
 		t.expectNear(EffectsMath.fade(0, 1), 0, EPSILON)
 		t.expectNear(EffectsMath.fade(2, 1), 1, EPSILON)
+	end)
+
+	-- CHANGED (Effects v2): the per-tier budgets, the plasma look and the new helpers
+	t.test("budgets: every cap grows Low -> Medium -> High, no lights on phones' tiers", function()
+		local low = EffectsMath.budget("Low") :: any
+		local medium = EffectsMath.budget("Medium") :: any
+		local high = EffectsMath.budget("High") :: any
+		for key, value in high do
+			local lowValue, mediumValue = low[key], medium[key]
+			t.expectTrue(lowValue ~= nil and mediumValue ~= nil, `{key} is set on every tier`)
+			if type(value) == "number" then
+				t.expectTrue(lowValue <= mediumValue and mediumValue <= value, `{key} grows with the tier`)
+				t.expectTrue(lowValue >= 0, `{key} is never negative`)
+			else
+				t.expectTrue(not lowValue or mediumValue, `{key}: on at Low means on at Medium`)
+				t.expectTrue(not mediumValue or value, `{key}: on at Medium means on at High`)
+			end
+		end
+		-- phones never go above Medium: no PointLights there
+		for _, tier in { "Low", "Medium" } do
+			local budget = EffectsMath.budget(tier)
+			t.expectEqual(budget.plumeLights + budget.heatLights + budget.flashLights, 0, `{tier} has no lights`)
+			t.expectEqual(budget.heatTint, 0, `{tier} has no part heat tint`)
+		end
+		t.expectTrue(high.plumeLights > 0 and high.heatLights > 0, "High lights the flames and the plasma")
+		t.expectTrue(low.aero >= 1 and low.tongues >= 1, "Low still shows re-entry plasma")
+		t.expectTrue(low.trails >= 1 and low.dust >= 1 and low.bursts >= 1, "Low keeps every effect kind")
+		t.expectTrue(EffectsMath.budget("Nonsense") == EffectsMath.budget("Low"), "unknown tiers get Low")
+		t.expectTrue(table.isfrozen(EffectsMath.budget("High")), "budgets are frozen")
+	end)
+
+	t.test("budgets: worst-case emitter counts stay small on Low and grow with the tier", function()
+		local low = EffectsMath.worstCaseEmitters(EffectsMath.budget("Low"))
+		local medium = EffectsMath.worstCaseEmitters(EffectsMath.budget("Medium"))
+		local high = EffectsMath.worstCaseEmitters(EffectsMath.budget("High"))
+		t.expectTrue(low < medium and medium < high, "more emitters on higher tiers")
+		t.expectTrue(low <= 30, `Low stays at 30 emitters or fewer (got {low})`)
+		t.expectTrue(medium <= 60, `Medium stays at 60 emitters or fewer (got {medium})`)
+		t.expectTrue(high <= 100, `High stays at 100 emitters or fewer (got {high})`)
+		for _, tier in { "Low", "Medium", "High" } do
+			local budget = EffectsMath.budget(tier)
+			t.expectTrue(budget.tongues <= 8, "tongue beams per heated craft are bounded")
+			t.expectTrue(budget.tongueLength > 0 and budget.tongueLength <= 1, "flame length factor within (0, 1]")
+		end
+		local trailCap = EffectsMath.budget("Low").trailLifetimeMax
+		t.expectTrue(EffectsMath.trailLifetime(1, trailCap) <= trailCap + EPSILON, "Low caps the smoke column")
+		t.expectTrue(EffectsMath.trailLifetime(1, trailCap) < EffectsMath.trailLifetime(1), "shorter than the default")
+	end)
+
+	t.test("plasma: grows with heat from a faint glow to a full shock layer", function()
+		local none = EffectsMath.plasma(0)
+		t.expectNear(none.shellOpacity, 0, EPSILON)
+		t.expectNear(none.streakRate, 0, EPSILON)
+		t.expectNear(none.emberRate, 0, EPSILON)
+		local previous = none
+		for step = 1, 20 do
+			local shape = EffectsMath.plasma(step / 20)
+			t.expectTrue(shape.shellOpacity >= previous.shellOpacity - EPSILON, "shell brightens")
+			t.expectTrue(shape.glowOpacity >= previous.glowOpacity - EPSILON, "edge glow brightens")
+			t.expectTrue(shape.tongueLength >= previous.tongueLength - EPSILON, "flames lengthen")
+			t.expectTrue(shape.tongueWidth >= previous.tongueWidth - EPSILON, "flames thicken")
+			t.expectTrue(shape.streakRate >= previous.streakRate - EPSILON, "more streaks")
+			t.expectTrue(shape.emberRate >= previous.emberRate - EPSILON, "more embers")
+			t.expectTrue(shape.shellOpacity <= 1 and shape.glowOpacity <= 1, "opacities within 0..1")
+			previous = shape
+		end
+		local full = EffectsMath.plasma(1)
+		t.expectNear(full.streakRate, 1, EPSILON)
+		t.expectNear(full.emberRate, 1, EPSILON)
+		t.expectTrue(full.tongueLength > 3 * none.tongueLength, "full heat streams far behind")
+		local faint = EffectsMath.plasma(0.15)
+		t.expectNear(faint.emberRate, 0, EPSILON) -- embers only once it is properly hot
+		t.expectTrue(faint.shellOpacity > 0, "a faint glow already shows")
+		t.expectNear(EffectsMath.plasma(5).shellOpacity, full.shellOpacity, EPSILON) -- clamped
+	end)
+
+	t.test("heat colour: orange when it first glows, white-hot front with pink / blue edges at the hottest", function()
+		local function brightness(c: Color3): number
+			return c.R + c.G + c.B
+		end
+		local hotFront = EffectsMath.heatColor(1, 0)
+		t.expectTrue(hotFront.R > 0.95 and hotFront.G > 0.9 and hotFront.B > 0.85, "white-hot front")
+		local warmFront = EffectsMath.heatColor(0.2, 0)
+		t.expectTrue(warmFront.R > warmFront.G and warmFront.G > warmFront.B, "orange front when it first glows")
+		t.expectTrue(warmFront.B < 0.35, "no blue in a faint glow")
+		local hotEdge = EffectsMath.heatColor(1, 1)
+		t.expectTrue(hotEdge.B > hotEdge.G, "blue-violet tint at the hottest edges")
+		local pinkEdge = EffectsMath.heatColor(0.8, 1)
+		t.expectTrue(pinkEdge.R > 0.9 and pinkEdge.B > pinkEdge.G, "pinkish edges when very hot")
+		local coolEdge = EffectsMath.heatColor(0.1, 1)
+		t.expectTrue(coolEdge.R > coolEdge.B * 2, "red edges when barely glowing")
+		local previous = 0
+		for step = 0, 10 do
+			local front = brightness(EffectsMath.heatColor(step / 10, 0))
+			t.expectTrue(front >= previous - 1e-6, "the front brightens with heat")
+			previous = front
+		end
+		for step = 0, 10 do
+			local heat = step / 10
+			t.expectTrue(
+				brightness(EffectsMath.heatColor(heat, 0)) >= brightness(EffectsMath.heatColor(heat, 0.5)) - 1e-6,
+				"the front is the brightest part"
+			)
+			for _, at in { -1, 0, 0.3, 0.45, 0.7, 1, 2 } do
+				local c = EffectsMath.heatColor(heat, at)
+				for _, channel in { c.R, c.G, c.B } do
+					t.expectTrue(channel >= 0 and channel <= 1, "channels within 0..1")
+				end
+			end
+		end
+	end)
+
+	t.test("heat soak: parts heat up quickly and cool slowly, never overshooting", function()
+		local glow = 0
+		for _ = 1, 60 do
+			glow = EffectsMath.heatSoak(glow, 1, 1 / 30) -- 2 s
+		end
+		t.expectTrue(glow > 0.75 and glow <= 1, "hot within a couple of seconds")
+		local cooling = glow
+		for _ = 1, 60 do
+			cooling = EffectsMath.heatSoak(cooling, 0, 1 / 30)
+		end
+		t.expectTrue(cooling > 0.3 and cooling < glow, "still glowing 2 s after the heat ended")
+		local risen = EffectsMath.heatSoak(0, 1, 0.5)
+		local fallen = 1 - EffectsMath.heatSoak(1, 0, 0.5)
+		t.expectTrue(risen > fallen, "heats faster than it cools")
+		t.expectNear(EffectsMath.heatSoak(0.4, 0.4, 1), 0.4, EPSILON)
+		t.expectTrue(EffectsMath.heatSoak(0.5, 0.6, 100) <= 0.6 + EPSILON, "no overshoot")
+		t.expectNear(EffectsMath.heatSoak(0.5, 3, 0), 0.5, EPSILON) -- dt 0 holds
+	end)
+
+	t.test("flicker: bounded, moving and seed dependent", function()
+		local lowest, highest = math.huge, -math.huge
+		for step = 0, 600 do
+			local value = EffectsMath.flicker(step / 60, 1.7, 0.2)
+			lowest = math.min(lowest, value)
+			highest = math.max(highest, value)
+		end
+		t.expectTrue(lowest >= 0.8 - EPSILON and highest <= 1.2 + EPSILON, "within 1 +- amplitude")
+		t.expectTrue(highest - lowest > 0.1, "it actually flickers")
+		t.expectTrue(
+			math.abs(EffectsMath.flicker(0.3, 1, 0.2) - EffectsMath.flicker(0.3, 5, 0.2)) > 1e-3,
+			"different seeds flicker differently"
+		)
+		t.expectNear(EffectsMath.flicker(0.3, 1, 0), 1, EPSILON)
+	end)
+
+	t.test("mach diamonds: at most 20 keypoints, increasing times, transparent ends, fading diamonds", function()
+		for count = 0, 9 do
+			local keys = EffectsMath.machDiamondKeys(count, 1)
+			t.expectTrue(#keys <= 20, "NumberSequence keypoint limit")
+			t.expectNear(keys[1][1], 0, EPSILON)
+			t.expectNear(keys[#keys][1], 1, EPSILON)
+			t.expectNear(keys[1][2], 1, EPSILON)
+			t.expectNear(keys[#keys][2], 1, EPSILON)
+			for index = 2, #keys do
+				t.expectTrue(keys[index][1] > keys[index - 1][1], "times strictly increase")
+				t.expectTrue(keys[index][2] >= 0 and keys[index][2] <= 1, "transparency within 0..1")
+			end
+		end
+		local keys = EffectsMath.machDiamondKeys(4, 1)
+		t.expectEqual(#keys, 2 + 3 * 4)
+		t.expectTrue(keys[3][2] < keys[6][2], "the first diamond is the brightest")
+		t.expectTrue(keys[3][2] < keys[2][2], "diamonds are brighter than the gaps")
+		local faint = EffectsMath.machDiamondKeys(4, 0)
+		for _, key in faint do
+			t.expectNear(key[2], 1, EPSILON) -- strength 0: invisible
+		end
+	end)
+
+	t.test("plume colours: orange at sea level, pale blue in vacuum, boosters redder", function()
+		local _, seaStart, seaEnd = EffectsMath.plumeTint(0, false)
+		local vacuumCore, _, vacuumEnd = EffectsMath.plumeTint(1, false)
+		t.expectTrue(seaEnd.R > seaEnd.G and seaEnd.G > seaEnd.B, "sea-level flame is orange")
+		t.expectTrue(seaStart.R > seaStart.B, "sea-level glow is warm")
+		t.expectTrue(vacuumEnd.B > vacuumEnd.R, "vacuum plume fades to pale blue")
+		t.expectTrue(vacuumCore.B > 0.9, "vacuum core is blue-white")
+		local _, _, solidEnd = EffectsMath.plumeTint(0, true)
+		t.expectTrue(solidEnd.G < seaEnd.G, "booster flame is deeper orange")
+		local _, _, solidVacuumEnd = EffectsMath.plumeTint(1, true)
+		t.expectTrue(solidVacuumEnd.R > vacuumEnd.R, "boosters stay warmer in vacuum")
+	end)
+
+	t.test("air coupling: smoke stops in thick air, keeps the craft's momentum in vacuum", function()
+		t.expectNear(EffectsMath.airCoupling(0), 0, EPSILON)
+		t.expectNear(EffectsMath.airCoupling(1), 1, EPSILON)
+		t.expectNear(EffectsMath.airCoupling(pressure(500)), 1, EPSILON)
+		t.expectNear(EffectsMath.airCoupling(pressure(20000)), 0, EPSILON)
+		local mid = EffectsMath.airCoupling(pressure(5000))
+		t.expectTrue(mid > 0 and mid < 1, "partly carried in thin air")
+	end)
+
+	t.test("blast scale: grows with the wrecked span and the blocks lost, capped", function()
+		local one = EffectsMath.blastScale(4 * math.sqrt(3), 1)
+		t.expectNear(one, 1, 1e-9)
+		t.expectTrue(EffectsMath.blastScale(40, 1) > one, "bigger wrecks, bigger blasts")
+		t.expectTrue(EffectsMath.blastScale(20, 12) > EffectsMath.blastScale(20, 2), "more blocks, bigger blast")
+		t.expectTrue(EffectsMath.blastScale(1e6, 1000) <= 4.5 + EPSILON, "capped")
+		t.expectTrue(EffectsMath.blastScale(0, 0) >= 0.6 - EPSILON, "never vanishes")
 	end)
 end
