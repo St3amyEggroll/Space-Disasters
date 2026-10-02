@@ -22,6 +22,7 @@
 	  view.fadeContent(visible, time?)             the logo, panel and corner texts
 	  view.fadeCover(opacity, time, onDone?)       black cover: 1 = black; a newer fade cancels onDone
 	  view.setButtonsEnabled(enabled)
+	  view.setStatus(text?)                        CHANGED (Review 3): a line of text on the black cover (nil: none)
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -58,6 +59,7 @@ local CORNER_WIDTH = 420 -- S
 local HINT_BOTTOM = 18 -- S
 local COVER_ZINDEX = 10
 local COVER_COLOR = Color3.new(0, 0, 0)
+local STATUS_WIDTH = 600 -- CHANGED (Review 3): px, the status line on the cover (setStatus)
 --============================================================================
 
 export type Callbacks = {
@@ -73,6 +75,7 @@ export type View = {
 	fadeContent: (visible: boolean, time: number?) -> (),
 	fadeCover: (opacity: number, time: number, onDone: (() -> ())?) -> (),
 	setButtonsEnabled: (enabled: boolean) -> (),
+	setStatus: (text: string?) -> (), -- CHANGED (Review 3)
 }
 
 local MainMenu = {}
@@ -217,6 +220,18 @@ function MainMenu.build(callbacks: Callbacks): View
 		ZIndex = COVER_ZINDEX,
 	}, screen)
 
+	-- CHANGED (Review 3): a status line on the cover ("Preparing launch site..." while Play waits for the ground)
+	local status = Kit.label(cover, "", {
+		textSize = Theme.TextSizes.Body,
+		dim = true,
+		align = Enum.TextXAlignment.Center,
+		size = UDim2.fromOffset(STATUS_WIDTH, math.ceil(Theme.TextSizes.Body * 1.5)),
+		position = UDim2.fromScale(0.5, 0.5),
+		anchor = Vector2.new(0.5, 0.5),
+	})
+	status.Name = "Status"
+	status.Visible = false
+
 	local mouseUnlock: TextButton = Kit.new("TextButton", {
 		Name = "MouseUnlock",
 		BackgroundTransparency = 1,
@@ -265,6 +280,11 @@ function MainMenu.build(callbacks: Callbacks): View
 			for _, button in buttons do
 				Kit.setButtonEnabled(button, enabled)
 			end
+		end,
+		-- CHANGED (Review 3)
+		setStatus = function(text: string?)
+			status.Text = text or ""
+			status.Visible = text ~= nil
 		end,
 	}
 end
