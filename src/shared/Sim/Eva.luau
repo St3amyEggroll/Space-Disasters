@@ -59,6 +59,8 @@
 	  Eva.setBody(state, bodyId)                              re-expresses the state relative to another body
 	  Eva.thrustDirection(forward, right, up, f, r, u) -> Vec3d   input axes (each -1..1) -> unit-or-shorter vector
 	  Eva.brakeAccel(relVel, accel, dt) -> Vec3d              acceleration that cancels relVel without overshoot
+  Eva.turnToward(yaw, wanted, maxStep) -> number          CHANGED (EVA shake): the facing turned the short way by
+                                                          at most maxStep, kept in [-pi, pi)
 	  Eva.burn(fuel, accel, dt) -> (number, number)           (fuel left, fraction of the asked acceleration given)
 	  Eva.refill(fuel, dt) -> number
 	  Eva.walkGravity(bodyId) -> number                       workspace.Gravity for walking on that body
@@ -322,6 +324,23 @@ function Eva.brakeAccel(relVel: Vec3d, accel: number, dt: number): Vec3d
 	end
 	local a = math.min(accel, speed / dt)
 	return Vec3d.scale(relVel, -a / speed)
+end
+
+--[[
+	CHANGED (EVA shake): the floating astronaut's facing (yaw about pocket Y, radians) turned toward `wanted` the
+	short way round by at most `maxStep` (rad, negative counts as 0). The result is wrapped into [-pi, pi): it used to
+	be added up without bound (every full turn added 2 pi), so after many turns the CFrame was built from an ever
+	larger angle. A non-finite `wanted` or `maxStep` keeps the yaw.
+]]
+function Eva.turnToward(yaw: number, wanted: number, maxStep: number): number
+	local twoPi = 2 * math.pi
+	if wanted ~= wanted or maxStep ~= maxStep or math.abs(wanted) == math.huge then
+		return (yaw + math.pi) % twoPi - math.pi
+	end
+	local diff = (wanted - yaw + math.pi) % twoPi - math.pi
+	local limit = math.max(maxStep, 0)
+	local turned = yaw + math.clamp(diff, -limit, limit)
+	return (turned + math.pi) % twoPi - math.pi
 end
 
 --[[

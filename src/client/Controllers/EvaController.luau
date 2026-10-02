@@ -42,6 +42,22 @@
 	near an astronaut a real model), checked by the server; a triggered SitPrompt also sends EvaBoard, so boarding
 	does not depend on how the engine checks a prompt on a model that only the clients turn.
 
+	CHANGED (EVA shake): frame order. Steamy: "my character is starting to shake during eva". The RenderStep ran at
+	Camera + 11, AFTER the stock camera (Camera priority): each frame the camera framed the HumanoidRootPart where the
+	physics step had left it (last frame's placement + velocity x the physics step, + any push from limbs touching a
+	hull or the terrain wedges), and only then was the root put where it belongs and drawn. The camera was one frame
+	and one physics step off the character: a wobble of (relative speed x the difference between the frame's UT step
+	and the physics step), which grows as he jetpacks faster or his craft leaves him behind, plus a jolt at every
+	contact. Now:
+	  * the step runs at Camera - 1, BEFORE the camera; it refreshes the pocket frame itself first
+	    (PocketController.update, once per render frame, so UniverseRenderer draws with the very same frame);
+	  * while floating, physics never moves the root: PreSimulation zeroes its velocity, PostSimulation puts it back
+	    where it was drawn with the velocity relative to the pocket (what replicates, and what the server reads for
+	    the bubbles and Eva.plausibleMove), unless the pocket or its frame epoch changed in between (a transfer);
+	  * the facing is wrapped (Eva.turnToward) and workspace.Gravity is only written when it really changes (it is a
+	    float: comparing it with a double rewrote it every frame).
+	Walking is unchanged (Roblox physics moves him and the camera follows the root as usual).
+
 	Input is ignored while UIState blocks it (menus, dialogs) and while the map view is open. For touch buttons later:
 	  EvaController.performAction(id) -> boolean   "EvaLight", "ToggleHUD", "ReturnToPlot"
 	  EvaController.setHeld(id, held) -> boolean    EvaForward, EvaBack, EvaLeft, EvaRight, EvaUp, EvaDown, EvaBrake
@@ -85,7 +101,9 @@ type Vec3d = Vec3d.Vec3d
 -- Tunables
 --============================================================================
 local RENDER_STEP_NAME = "EvaController"
-local RENDER_PRIORITY = Enum.RenderPriority.Camera.Value + 11 -- after UniverseRenderer (Camera + 10): fresh frame
+-- CHANGED (EVA shake): was Camera + 11 (after the camera: it framed last frame's, physics-moved root). Before the
+-- stock camera now; the pocket frame is refreshed here first (PocketController.update, once per render frame).
+local RENDER_PRIORITY = Enum.RenderPriority.Camera.Value - 1
 local THRUST_ACCEL = GameConfig.EVA_THRUST_ACCEL
 local PROPELLANT_S = GameConfig.EVA_PROPELLANT_S
 local INTERP_DELAY = GameConfig.INTERP_DELAY
@@ -98,6 +116,7 @@ local COLLISION_RADIUS = 1.6 -- studs, the astronaut's body for collisions with 
 local COLLISION_SKIN = 0.05 -- studs kept between him and a hull
 local MAX_CAST = 60 -- studs; a bigger jump in one frame is a frame change, not a motion (no cast)
 local TURN_RATE = 6 -- rad/s the astronaut turns toward where he flies
+local GRAVITY_EPSILON = 1e-3 -- CHANGED (EVA shake): studs/s^2; workspace.Gravity is a float, written only on a change
 local WALK_TO_FLOAT_MAX_SPEED = 20 -- m/s: a hop's speed is capped when he starts floating
 local PLATE_SIZE = Vector3.new(24, 1, 24) -- studs, the invisible ground plate under a walking astronaut
 local UNSTEADY_S = 0.5 -- s the pocket must move before a walking astronaut starts floating
@@ -119,6 +138,15 @@ type Mode = "Off" | "Float" | "Walk"
 type Nearest = {
 	id: number,
 	name: string,
+}
+
+-- CHANGED (EVA shake): where this frame's step drew the floating astronaut; physics must not move him from there
+type FloatPose = {
+	root: BasePart,
+	cframe: CFrame,
+	velocity: Vector3, -- relative to the pocket, pocket axes (what the server reads back)
+	pocketId: number,
+	epoch: number, -- PocketController.frame().frameEpoch when it was placed
 }
 
 local EvaController = {}
@@ -152,6 +180,8 @@ castParams.FilterType = Enum.RaycastFilterType.Include
 local overlapParams = OverlapParams.new()
 overlapParams.FilterType = Enum.RaycastFilterType.Include
 local castFolder: Instance? = nil -- the Crafts folder castParams currently includes
+local floatPose: FloatPose? = nil -- CHANGED (EVA shake): set by stepFloat, held through the physics step
+local poseScratch: FloatPose? = nil -- CHANGED (EVA shake): the table floatPose reuses (no garbage per frame)
 
 --============================================================================
 -- Character
@@ -356,10 +386,18 @@ local function stopHop()
 	end
 end
 
+-- CHANGED (EVA shake): workspace.Gravity only when it really changes (a float property: comparing it with a double
+-- was never equal, so it was written every frame).
+local function setGravity(gravity: number)
+	if math.abs(Workspace.Gravity - gravity) > GRAVITY_EPSILON then
+		Workspace.Gravity = gravity
+	end
+end
+
 local function enterFloat(humanoid: Humanoid)
 	mode = "Float"
 	humanoid.PlatformStand = true
-	Workspace.Gravity = 0
+	setGravity(0) -- CHANGED (EVA shake)
 	stopHop()
 	plate.Parent = nil
 	lastWS = nil
@@ -369,8 +407,9 @@ local function enterWalk(humanoid: Humanoid, root: BasePart, frame: Frames.Frame
 	local s = state :: Eva.State
 	mode = "Walk"
 	unsteadyTime = 0
+	floatPose = nil -- CHANGED (EVA shake): Roblox physics moves him now
 	humanoid.PlatformStand = false
-	Workspace.Gravity = Eva.walkGravity(frame.refBodyId)
+	setGravity(Eva.walkGravity(frame.refBodyId)) -- CHANGED (EVA shake)
 	root.AssemblyLinearVelocity = Frames.vectorToWorkspace(frame, Vec3d.sub(s.vel, frameVel))
 	plate.Parent = Workspace
 	lastWS = nil
@@ -432,6 +471,8 @@ local function stopEva()
 	mode = "Off"
 	state = nil
 	lastWS = nil
+	floatPose = nil -- CHANGED (EVA shake)
+	poseScratch = nil -- (no reference to a character that may be gone)
 	table.clear(virtualHeld) -- touch holds end with the EVA
 	stopHop()
 	plate.Parent = nil
@@ -519,14 +560,34 @@ local function stepFloat(dt: number, root: BasePart, humanoid: Humanoid, folder:
 		local push = Frames.vectorToWorkspace(frame, direction)
 		local flat = Vector3.new(push.X, 0, push.Z)
 		if flat.Magnitude > 1e-3 then
-			local wanted = math.atan2(-flat.X, -flat.Z)
-			local diff = (wanted - yaw + math.pi) % (2 * math.pi) - math.pi
-			yaw += math.clamp(diff, -TURN_RATE * dt, TURN_RATE * dt)
+			-- CHANGED (EVA shake): Eva.turnToward keeps the yaw in [-pi, pi) (it used to grow with every turn)
+			yaw = Eva.turnToward(yaw, math.atan2(-flat.X, -flat.Z), TURN_RATE * dt)
 		end
 	end
-	root.CFrame = CFrame.new(position) * CFrame.Angles(0, yaw, 0)
-	root.AssemblyLinearVelocity = Frames.vectorToWorkspace(frame, Vec3d.sub(s.vel, frameVel))
+	local cframe = CFrame.new(position) * CFrame.Angles(0, yaw, 0)
+	local velocity = Frames.vectorToWorkspace(frame, Vec3d.sub(s.vel, frameVel))
+	root.CFrame = cframe
+	root.AssemblyLinearVelocity = velocity
 	root.AssemblyAngularVelocity = Vector3.zero
+	-- CHANGED (EVA shake): held there through the physics step (holdForSimulation / restoreAfterSimulation)
+	local pose = poseScratch
+	if pose then
+		pose.root = root
+		pose.cframe = cframe
+		pose.velocity = velocity
+		pose.pocketId = PocketController.pocketId()
+		pose.epoch = frame.frameEpoch
+	else
+		pose = {
+			root = root,
+			cframe = cframe,
+			velocity = velocity,
+			pocketId = PocketController.pocketId(),
+			epoch = frame.frameEpoch,
+		}
+		poseScratch = pose
+	end
+	floatPose = pose
 
 	-- touch down in a pocket that stands still on the ground: walk
 	local feet = Eva.groundHeight(s.bodyId, s.pos)
@@ -544,10 +605,7 @@ local function stepWalk(dt: number, root: BasePart, humanoid: Humanoid)
 	s.pos = Frames.pointFromWorkspace(frame, root.Position)
 	s.vel = Vec3d.add(frameVel, Frames.vectorFromWorkspace(frame, root.AssemblyLinearVelocity))
 	s.ut = PocketController.renderUT()
-	local gravity = Eva.walkGravity(frame.refBodyId)
-	if Workspace.Gravity ~= gravity then
-		Workspace.Gravity = gravity
-	end
+	setGravity(Eva.walkGravity(frame.refBodyId)) -- CHANGED (EVA shake): was compared exactly with a float
 
 	-- the plate on the ground tile under him
 	local h, up = SurfaceHeight.height(s.bodyId, s.pos)
@@ -643,16 +701,22 @@ end
 
 local function step(dt: number)
 	local now = os.clock()
+	floatPose = nil -- CHANGED (EVA shake): stepFloat places him again this frame (or he is not floating)
 	local _, humanoid, root = localCharacter()
 	local seated = humanoid ~= nil and humanoid.SeatPart ~= nil
 	if seated then
 		fuel = Eva.refill(fuel, dt) -- aboard a craft the jetpack fills up
 	end
-	local folder = pocketFolder()
 	-- CHANGED (Night review): the pocket folder is no longer required here (it can be missing for a moment, e.g. a
 	-- transfer that arrives before the new folder replicates): stopping threw the absolute state away and gave the
 	-- character Roblox gravity for that moment. Without a folder the EVA waits (below) instead.
 	local want = humanoid ~= nil and root ~= nil and not seated and PocketController.pocketId() ~= 0 and now >= exitAt
+	if want then
+		-- CHANGED (EVA shake): this step runs before the camera (and UniverseRenderer): this frame's pocket frame and
+		-- craft poses first (computed once per frame; UniverseRenderer reuses them)
+		PocketController.update()
+	end
+	local folder = pocketFolder()
 	if not want then
 		stopEva()
 		if now >= exitAt then
@@ -702,6 +766,55 @@ local function step(dt: number)
 	syncThrust()
 	EvaVisuals.update(thrusting, lightOn)
 	hud.update(hudData())
+end
+
+--============================================================================
+-- Physics hold (CHANGED (EVA shake))
+--============================================================================
+
+--[[
+	A floating astronaut is moved only by his absolute state: the render step places the root before the camera
+	frames it, and physics must not move it again until the next placement (it used to add velocity x the physics
+	step, plus pushes from limbs touching hulls or terrain wedges). The pose still applies while he floats, the
+	character is the same and the pocket and its frame epoch did not change (a PocketTransfer in between moved the
+	root into the new frame itself; the next render step places him there).
+]]
+local function heldPose(): FloatPose?
+	local pose = floatPose
+	if pose == nil then
+		return nil
+	end
+	if
+		mode ~= "Float"
+		or pose.root.Parent == nil
+		or PocketController.pocketId() ~= pose.pocketId
+		or PocketController.frame().frameEpoch ~= pose.epoch
+	then
+		floatPose = nil
+		return nil
+	end
+	return pose
+end
+
+-- PreSimulation: no velocity during the physics step, so the step leaves the root where it was drawn.
+local function holdForSimulation()
+	local pose = heldPose()
+	if pose then
+		pose.root.AssemblyLinearVelocity = Vector3.zero
+		pose.root.AssemblyAngularVelocity = Vector3.zero
+	end
+end
+
+-- PostSimulation: undo whatever the step did (contacts) and give the root back the velocity relative to the pocket,
+-- which replicates with it: BubbleService / Eva.plausibleMove read position and velocity from the server's copy.
+local function restoreAfterSimulation()
+	local pose = heldPose()
+	if pose then
+		local root = pose.root
+		root.CFrame = pose.cframe
+		root.AssemblyLinearVelocity = pose.velocity
+		root.AssemblyAngularVelocity = Vector3.zero
+	end
 end
 
 --============================================================================
@@ -849,6 +962,9 @@ function EvaController.Start()
 		end
 	end)
 	RunService:BindToRenderStep(RENDER_STEP_NAME, RENDER_PRIORITY, step)
+	-- CHANGED (EVA shake): physics never moves a floating astronaut (Physics hold)
+	RunService.PreSimulation:Connect(holdForSimulation)
+	RunService.PostSimulation:Connect(restoreAfterSimulation)
 end
 
 -- Is the local player on EVA right now?
