@@ -59,6 +59,7 @@ local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local DebugOverlay = require(script.Parent.DebugOverlay)
+local EditableBudget = require(script.Parent.Parent.Render.EditableBudget) -- CHANGED (Memory budget)
 local Effects = require(script.Parent.Parent.Render.Effects) -- CHANGED (Phase 10)
 local PocketController = require(script.Parent.PocketController)
 local RemoteCraftRenderer = require(script.Parent.RemoteCraftRenderer)
@@ -398,6 +399,9 @@ function UniverseRenderer.Init()
 	Surface.init(surfaceFolder)
 	Effects.init(root) -- CHANGED (Phase 10)
 	task.spawn(SkyCube.init, root) -- paints star images (EditableImage)
+	-- CHANGED (Memory budget): at join, ScaledSpace paints only the dominant body's base images until the terrain
+	-- around the camera is built (the base under the main menu), so nothing hidden competes with the base's ground
+	ScaledSpace.setExtrasGate(Surface.isSettled)
 	-- EditableMesh creation can yield; the update is a no-op until init finishes.
 	task.spawn(ScaledSpace.init, scaledFolder)
 
@@ -406,6 +410,7 @@ function UniverseRenderer.Init()
 	end)
 	DebugOverlay.addLine("effects", 24.5, Effects.summary) -- CHANGED (Phase 10): after "map" (24)
 	DebugOverlay.addLine("terrain", 22.5, Surface.summary) -- CHANGED (Phase 8): after "universe" (22)
+	DebugOverlay.addLine("editable", 22.7, EditableBudget.summary) -- CHANGED (Memory budget): Editable memory in use
 end
 
 function UniverseRenderer.Start()

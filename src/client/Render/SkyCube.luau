@@ -22,6 +22,11 @@
 
 	If EditableImage is unavailable the panels are plain near-black (space without stars).
 
+	CHANGED (Memory budget): the star images are created through Render/EditableBudget (priority STARS, 9 x 256 x 256
+	x 4 = 2.25 MiB, declared as a demand so nothing lower plans to use it). A budget refusal is retried every
+	STAR_RETRY_S from update (the panels stay starless black meanwhile); images made before a refusal or a failed
+	paint are destroyed (they leaked before).
+
 	API:
 		SkyCube.init(parent)                                  -- parent: workspace.ClientUniverse
 		SkyCube.update(ctx, surfaceMode, handoverAltitude)    -- every frame, after ScaledSpace
@@ -29,11 +34,11 @@
 		                                                      -- nil restores the automatic behaviour
 ]]
 
-local AssetService = game:GetService("AssetService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
+local EditableBudget = require(script.Parent.EditableBudget) -- CHANGED (Memory budget)
 local RenderContext = require(script.Parent.RenderContext)
 
 --============================================================================
@@ -57,6 +62,8 @@ local OPACITY_STEP = 0.01 -- rewrite transparencies only when opacity moved more
 local MAX_GUI_DISTANCE = 1e6 -- studs (SurfaceGui.MaxDistance)
 local PANEL_DEPTH = 0.2 -- studs
 local PANEL_OVERLAP = 0.01 -- panels are 1% larger than their grid cell so no hairline seams show
+local STAR_RETRY_S = 20 -- CHANGED (Memory budget): s between attempts after the memory budget refused the stars
+local BUDGET_OWNER = "SkyCube" -- CHANGED (Memory budget)
 --============================================================================
 
 local SkyCube = {}
@@ -73,6 +80,8 @@ local panels: { Panel } = {}
 local parts: { BasePart } = {}
 local cframes: { CFrame } = {}
 local images: { EditableImage } = {} -- kept alive (a destroyed EditableImage blanks its users)
+local handles: { EditableBudget.Handle } = {} -- CHANGED (Memory budget): their budget handles
+local starRetryAt = math.huge -- CHANGED (Memory budget): when to try the stars again (after a budget refusal)
 local halfSize = 0
 local opacity = -1
 local shown = false
@@ -127,28 +136,54 @@ local function paintStars(): buffer
 	return buf
 end
 
+-- CHANGED (Memory budget): through EditableBudget; on any failure every image made so far is destroyed (no leak)
+-- and the panels stay starless (a budget refusal is retried later from update).
 local function makeStarImages(): { Content }
 	local contents: { Content } = {}
-	for _ = 1, STAR_IMAGES do
-		local ok, result = pcall(function(): EditableImage?
-			return AssetService:CreateEditableImage({ Size = Vector2.new(STAR_IMAGE_SIZE, STAR_IMAGE_SIZE) })
-		end)
-		local image: EditableImage? = if ok then result else nil
-		if not image then
-			warn("[SkyCube] EditableImage unavailable (" .. tostring(result) .. "); space is drawn without stars.")
-			return {}
+	local function fail(message: string?): { Content }
+		for _, handle in handles do
+			EditableBudget.destroy(handle)
 		end
+		table.clear(handles)
+		table.clear(images)
+		if message then
+			EditableBudget.warnOnce("SkyCube", message)
+		end
+		return {}
+	end
+	EditableBudget.setDemand(
+		BUDGET_OWNER,
+		STAR_IMAGES * EditableBudget.imageBytes(STAR_IMAGE_SIZE, STAR_IMAGE_SIZE),
+		EditableBudget.PRIORITY.STARS
+	)
+	for _ = 1, STAR_IMAGES do
+		local image, handle, refusal = EditableBudget.createImage(
+			BUDGET_OWNER,
+			Vector2.new(STAR_IMAGE_SIZE, STAR_IMAGE_SIZE),
+			EditableBudget.PRIORITY.STARS,
+			nil
+		)
+		if image == nil or handle == nil then
+			if refusal == "budget" then
+				starRetryAt = os.clock() + STAR_RETRY_S
+				return fail("[SkyCube] star images wait for Editable memory (budget); space is starless until then.")
+			end
+			EditableBudget.setDemand(BUDGET_OWNER, 0, EditableBudget.PRIORITY.STARS)
+			return fail("[SkyCube] EditableImage unavailable; space is drawn without stars.")
+		end
+		table.insert(handles, handle)
 		local buf = paintStars()
 		local written, err = pcall(function()
 			image:WritePixelsBuffer(Vector2.zero, image.Size, buf)
 		end)
 		if not written then
-			warn("[SkyCube] could not paint stars (" .. tostring(err) .. "); space is drawn without stars.")
-			return {}
+			EditableBudget.setDemand(BUDGET_OWNER, 0, EditableBudget.PRIORITY.STARS)
+			return fail("[SkyCube] could not paint stars (" .. tostring(err) .. "); space is drawn without stars.")
 		end
 		table.insert(images, image)
 		table.insert(contents, Content.fromObject(image))
 	end
+	starRetryAt = math.huge
 	return contents
 end
 
@@ -281,6 +316,16 @@ function SkyCube.update(ctx: RenderContext.RenderContext, surfaceMode: boolean, 
 	local f = folder
 	if f == nil then
 		return
+	end
+	-- CHANGED (Memory budget): stars refused by the memory budget: try again now and then
+	if os.clock() >= starRetryAt then
+		starRetryAt = math.huge
+		local contents = makeStarImages()
+		for index, panel in panels do
+			if #contents > 0 then
+				panel.stars.ImageContent = contents[(index - 1) % #contents + 1]
+			end
+		end
 	end
 	local forced = override
 	local target = if forced then forced.opacity else spaceOpacity(ctx, surfaceMode, handover)

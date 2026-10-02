@@ -83,6 +83,8 @@
 		                                                    -- without drawing it (the main menu builds the base's)
 		Surface.summary(): string                           -- CHANGED (Phase 8): F3 debug line
 		Surface.isReady(): boolean                          -- CHANGED (Terrain polish): ground meshes on screen
+		Surface.isSettled(): boolean                        -- CHANGED (Memory budget): ground built, no plan running
+		Surface.setLoadBoost(mode?)                         -- CHANGED (Memory budget): "Menu" / "Cover" / nil
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -545,6 +547,16 @@ end
 -- its Play fade on it.
 function Surface.isReady(): boolean
 	return TerrainMesh.isReady()
+end
+
+-- CHANGED (Memory budget): the terrain around the camera is built (ScaledSpace holds its other textures until then).
+function Surface.isSettled(): boolean
+	return TerrainMesh.isSettled()
+end
+
+-- CHANGED (Memory budget): "Menu" / "Cover" (the main menu / its black cover is up: build the ground faster) / nil.
+function Surface.setLoadBoost(mode: string?)
+	TerrainMesh.setLoadBoost(mode)
 end
 
 -- CHANGED (Phase 8): F3 debug line.

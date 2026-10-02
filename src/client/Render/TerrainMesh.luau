@@ -56,6 +56,7 @@
 	    the meshes do not cover the camera at all (a jump) skips the hole-free ordering ("fresh": plates show
 	    anyway). After a real refusal (another script holds meshes) bandCount drops as before, but it comes back:
 	    every RECOVER_INTERVAL the spare capacity is probed and one band is added back when it is there.
+	    (CHANGED (Memory budget): the probing is gone; each plan uses the bands EditableBudget has room for.)
 	  * While a plan catches up with a fast, low camera, the displayed meshes stay on screen up to
 	    STALE_PLAN_FACTOR x the usual distance (was: plates as soon as the camera left it, swapping back and forth).
 	  * scaleAt(): the scale factor the ground under a point is drawn at (Surface draws the launch-site copy with it);
@@ -83,6 +84,28 @@
 	    these meshes do not have (UVs across a 30 km band would also lose precision far from the origin), so
 	    Grass / Ground / Rock would only show one texel of their texture; the detail is in the vertex colours
 
+	CHANGED (Memory budget): Studio's first run after the planet detail work hit Roblox's Editable memory budget
+	("Failed to create empty EditableMesh ... memory budget limits"): every EditableMesh is charged ~10 MiB whatever
+	it holds (S12), so 6 bands + 1 being built + the planet mesh (80 MiB) filled the ~80 MiB desktop budget before a
+	single image. Each refusal then dropped a band AND released every band (a rebuild from nothing: "terrain took a
+	while to load"), and the recovery probes printed more refusals.
+	  * every mesh goes through Render/EditableBudget: the near band (and the mesh built for it) at TERRAIN_NEAR, the
+	    other bands at TERRAIN_FAR, everything at HIDDEN_TERRAIN (released on demand) while no ground is drawn or
+	    prebuilt
+	  * bands per tier (maxBands: High / Medium 4, Low 3; a plan needs bandCount + 1 meshes) and, at each plan,
+	    no more than the budget has room for at TERRAIN_FAR (EditableBudget.room: the planet mesh, the stars and
+	    the visible planets' base images come first); raised again at most every BAND_RAISE_INTERVAL. The offline
+	    view audit with 4 bands: scaled ground drawn at ~260-390 studs (6 bands: ~400-510), base pixels covered
+	    0.0-0.3 %; with 3 (Low, phones): ~130-210 studs, ~1 %
+	  * a refused build keeps what is on screen and plans again STARVED_RETRY_S later with what fits (no release of
+	    every band, no probing: room() says when a band fits again); only "unavailable" switches to plates
+	  * room for fewer than MIN_BANDS + 1 meshes (a small device after real refusals): each band is rebuilt in place
+	    of its old mesh (meshLimit: a brief hole there instead of the spare mesh); bands that would exceed the
+	    EditableMesh limits are never attempted
+	  * setLoadBoost(): a larger per-frame build budget while the main menu (LOAD_BOOST_MENU_S) or the black
+	    "Preparing launch site..." cover (LOAD_BOOST_COVER_S) is up; isSettled() tells ScaledSpace when the first
+	    ground is built (its other textures wait for it at join)
+
 	API (driven by Surface):
 		TerrainMesh.init(parent)
 		TerrainMesh.update(ctx, show, prebuild)   show: draw this frame (surface mode); prebuild: build but keep hidden
@@ -98,6 +121,8 @@
 		TerrainMesh.scaleOver(points): number?     CHANGED (Review 3): scaleAt over a list of points (cached)
 		TerrainMesh.hideScaledAt(points?)          CHANGED (Review 3): hide the scaled bands holding those points
 		TerrainMesh.isReady(): boolean             CHANGED (Terrain polish): the wanted ground is drawn as meshes
+		TerrainMesh.isSettled(): boolean           CHANGED (Memory budget): no plan running for built ground
+		TerrainMesh.setLoadBoost(mode?)            CHANGED (Memory budget): "Menu" / "Cover" / nil: build time per frame
 		TerrainMesh.summary(): string              F3 debug line
 ]]
 
@@ -107,6 +132,7 @@ local Workspace = game:GetService("Workspace")
 
 local Biome = require(ReplicatedStorage.Shared.Sim.Biome)
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies) -- CHANGED (Terrain polish)
+local EditableBudget = require(script.Parent.EditableBudget) -- CHANGED (Memory budget)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local Quality = require(script.Parent.Quality)
 local RenderContext = require(script.Parent.RenderContext)
@@ -125,8 +151,11 @@ type Near = TerrainMath.Near -- CHANGED (Night review)
 --============================================================================
 -- Tunables
 --============================================================================
-local MAX_BANDS = 6 -- bands (meshes) shown at once; one more is built at a time (S12: ~8 per experience, ScaledSpace 1)
-local MIN_BANDS = 2 -- after budget refusals the band count drops, but never below this
+-- CHANGED (Memory budget): the bands per tier are TierParams.maxBands (High / Medium 4, Low 3), fewer when the
+-- Editable memory budget has no room (EditableBudget.room); one more mesh is built at a time
+local MIN_BANDS = 2 -- the fewest bands a starved budget plans with (the near band and one more)
+local MAX_MESH_TRIANGLES = 20000 -- EditableMesh limits: a band beyond them is never attempted ...
+local MAX_MESH_VERTICES = 60000
 local MAX_MESH_LEAVES = 100 -- leaves per mesh (192 triangles each: under EditableMesh's 20,000 triangles)
 local PART_LIMIT = 2040 -- studs per MeshPart axis (engine limit 2048)
 local MESH_STORE_EXTENT = 512 -- mesh units across a band's box (vertices are stored normalised; Size scales them)
@@ -159,7 +188,15 @@ local NEAR_MAX_LEAF = 400 -- m: largest leaf inside the near square (level 1 on 
 local NEAR_RECENTRE = 100 -- m (tangent x / z) the camera's nadir may move from the square's origin before it moves
 local KEEP_RANGE = 400 -- m (tangent): a keepNear square stays in the near band while the camera's nadir is at most
 -- this far outside the square's room (the nadir then stays >= NEAR_HALF - KEEP_RANGE inside the near band)
-local RECOVER_INTERVAL = 30 -- s between probes for room to add a band back after a budget refusal
+-- CHANGED (Memory budget): RECOVER_INTERVAL (probing for mesh room) is gone: EditableBudget.room() says what fits
+local STARVED_RETRY_S = 1 -- s after a build the memory budget refused before planning again (with what fits) ...
+local STARVED_RETRY_MAX_S = 8 -- ... doubling while it keeps being refused, up to this
+local BAND_RAISE_INTERVAL = 5 -- s at least between band-count raises (each re-lays out every band)
+local LOAD_BOOST_MENU_S = 0.008 -- s of building per frame while the main menu is up (setLoadBoost)
+local LOAD_BOOST_COVER_S = 0.03 -- ... while the black "Preparing launch site..." cover is up
+local BUDGET_OWNER = "TerrainMesh"
+local BAND_VERTICES = 11500 -- a full band (MAX_MESH_LEAVES x ~115 vertices): the budget's size estimate per mesh
+local BAND_TRIANGLES = 19200 -- ... (MAX_MESH_LEAVES x 192 triangles)
 local STALE_PLAN_FACTOR = 2 -- x the stale distance the meshes stay on screen while a plan catches up
 local PLATE_GRACE_S = 8 -- CHANGED (Terrain polish): s without mesh coverage before plates show (meshes expected)
 -- CHANGED (Terrain polish): distance haze baked into the vertex colours (bodies with an atmosphere). Roblox's fog
@@ -181,11 +218,14 @@ local PROTECT_HIGH_DEPTH = 160 -- studs
 
 -- Detail per Quality tier: splitK (LOD distance in node sizes), leaf cap, build time per frame (s), and whether the
 -- finest band casts shadows.
-type TierParams = { splitK: number, maxLeaves: number, budgetS: number, shadows: boolean }
+-- CHANGED (Memory budget): + maxBands (meshes: maxBands + 1 while building, ~10 MiB each; phones get 3 from the
+-- budget's room); the leaf caps fit them (at most TerrainMath.MAX_BAND_LEAVES = 95 leaves, ~18k triangles, per
+-- band: 4 x 95 >= 320, 3 x 95 >= 240)
+type TierParams = { splitK: number, maxLeaves: number, budgetS: number, shadows: boolean, maxBands: number }
 local TIERS: { [string]: TierParams } = {
-	Low = { splitK = 0.8, maxLeaves = 180, budgetS = 0.0015, shadows = false },
-	Medium = { splitK = 1.05, maxLeaves = 240, budgetS = 0.002, shadows = false },
-	High = { splitK = 1.4, maxLeaves = 320, budgetS = 0.003, shadows = true },
+	Low = { splitK = 0.8, maxLeaves = 180, budgetS = 0.0015, shadows = false, maxBands = 3 },
+	Medium = { splitK = 1.05, maxLeaves = 240, budgetS = 0.002, shadows = false, maxBands = 4 },
+	High = { splitK = 1.4, maxLeaves = 320, budgetS = 0.003, shadows = true, maxBands = 4 },
 }
 
 -- Plates (fallback and placeholder)
@@ -221,6 +261,7 @@ local BULK_MOVE_MODE = Enum.BulkMoveMode.FireCFrameChanged
 type BandMesh = {
 	id: number,
 	mesh: EditableMesh,
+	handle: EditableBudget.Handle, -- CHANGED (Memory budget): its budget handle (destroying it destroys the mesh)
 	part: MeshPart,
 	origin: Vec3d, -- body-relative centre of the mesh's box
 	rot: CFrame, -- CHANGED (Night review): the band frame's axes (body axes); the box is in this frame
@@ -259,7 +300,10 @@ type Plan = {
 	steps: number, -- meshes this plan needs at least
 	current: string, -- what is being built (debug)
 	buildingMesh: EditableMesh?, -- the mesh being built (released if the plan stops)
+	buildingHandle: EditableBudget.Handle?, -- CHANGED (Memory budget)
+	buildingId: number?, -- CHANGED (Memory budget): the band it is for
 	buildingPart: MeshPart?,
+	refusal: EditableBudget.Refusal?, -- CHANGED (Memory budget): why the mesh could not be created
 	-- CHANGED (Night review)
 	near: Near?, -- the near square (band 0), or nil (one band per level: bandCount < 2)
 	axes: Axes, -- the frame every band of this plan is stored in
@@ -290,8 +334,15 @@ local meshEnabled = true -- false after EditableMesh failed for good: plates onl
 local warned = false
 local failures = 0
 local retryAt = 0
-local bandCount = MAX_BANDS
+local bandCount = TIERS.High.maxBands -- CHANGED (Memory budget): set per plan (affordableBands)
 local liveMeshes = 0
+local raiseAt = 0 -- CHANGED (Memory budget): the band count may rise again from then on
+local hiddenMode = false -- CHANGED (Memory budget): no ground drawn or prebuilt: the meshes may be released
+local loadBoostS = 0 -- CHANGED (Memory budget): setLoadBoost
+local updatedOnce = false -- CHANGED (Memory budget): isSettled
+local activeLast = false -- CHANGED (Memory budget): the last update drew or prebuilt ground
+local starvedRetry = STARVED_RETRY_S -- CHANGED (Memory budget): the next wait after a refused build
+local meshLimit = math.huge -- CHANGED (Memory budget): meshes a plan may hold (< bandCount + 1: no spare)
 
 local bodyId: number? = nil
 local bands: { [number]: BandMesh } = {} -- by band id
@@ -310,7 +361,6 @@ local keepBody: number? = nil -- keepNear: a square kept inside the near band wh
 local keepPos: Vec3d? = nil
 local keepHalf = 0
 local keepRange = KEEP_RANGE -- CHANGED (Review 3): per keepNear call (Surface: the base's plate out to its near zone)
-local recoverAt = math.huge -- when to probe for room to add a band back (after a budget refusal)
 local bandsVersion = 0 -- bumped whenever the displayed bands change
 -- CHANGED (Terrain polish): ring bands
 local ringBounds: { number }? = nil -- the displayed plan's ring bounds (the next plan keeps them while good)
@@ -359,7 +409,9 @@ local wantsGround = false -- CHANGED (Terrain polish): the last update wanted gr
 -- Helpers
 --============================================================================
 local function params(): TerrainMath.Params
-	return { splitK = tier.splitK, mergeK = tier.splitK * MERGE_FACTOR, maxLeaves = tier.maxLeaves }
+	-- CHANGED (Memory budget): no more leaves than the bands of this plan can hold
+	local maxLeaves = math.min(tier.maxLeaves, bandCount * TerrainMath.MAX_BAND_LEAVES)
+	return { splitK = tier.splitK, mergeK = tier.splitK * MERGE_FACTOR, maxLeaves = maxLeaves }
 end
 
 local function disableMeshes(reason: string)
@@ -375,9 +427,10 @@ local function disableMeshes(reason: string)
 	end
 end
 
+-- CHANGED (Memory budget): the mesh goes through its budget handle
 local function destroyBand(bm: BandMesh)
 	bm.part:Destroy()
-	bm.mesh:Destroy()
+	EditableBudget.destroy(bm.handle)
 	liveMeshes -= 1
 	bandsVersion += 1 -- CHANGED (Night review)
 end
@@ -391,8 +444,9 @@ local function releaseBuilding(p: Plan)
 	end
 	local mesh = p.buildingMesh
 	if mesh then
-		mesh:Destroy()
+		EditableBudget.destroy(p.buildingHandle) -- CHANGED (Memory budget)
 		p.buildingMesh = nil
+		p.buildingHandle = nil
 		liveMeshes -= 1
 	end
 end
@@ -413,6 +467,50 @@ local function abortPlan()
 		plan = nil
 		-- the builder thread drops its unfinished mesh when it next wakes up
 	end
+end
+
+--[[
+	CHANGED (Memory budget): the budget's release callback while no ground is drawn or prebuilt (HIDDEN_TERRAIN):
+	everything goes, as after HIDDEN_RELEASE_S (a higher priority needs the memory sooner).
+]]
+local function releaseHidden()
+	abortPlan()
+	releaseAllBands()
+	table.clear(split)
+	forceSelect = true
+end
+
+-- CHANGED (Memory budget): the budget priority of band `id`'s meshes (and its release callback, nil: never evicted)
+local function bandPriority(id: number): (number, (() -> ())?)
+	if hiddenMode then
+		return EditableBudget.PRIORITY.HIDDEN_TERRAIN, releaseHidden
+	end
+	if id == TerrainMath.NEAR_BAND then
+		return EditableBudget.PRIORITY.TERRAIN_NEAR, nil
+	end
+	return EditableBudget.PRIORITY.TERRAIN_FAR, nil
+end
+
+-- CHANGED (Memory budget): enters / leaves the hidden mode (every mesh's budget priority follows it).
+local function setHidden(hidden: boolean)
+	if hidden == hiddenMode then
+		return
+	end
+	hiddenMode = hidden
+	for id, bm in bands do
+		local priority, release = bandPriority(id)
+		EditableBudget.setPriority(bm.handle, priority, release)
+	end
+	local p = plan
+	if p and p.buildingHandle then
+		local priority, release = bandPriority(p.buildingId or TerrainMath.NEAR_BAND + 1)
+		EditableBudget.setPriority(p.buildingHandle, priority, release)
+	end
+end
+
+-- CHANGED (Memory budget): the build time per frame (the tier's, or more while the menu / cover is up)
+local function buildBudget(): number
+	return math.max(tier.budgetS, loadBoostS)
 end
 
 local function trimChunkCache(keep: { [number]: boolean })
@@ -555,7 +653,7 @@ end
 local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: { [number]: boolean }?): BandMesh?
 	local sliceStart = os.clock()
 	local function due(): boolean
-		if os.clock() - sliceStart >= tier.budgetS then
+		if os.clock() - sliceStart >= buildBudget() then -- CHANGED (Memory budget): load boost
 			task.wait()
 			sliceStart = os.clock()
 		end
@@ -607,16 +705,32 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 	local radius = size.Magnitude / 2
 	-- 3. the mesh
 	local store = math.max(size.X, size.Y, size.Z, 1) / MESH_STORE_EXTENT
-	local created, mesh = pcall(function(): EditableMesh
-		return AssetService:CreateEditableMesh()
-	end)
-	if not created or (mesh :: any) == nil then
+	-- CHANGED (Memory budget): through EditableBudget, with this band's priority and its exact size
+	local vertices, triangleCount = 0, 0
+	for _, c in chunks do
+		vertices += c.vertexCount
+		triangleCount += c.triangleCount
+	end
+	if triangleCount > MAX_MESH_TRIANGLES or vertices > MAX_MESH_VERTICES then
+		-- ... (a crowded selection with few bands): handled like a budget refusal (keep, plan again later)
 		p.failed = true
-		p.error = if created then "CreateEditableMesh returned nil" else tostring(mesh)
+		p.refusal = "budget"
+		p.error = string.format("band %d too large (%d triangles)", id, triangleCount)
 		return nil
 	end
+	local priority, release = bandPriority(id)
+	p.buildingId = id
+	local created, handle, refusal = EditableBudget.createMesh(BUDGET_OWNER, priority, release, vertices, triangleCount)
+	if created == nil or handle == nil then
+		p.failed = true
+		p.refusal = refusal
+		p.error = "CreateEditableMesh refused (" .. tostring(refusal) .. ")"
+		return nil
+	end
+	local mesh = created :: EditableMesh
 	liveMeshes += 1
 	p.buildingMesh = mesh
+	p.buildingHandle = handle
 	local triangles = 0
 	-- CHANGED (Terrain polish): distance haze from the plan's camera (bodies with an atmosphere)
 	local haze: Haze? = nil
@@ -677,6 +791,7 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 	local shadow = id == TerrainMath.NEAR_BAND
 	configureBandPart(part, id, shadow)
 	p.buildingMesh = nil
+	p.buildingHandle = nil -- CHANGED (Memory budget): now the band's
 	p.buildingPart = nil
 	-- the engine's own idea of the mesh's box (the same box: it is centred on the exact vertex box)
 	local okSize, meshSize = pcall(function(): Vector3
@@ -696,6 +811,7 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 	return {
 		id = id,
 		mesh = mesh,
+		handle = handle, -- CHANGED (Memory budget)
 		part = part,
 		origin = origin,
 		rot = rot,
@@ -749,7 +865,7 @@ local function buildAndSwap(p: Plan, id: number, leaves: { [number]: Node }, sun
 		-- the plan was dropped while this mesh was finishing
 		if bm then
 			bm.part:Destroy()
-			bm.mesh:Destroy()
+			EditableBudget.destroy(bm.handle) -- CHANGED (Memory budget)
 			liveMeshes -= 1
 		end
 		return false
@@ -794,7 +910,17 @@ local function runPlan(p: Plan)
 			p.covered[id] = true
 			p.pending[id] = nil
 			continue
-		elseif kind == "build" then
+		elseif kind == "build" or (next(p.target[id]) ~= nil and liveMeshes >= meshLimit) then
+			-- CHANGED (Memory budget): no room for the spare mesh (meshLimit): the band's own mesh goes first (a
+			-- hole there until its new mesh is up), and a union (which needs the old mesh) becomes the final build
+			if next(p.target[id]) ~= nil and liveMeshes >= meshLimit then
+				local own = bands[id]
+				if own then
+					destroyBand(own)
+					bands[id] = nil
+					coverageBroken = true
+				end
+			end
 			-- a band whose replacements are all on screen gets its final mesh
 			if not buildAndSwap(p, id, p.target[id], nil) then
 				return
@@ -1072,7 +1198,7 @@ local function selectAndRun(p: Plan)
 	selectParams.rings = p.rings -- CHANGED (Terrain polish)
 	selectParams.horizonLead = math.max(HORIZON_LEAD_MIN, HORIZON_LEAD_FRACTION * heightAboveGround(p.config, p.cam))
 	selectParams.pause = function()
-		if os.clock() - sliceStart >= tier.budgetS then
+		if os.clock() - sliceStart >= buildBudget() then -- CHANGED (Memory budget): load boost
 			task.wait()
 			sliceStart = os.clock()
 		end
@@ -1098,24 +1224,35 @@ local function finishPlan()
 	-- after real work the camera has moved on: look again right away
 	forceSelect = p.steps > 0
 	if p.failed then
+		-- CHANGED (Memory budget): a refusal by the memory budget keeps what is on screen (bands a plan already
+		-- swapped stay; stale ones stay pushed back) and plans again soon with the bands that fit (affordableBands);
+		-- it used to drop a band AND release every band (the ground rebuilt from nothing)
+		if p.refusal == "budget" then
+			retryAt = os.clock() + starvedRetry
+			starvedRetry = math.min(starvedRetry * 2, STARVED_RETRY_MAX_S)
+			forceSelect = true
+			EditableBudget.warnOnce(
+				"TerrainMesh.budget",
+				"[TerrainMesh] terrain waits for Editable memory (budget): fewer, coarser bands until there is room."
+			)
+			return
+		end
+		if p.refusal == "unavailable" then
+			releaseAllBands()
+			disableMeshes(p.error or "EditableMesh unavailable")
+			return
+		end
 		failures += 1
 		retryAt = os.clock() + RETRY_DELAY
-		if liveMeshes == 0 or bandCount <= MIN_BANDS or failures >= MAX_MESH_FAILURES then
-			-- no mesh at all (API off, unpublished place), or still failing with the fewest bands
+		if liveMeshes == 0 or failures >= MAX_MESH_FAILURES then
+			-- no mesh at all, or still failing: plates for the session
 			releaseAllBands()
 			disableMeshes(p.error or "unknown error")
-		else
-			-- probably the experience-wide mesh budget: hold fewer bands and start over (plates meanwhile)
-			-- (a plan itself never needs more than bandCount + 1 meshes: TerrainMath.planStep)
-			bandCount -= 1
-			failures = 0
-			releaseAllBands()
-			table.clear(split)
-			recoverAt = os.clock() + RECOVER_INTERVAL -- CHANGED (Night review): the band comes back when there is room
 		end
 		return
 	end
 	failures = 0
+	starvedRetry = STARVED_RETRY_S -- CHANGED (Memory budget)
 	local selection = p.selection
 	if selection then
 		split = selection.split
@@ -1184,36 +1321,46 @@ local function nearFor(config: Config, cam: Vec3d): Near?
 end
 
 --[[
-	CHANGED (Night review): after a budget refusal, probes every RECOVER_INTERVAL (while idle) whether the meshes for
-	one more band and the plan's spare are free, and adds the band back if so (the probe meshes are released at once).
+	CHANGED (Memory budget): the bands the next plan may use: what EditableBudget has room for at TERRAIN_FAR (the
+	planet mesh, the stars and the visible planets' base images come first; this module's own meshes count as
+	available), minus the one being built, within MIN_BANDS..tier.maxBands. Lowered at once, raised at most every
+	BAND_RAISE_INTERVAL (a new count re-lays out every band). Replaces the night review's probing (tryRecover), whose
+	test creations printed "memory budget" refusals.
 ]]
-local function tryRecover()
-	if bandCount >= MAX_BANDS or plan ~= nil or os.clock() < recoverAt then
+-- CHANGED (Memory budget): the bands that fit now and the meshes behind them (pure: no state changes)
+local function bandsThatFit(): (number, number)
+	local room = EditableBudget.room(EditableBudget.PRIORITY.TERRAIN_FAR, BUDGET_OWNER)
+	local meshes = math.floor(room / EditableBudget.meshBytes(BAND_VERTICES, BAND_TRIANGLES))
+	return math.clamp(meshes - 1, MIN_BANDS, tier.maxBands), meshes
+end
+
+local function affordableBands(): number
+	local wanted, meshes = bandsThatFit()
+	-- too tight even for MIN_BANDS and a spare: rebuild each band in place of its old mesh (no spare)
+	meshLimit = if meshes < wanted + 1 then math.max(meshes, MIN_BANDS) else math.huge
+	local now = os.clock()
+	if wanted > bandCount and now < raiseAt then
+		return bandCount
+	end
+	if wanted ~= bandCount then
+		raiseAt = now + BAND_RAISE_INTERVAL
+	end
+	return wanted
+end
+
+--[[
+	CHANGED (Memory budget): a camera that stands still never re-plans, so every BAND_RAISE_INTERVAL an idle terrain
+	checks whether a different band count fits now (e.g. after the surface view hid the planet's base images).
+]]
+local bandCheckAt = 0
+local function checkBandCount()
+	local now = os.clock()
+	if plan ~= nil or forceSelect or now < bandCheckAt then
 		return
 	end
-	recoverAt = os.clock() + RECOVER_INTERVAL
-	local wanted = bandCount + 2 - liveMeshes -- bandCount + 1 bands and a spare, minus what is held
-	local probes: { EditableMesh } = {}
-	local ok = true
-	for _ = 1, math.max(wanted, 1) do
-		local created, mesh = pcall(function(): EditableMesh
-			return AssetService:CreateEditableMesh()
-		end)
-		if not created or (mesh :: any) == nil then
-			ok = false
-			break
-		end
-		table.insert(probes, mesh)
-	end
-	for _, mesh in probes do
-		mesh:Destroy()
-	end
-	if ok then
-		bandCount += 1
+	bandCheckAt = now + BAND_RAISE_INTERVAL
+	if bandsThatFit() ~= bandCount then
 		forceSelect = true
-		if bandCount >= MAX_BANDS then
-			recoverAt = math.huge
-		end
 	end
 end
 
@@ -1238,6 +1385,7 @@ local function maybeSelect(config: Config, cam: Vec3d)
 	forceSelect = false
 	lastSelectTime = now
 	lastSelectCam = Vec3d.clone(cam)
+	bandCount = affordableBands() -- CHANGED (Memory budget)
 	-- CHANGED (Night review): layout, band frame, and whether the meshes on screen still stand for the view at all
 	local near = nearFor(config, cam)
 	local at = displayedCam
@@ -1262,7 +1410,10 @@ local function maybeSelect(config: Config, cam: Vec3d)
 		steps = 0,
 		current = "selecting",
 		buildingMesh = nil,
+		buildingHandle = nil, -- CHANGED (Memory budget)
+		buildingId = nil,
 		buildingPart = nil,
+		refusal = nil,
 		near = near,
 		axes = if near then near.axes else TerrainMath.tangentAxes(config, cam),
 		fresh = fresh,
@@ -1600,7 +1751,10 @@ end
 
 function TerrainMesh.update(ctx: RenderContext.RenderContext, show: boolean, prebuild: boolean)
 	local config = TerrainMath.config(ctx.dominantBodyId)
+	updatedOnce = true -- CHANGED (Memory budget)
 	if config == nil or Vec3d.lengthSq(ctx.cameraDominant) < 1 or not (show or prebuild) then
+		activeLast = false -- CHANGED (Memory budget)
+		setHidden(true) -- CHANGED (Memory budget): the meshes may go whenever something visible needs the memory
 		wantsGround = false -- CHANGED (Terrain polish)
 		uncoveredSince = nil
 		setMeshesShown(false)
@@ -1619,6 +1773,8 @@ function TerrainMesh.update(ctx: RenderContext.RenderContext, show: boolean, pre
 		return
 	end
 	hiddenSince = nil
+	activeLast = true -- CHANGED (Memory budget)
+	setHidden(false)
 	-- CHANGED (Terrain polish): the draw budget (placeBands and the ring layout of the next plan)
 	local dd = ctx.drawDistance
 	if dd ~= dd or dd <= 0 or dd > DRAW_DISTANCE_CAP then
@@ -1651,7 +1807,8 @@ function TerrainMesh.update(ctx: RenderContext.RenderContext, show: boolean, pre
 	if meshEnabled then
 		finishPlan()
 		if meshEnabled then
-			tryRecover() -- CHANGED (Night review): a band dropped after a budget refusal comes back when there is room
+			-- CHANGED (Memory budget): no tryRecover probing; maybeSelect plans with the bands that fit
+			checkBandCount()
 			maybeSelect(config, cam)
 		end
 	end
@@ -1698,6 +1855,28 @@ function TerrainMesh.isReady(): boolean
 		return true
 	end
 	return meshesShown and not coverageBroken and displayedCam ~= nil and uncoveredSince == nil
+end
+
+--[[
+	CHANGED (Memory budget): no plan is running and the ground around the camera is built (or no ground is wanted,
+	or only plates can be drawn). ScaledSpace holds its other textures at join until this is true.
+]]
+function TerrainMesh.isSettled(): boolean
+	if not updatedOnce then
+		return false
+	end
+	if not meshEnabled or not activeLast then
+		return true
+	end
+	return plan == nil and not forceSelect and displayedCam ~= nil and next(bands) ~= nil
+end
+
+--[[
+	CHANGED (Memory budget): the build time per frame while loading: "Menu" (the main menu is up), "Cover" (the
+	black "Preparing launch site..." cover: nothing else runs), nil: the tier's own budget.
+]]
+function TerrainMesh.setLoadBoost(mode: string?)
+	loadBoostS = if mode == "Cover" then LOAD_BOOST_COVER_S elseif mode == "Menu" then LOAD_BOOST_MENU_S else 0
 end
 
 -- Band showing the leaf under body-relative `pos` (nil when none is displayed there).

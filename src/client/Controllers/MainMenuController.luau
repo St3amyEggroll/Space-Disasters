@@ -23,6 +23,8 @@
 	          CHANGED (Review 3): the menu stays open in UIState (controls off, the other UIs hidden) until the black
 	          starts to fade (the player walked blind while it waited), and the cover says "Preparing launch
 	          site..." once the wait takes longer than PREPARING_DELAY_S.
+	          CHANGED (Memory budget): the terrain builds with a larger per-frame budget while the menu is up
+	          (Surface.setLoadBoost "Menu") and more behind the black cover ("Cover"), back to normal at the reveal.
 	  Reopen  UIState.onMenuRequested (the builder's Menu button): ignored (with a toast) while the local character
 	          sits in a seat, a flight is active (piloting, a flight pocket) or the map view is open.
 	Keys: Enter = Play while the menu shows and no dialog is open. Settings opens UI/SettingsPanel; Credits /
@@ -167,6 +169,7 @@ local function openMenu(first: boolean)
 		return
 	end
 	state = "Opening"
+	Surface.setLoadBoost("Menu") -- CHANGED (Memory budget): the base's ground builds faster while the menu is up
 	UIState.setMenuOpen(true) -- CHANGED (Phase 11 review): also switches the character controls off
 	hideCoreGuis()
 	v.setEnabled(true)
@@ -188,6 +191,7 @@ local function abandonMenu(err: unknown)
 	warn(`[MainMenuController] the main menu failed; playing without it: {err}`)
 	pcall(MenuScene.stop)
 	restoreCoreGuis()
+	Surface.setLoadBoost(nil) -- CHANGED (Memory budget)
 	state = "Closed"
 	local v = view
 	if v then
@@ -226,6 +230,8 @@ function MainMenuController.play()
 			warn(`[MainMenuController] the menu scene failed to stop: {err}`)
 		end
 		restoreCoreGuis()
+		-- CHANGED (Memory budget): nothing else runs behind the black: the ground gets most of the frame
+		Surface.setLoadBoost("Cover")
 		-- CHANGED (Terrain polish): stay black until the base's ground meshes are on screen (TERRAIN_WAIT_S at most)
 		task.spawn(function()
 			local started = os.clock()
@@ -241,6 +247,7 @@ function MainMenuController.play()
 				local checked, ready = pcall(Surface.isReady)
 			until not is("Closing") or os.clock() - started >= TERRAIN_WAIT_S or not checked or ready
 			v.setStatus(nil)
+			Surface.setLoadBoost(nil) -- CHANGED (Memory budget): gameplay from here on
 			if not is("Closing") then
 				return
 			end

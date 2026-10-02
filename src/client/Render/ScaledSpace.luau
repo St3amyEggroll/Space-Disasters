@@ -42,7 +42,8 @@
 	CHANGED (Planet detail): Steamy: "when i am in orbit i feel like the planet is a small little planet by the level
 	of detail on it". Per graphics tier (Render/Quality, settings in Render/PlanetDetail):
 	  * detail slots: besides its base image every patch near the camera's ground point gets a sharper one (High 8 x
-	    1024 px, Medium 6 x 512, Low 2 x 512 on Earth; half on the Mun). The background painter moves the slots to
+	    1024 px, Medium 6 x 512, Low 2 x 512 on Earth; half on the Mun; CHANGED (Memory budget): now High 4 x 512,
+	    Medium 2 x 512, none on Low, 2 x 256 on the Mun). The background painter moves the slots to
 	    the nearest patches of the dominant body (with hysteresis) and swaps a patch back to its base image when its
 	    slot moves on, in the same frame the slot's new pixels are written, so nothing ever shows wrong pixels.
 	  * every ground texture bakes in the relief shade of the real ground (Sim/Relief through BiomeDetail): valleys
@@ -56,12 +57,33 @@
 	    (the surface view below it draws no cloud shell).
 	The proxy mesh stays 24 x 24 quads per patch: its chord sag (~8 m on the 60 km Earth) is ~0.2 px at the limb
 	seen from 10 km, so a finer mesh would add triangles nobody can see.
+
+	CHANGED (Memory budget): every EditableMesh / EditableImage goes through Render/EditableBudget (one memory budget
+	for the whole client, shared with the terrain meshes). Studio ran out of it ("reaching memory budget limits"):
+	the detail slots and clouds switched off for the session and the Mun stayed a grey ball. Now:
+	  * priorities: the patch mesh (top), base images of the dominant body while its proxy is drawn, base images of
+	    the other bodies (the Mun is always painted; above the far terrain bands), base images of the dominant body
+	    while the surface view hides it, detail slots, clouds (lowest). A lower priority gives its image back when
+	    a higher one needs the memory: a slot's patch shows its base image again, a cloud patch hides.
+	  * a refused image is retried after REFUSED_RETRY_S (nothing switches off for the session any more, unless the
+	    API itself is unavailable); one warning if base images had to wait (slots and clouds wait silently)
+	  * painted base pixels are kept in Lua buffers (normal memory, not the Editable budget), so a released base
+	    image comes back in a frame without repainting
+	  * released when not needed for HIDDEN_RELEASE_S: the dominant body's images while the surface view hides its
+	    proxy (restored from the buffers just before the handover), detail slots below / far above their altitude
+	    band, cloud images while the cloud shell is invisible
+	  * paint order: the dominant body's base images first; the other bodies, slots and clouds only once the terrain
+	    around the camera is built (setExtrasGate, at most STARTUP_HOLD_S after init), so nothing that is not on
+	    screen competes with the base's ground at join
+	  * a patch without an image shows its own average colour (sampled from Biome: maria darker, highlands lighter)
+	    instead of the body's single average grey
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Biome = require(ReplicatedStorage.Shared.Sim.Biome)
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
+local EditableBudget = require(script.Parent.EditableBudget) -- CHANGED (Memory budget)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 local PlanetDetail = require(script.Parent.PlanetDetail) -- CHANGED (Planet detail)
@@ -107,7 +129,7 @@ local PATCH_MATERIAL = Enum.Material.SmoothPlastic
 -- CHANGED (Planet detail): texture sizes, detail slots, atmosphere layers, cloud shell and paint budgets per tier
 -- live in Render/PlanetDetail
 type TextureSpec = PlanetDetail.TextureSpec
-local MAX_EDITABLE_IMAGES = 112 -- hard cap on images this module holds (48 base + 8 slots + 24 clouds today)
+-- CHANGED (Memory budget): MAX_EDITABLE_IMAGES is gone: Render/EditableBudget holds every image under one ceiling
 -- CHANGED (Phase 2a playtest): Studio refused SurfaceAppearance.ColorMapContent from game scripts ("lacking
 -- capability Plugin"), so the cloud shell cannot be made at runtime; off until clouds have another route.
 -- CHANGED (Planet detail): clouds are back through MeshPart.TextureContent (an EditableImage with alpha, which
@@ -120,6 +142,13 @@ local ATMOSPHERE_MATERIAL = Enum.Material.SmoothPlastic -- lit by the sun; Force
 local RELIEF_SHADE = true -- CHANGED (Planet detail): bake the ground's relief shade into the ground textures
 local SLOT_SWAP_MARGIN = 0.02 -- a detail slot moves only to a patch this much closer (cos) than the one it shows
 local PAINT_IDLE_S = 0.25 -- nothing to paint: look again after this long
+-- CHANGED (Memory budget)
+local REFUSED_RETRY_S = 5 -- s before a kind of image refused by the memory budget is asked for again
+local HIDDEN_RELEASE_S = 10 -- s an image is not needed (hidden proxy, slots / clouds not shown) before it goes
+local RESTORE_FRACTION = 0.75 -- the dominant body's base images come back above this x the handover altitude
+local CLOUD_PREPAINT = 1.3 -- cloud images are made once the shell would show at this x the camera's altitude
+local STARTUP_HOLD_S = 20 -- s after init the extras (other bodies, slots, clouds) wait for the terrain at most
+local PATCH_COLOR_SAMPLES = 5 -- per patch edge: the patch's own average colour (shown while it has no image)
 local MAX_SHELL_SCALE = math.max(1, PlanetDetail.MAX_SHELL_SCALE) -- largest patch clone per body
 local SUN_MATERIAL = Enum.Material.Neon
 local RENDER_FIDELITY = Enum.RenderFidelity.Precise -- no LOD decimation of the silhouette
@@ -166,6 +195,7 @@ type Kind = "Patches" | "Ball" | "Sun"
 
 type Slot = {
 	image: EditableImage?,
+	handle: EditableBudget.Handle?, -- CHANGED (Memory budget)
 	size: number, -- pixels per side of `image` (0 = none yet)
 	visual: Visual?, -- the body whose patch shows it
 	patch: number, -- that patch (0 = none)
@@ -189,6 +219,19 @@ type Visual = {
 	cloudPart: { [number]: MeshPart },
 	cloudImage: { [number]: EditableImage },
 	cloudIndex: { [number]: number },
+	-- CHANGED (Memory budget): budget handles, painted base pixels kept in Lua memory, release callbacks, the
+	-- patch's own average colour, whether the proxy is (about to be) drawn, timers for releasing unused images
+	baseHandle: { [number]: EditableBudget.Handle },
+	baseCache: { [number]: buffer },
+	baseCacheSize: number, -- pixels per side of the cached buffers (0 = none)
+	baseRelease: { [number]: () -> () },
+	cloudHandle: { [number]: EditableBudget.Handle },
+	patchColor: { [number]: Color3 },
+	wanted: boolean,
+	basePriority: number,
+	hiddenSince: number?,
+	cloudWanted: boolean,
+	cloudIdleSince: number?,
 	atmosphereIndex: { { number } },
 	cloudFade: number, -- cloud shell visibility last applied (0..1)
 	camDir: Vec3d, -- unit direction body centre -> camera (body axes)
@@ -350,13 +393,16 @@ end
 local initialised = false
 local fallback = false
 local keepAlive: { EditableMesh } = {} -- MeshParts vanish when their EditableMesh is destroyed: keep it referenced
--- CHANGED (Planet detail): live EditableImages are referenced by their visual / slot (Visual.baseImage, cloudImage,
--- Slot.image); this counts them against MAX_EDITABLE_IMAGES
-local imageCount = 0
+-- CHANGED (Memory budget): live EditableImages are referenced by their visual / slot (Visual.baseImage, cloudImage,
+-- Slot.image) and held through Render/EditableBudget (handles)
 local tier: Quality.Tier = "Medium"
 local slots: { Slot } = {}
 local slotGeneration = 0 -- bumped when the slots are released (tier change): a slot job painted before is dropped
 local paintFocus: Visual? = nil -- the dominant body's visual (its textures first, detail slots go there)
+local refusedUntil: { [string]: number } = {} -- CHANGED (Memory budget): image kind -> when to ask again
+local extrasGate: (() -> boolean)? = nil -- CHANGED (Memory budget): true once the terrain around the camera is built
+local startedAt = 0 -- CHANGED (Memory budget): os.clock() of init
+local slotIdleSince: number? = nil -- CHANGED (Memory budget): since when no detail slot is wanted
 local patchTemplate: MeshPart? = nil -- unparented source of every patch clone (kept, never destroyed)
 local workspaceRef: Workspace? = nil
 local limits: Limits = computeLimits(DRAW_DISTANCE_CAP, false)
@@ -373,7 +419,7 @@ local scratchOffset: Vec3d = Vec3d.zero()
 
 -- CHANGED (Phase 2a feedback): texture jobs, painted by the generator thread
 -- CHANGED (Planet detail): chosen one at a time by priority (pickJob) instead of a fixed queue
-type JobKind = "Base" | "Slot" | "Cloud"
+type JobKind = "Base" | "Restore" | "Slot" | "Cloud" -- CHANGED (Memory budget): Restore (from the Lua buffer)
 type TextureJob = {
 	kind: JobKind,
 	visual: Visual,
@@ -403,12 +449,20 @@ local function configurePart(part: BasePart, name: string, color: Color3, materi
 end
 
 -- Builds the shared quarter-face patch mesh and one template MeshPart from it. Errors on failure.
+-- CHANGED (Memory budget): created through EditableBudget (top priority, never released)
 local function buildPatchTemplate(): (EditableMesh, MeshPart)
 	local AssetService = game:GetService("AssetService")
-	local mesh = AssetService:CreateEditableMesh()
-	if mesh == nil then
-		error("CreateEditableMesh returned nil", 0)
+	local created, handle, refusal = EditableBudget.createMesh(
+		"ScaledSpace",
+		EditableBudget.PRIORITY.PLANET_MESH,
+		nil,
+		#geometry.points,
+		#geometry.triangles
+	)
+	if created == nil or handle == nil then
+		error("CreateEditableMesh refused (" .. tostring(refusal) .. ")", 0)
 	end
+	local mesh = created :: EditableMesh
 	local ok, err = pcall(function()
 		local vertexIds: { number } = table.create(#geometry.points)
 		local normalIds: { number } = table.create(#geometry.points)
@@ -429,7 +483,7 @@ local function buildPatchTemplate(): (EditableMesh, MeshPart)
 		end
 	end)
 	if not ok then
-		mesh:Destroy()
+		EditableBudget.destroy(handle)
 		error(err, 0)
 	end
 	local partOk, part = pcall(function(): MeshPart
@@ -439,7 +493,7 @@ local function buildPatchTemplate(): (EditableMesh, MeshPart)
 		})
 	end)
 	if not partOk then
-		mesh:Destroy()
+		EditableBudget.destroy(handle)
 		error(tostring(part), 0)
 	end
 	return mesh, part
@@ -464,6 +518,17 @@ local function newVisual(id: number, radius: number, kind: Kind, parts: { BasePa
 		cloudPart = {},
 		cloudImage = {},
 		cloudIndex = {},
+		baseHandle = {}, -- CHANGED (Memory budget)
+		baseCache = {},
+		baseCacheSize = 0,
+		baseRelease = {},
+		cloudHandle = {},
+		patchColor = {},
+		wanted = true,
+		basePriority = EditableBudget.PRIORITY.OTHER_BASE,
+		hiddenSince = nil,
+		cloudWanted = false,
+		cloudIdleSince = nil,
 		atmosphereIndex = {},
 		cloudFade = 0,
 		camDir = Vec3d.zero(),
@@ -482,6 +547,27 @@ end
 local function averageColor(body: Bodies.Body): Color3
 	local r, g, b = Biome.averageColor(body.Id)
 	return Color3.new(r, g, b)
+end
+
+-- CHANGED (Memory budget): a patch's own average colour (shown while it has no image: better than one flat grey),
+-- from PATCH_COLOR_SAMPLES^2 Biome samples over the patch (patch-local directions turned by its cube rotation).
+local function patchColor(bodyId: number, patch: number): Color3
+	local m = patchMatrixList[patch]
+	local n = PATCH_SUBDIVISIONS
+	local r, g, b, count = 0, 0, 0, 0
+	for a = 0, PATCH_COLOR_SAMPLES - 1 do
+		for c = 0, PATCH_COLOR_SAMPLES - 1 do
+			local i = math.floor((a + 0.5) * n / PATCH_COLOR_SAMPLES)
+			local j = math.floor((c + 0.5) * n / PATCH_COLOR_SAMPLES)
+			local p = geometry.points[i * (n + 1) + j + 1]
+			local x = m[1] * p.x + m[2] * p.y + m[3] * p.z
+			local y = m[4] * p.x + m[5] * p.y + m[6] * p.z
+			local z = m[7] * p.x + m[8] * p.y + m[9] * p.z
+			local sr, sg, sb = Biome.sample(bodyId, x, y, z)
+			r, g, b, count = r + sr, g + sg, b + sb, count + 1
+		end
+	end
+	return Color3.new(r / count, g / count, b / count)
 end
 
 -- Adds one shell of 24 patch clones to a Patches visual; returns its part indices by patch index.
@@ -546,7 +632,12 @@ local function createBodyVisual(body: Bodies.Body, parent: Folder): Visual
 		visual = newVisual(body.Id, body.Radius, "Patches", {}, nil)
 		local ground = addShell(visual, template, folder, "Patch", 1, color, PATCH_MATERIAL, 0)
 		for patch, index in ground do
-			visual.groundPart[patch] = visual.parts[index] :: MeshPart
+			local part = visual.parts[index] :: MeshPart
+			visual.groundPart[patch] = part
+			-- CHANGED (Memory budget): each patch shows its own average colour until (and whenever) it has no image
+			local own = patchColor(body.Id, patch)
+			visual.patchColor[patch] = own
+			part.Color = own
 		end
 		if CLOUDS_ENABLED and Biome.hasClouds(body.Id) then
 			-- hidden (alpha 1) until each patch's cloud texture is applied and the tier / altitude show clouds
@@ -693,29 +784,44 @@ end
 --============================================================================
 -- Texture generation (CHANGED Phase 2a feedback)
 --============================================================================
-local texturesDisabled = false
+local texturesDisabled = false -- CHANGED (Memory budget): only when the API itself is unavailable (not the budget)
 local cloudsDisabled = false
-local slotsDisabled = false -- CHANGED (Planet detail): a slot image could not be created (memory budget)
+local slotsDisabled = false -- CHANGED (Planet detail)
+local PRIORITY = EditableBudget.PRIORITY -- CHANGED (Memory budget)
+local extrasReleased = false -- CHANGED (Memory budget): the startup hold is over (it never comes back)
 
--- CHANGED (Planet detail): image bookkeeping (every image this module creates goes through here)
-local function createImage(size: number): (EditableImage?, string?)
-	if imageCount >= MAX_EDITABLE_IMAGES then
-		return nil, "image cap reached"
+--[[
+	CHANGED (Memory budget): every image this module creates goes through Render/EditableBudget. A "budget" refusal
+	makes that kind of image wait REFUSED_RETRY_S (one warning for base images; slots and clouds give way silently,
+	by design); "unavailable" (the API is off) is handled by the caller (that kind switches off with the setup hint).
+]]
+local function createImage(
+	kind: JobKind,
+	owner: string,
+	size: number,
+	priority: number,
+	release: (() -> ())?
+): (EditableImage?, EditableBudget.Handle?, EditableBudget.Refusal?)
+	local image, handle, refusal = EditableBudget.createImage(owner, Vector2.new(size, size), priority, release)
+	if image == nil and refusal == "budget" then
+		local key: string = if kind == "Restore" then "Base" else kind
+		refusedUntil[key] = os.clock() + REFUSED_RETRY_S
+		-- slots and clouds give way by design (silently); a base image waiting is worth one line
+		if key == "Base" then
+			EditableBudget.warnOnce(
+				"ScaledSpace.Base",
+				"[ScaledSpace] planet textures wait for Editable memory (budget); patches show their own colour"
+					.. " until there is room."
+			)
+		end
 	end
-	local AssetService = game:GetService("AssetService")
-	local ok, image = pcall(function(): EditableImage
-		return AssetService:CreateEditableImage({ Size = Vector2.new(size, size) })
-	end)
-	if not ok then
-		return nil, tostring(image)
-	end
-	imageCount += 1
-	return image, nil
+	return image, handle, refusal
 end
 
-local function destroyImage(image: EditableImage)
-	image:Destroy()
-	imageCount -= 1
+-- CHANGED (Memory budget): is this kind of image waiting after a budget refusal?
+local function waiting(kind: string): boolean
+	local untilTime = refusedUntil[kind]
+	return untilTime ~= nil and os.clock() < untilTime
 end
 
 -- Sets a MeshPart's texture (nil clears it). Returns false (and disables textures with one warning) on failure.
@@ -748,39 +854,197 @@ local function closenessOf(visual: Visual, patch: number): number
 	return PlanetDetail.closeness(patchMatrixList[patch], c.x, c.y, c.z)
 end
 
+-- CHANGED (Memory budget): the budget owner of a body's base images (also the name of its demand)
+local function baseOwner(visual: Visual): string
+	return "ScaledSpace.base" .. visual.id
+end
+
+-- CHANGED (Memory budget): the priority of a body's base images now (header)
+local function basePriorityOf(visual: Visual): number
+	if visual ~= paintFocus then
+		return PRIORITY.OTHER_BASE
+	end
+	return if visual.wanted then PRIORITY.DOMINANT_BASE else PRIORITY.HIDDEN_BASE
+end
+
+-- CHANGED (Planet detail): the cloud shell's transparency for the current fade and tier.
+local function applyCloudAlpha(visual: Visual)
+	local show = PlanetDetail.cloudTexture(tier) ~= nil and not cloudsDisabled
+	for patch, index in visual.cloudIndex do
+		local alpha = 1
+		if show and visual.cloudImage[patch] and visual.cloudFade > 0 then
+			alpha = math.max(CLOUD_MIN_TRANSPARENCY, 1 - visual.cloudFade)
+		end
+		if visual.partAlpha[index] ~= alpha then
+			setPartAlpha(visual, index, alpha)
+		end
+	end
+end
+
+--[[
+	CHANGED (Memory budget): gives a base image back: the patch shows its detail slot if it has one, else its own
+	average colour. Its pixels stay in baseCache (a Restore job brings it back without repainting).
+]]
+local function releaseBase(visual: Visual, patch: number)
+	local handle = visual.baseHandle[patch]
+	visual.baseHandle[patch] = nil
+	visual.baseImage[patch] = nil
+	local part = visual.groundPart[patch]
+	if part and visual.slotOn[patch] == nil then
+		setTexture(part, nil)
+	end
+	EditableBudget.destroy(handle)
+end
+
+-- CHANGED (Memory budget): the budget's release callback of one base image (made once per patch)
+local function baseReleaseFor(visual: Visual, patch: number): () -> ()
+	local existing = visual.baseRelease[patch]
+	if existing then
+		return existing
+	end
+	local fresh = function()
+		releaseBase(visual, patch)
+	end
+	visual.baseRelease[patch] = fresh
+	return fresh
+end
+
+local function releaseAllBase(visual: Visual)
+	local patches: { number } = {}
+	for patch in visual.baseHandle do
+		table.insert(patches, patch)
+	end
+	for _, patch in patches do
+		releaseBase(visual, patch)
+	end
+end
+
+-- CHANGED (Memory budget): gives a cloud image back (that cloud patch hides).
+local function releaseCloud(visual: Visual, patch: number)
+	local handle = visual.cloudHandle[patch]
+	visual.cloudHandle[patch] = nil
+	visual.cloudImage[patch] = nil
+	local part = visual.cloudPart[patch]
+	if part then
+		setTexture(part, nil)
+	end
+	EditableBudget.destroy(handle)
+	applyCloudAlpha(visual)
+end
+
+local function releaseAllClouds(visual: Visual)
+	local patches: { number } = {}
+	for patch in visual.cloudHandle do
+		table.insert(patches, patch)
+	end
+	for _, patch in patches do
+		releaseCloud(visual, patch)
+	end
+end
+
+--[[
+	CHANGED (Memory budget): keeps the budget's view of a body's base images current: the memory the body wants
+	(demand: lower priorities, i.e. far terrain bands, never plan to use it) and the priority of what it holds.
+]]
+local function refreshBase(visual: Visual)
+	local priority = basePriorityOf(visual)
+	local bytes = #patchRotations * PlanetDetail.imageBytes(PlanetDetail.baseTexture(tier, visual.id))
+	EditableBudget.setDemand(baseOwner(visual), if texturesDisabled then 0 else bytes, priority)
+	if priority == visual.basePriority then
+		return
+	end
+	visual.basePriority = priority
+	for patch, handle in visual.baseHandle do
+		EditableBudget.setPriority(handle, priority, baseReleaseFor(visual, patch))
+	end
+end
+
 -- The next base ground image of `visual` to paint (nearest patch first), or nil.
+-- CHANGED (Memory budget): only while the proxy is (about to be) drawn; a patch whose pixels are cached is restored
+-- (Restore) instead of repainted, unless base images wait after a budget refusal
 local function nextBaseJob(visual: Visual?): TextureJob?
-	if visual == nil or visual.kind ~= "Patches" or texturesDisabled then
+	if visual == nil or visual.kind ~= "Patches" or texturesDisabled or not visual.wanted then
 		return nil
 	end
+	local spec = PlanetDetail.baseTexture(tier, visual.id)
+	local restoring = not waiting("Base")
 	for _, patch in patchOrder(visual) do
 		if not visual.baseImage[patch] then
-			return {
-				kind = "Base",
-				visual = visual,
-				patch = patch,
-				spec = PlanetDetail.baseTexture(visual.id),
-				slot = nil,
-				generation = slotGeneration,
-			}
+			local cached = visual.baseCache[patch] ~= nil and visual.baseCacheSize == spec.size
+			if not cached or restoring then
+				return {
+					kind = if cached then "Restore" else "Base",
+					visual = visual,
+					patch = patch,
+					spec = spec,
+					slot = nil,
+					generation = slotGeneration,
+				}
+			end
 		end
 	end
 	return nil
 end
 
+-- Takes a slot off the patch it shows on (that patch goes back to its base image).
+local function releaseSlot(slot: Slot)
+	local visual = slot.visual
+	if visual then
+		local patch = slot.patch
+		if visual.slotOn[patch] == slot then
+			visual.slotOn[patch] = nil
+			setTexture(visual.groundPart[patch], visual.baseImage[patch])
+		end
+	end
+	slot.visual = nil
+	slot.patch = 0
+end
+
+-- CHANGED (Memory budget): takes a slot off its patch and gives its image back (the budget's release callback).
+local function dropSlotImage(slot: Slot)
+	releaseSlot(slot)
+	local handle = slot.handle
+	slot.image, slot.handle, slot.size = nil, nil, 0
+	EditableBudget.destroy(handle)
+end
+
+-- CHANGED (Planet detail): drops every slot (tier change; CHANGED (Memory budget): or no slot is wanted).
+local function releaseAllSlots()
+	slotGeneration += 1
+	for _, slot in slots do
+		dropSlotImage(slot)
+	end
+	table.clear(slots)
+end
+
 -- The next detail-slot repaint on the dominant body: the nearest wanted patch without a slot, taking a free slot,
 -- one on another body, or the slot on the least close unwanted patch (if the wanted one is clearly closer).
+-- CHANGED (Memory budget): only while the proxy is drawn; slots per body (PlanetDetail.slotCount)
 local function nextSlotJob(visual: Visual?): TextureJob?
-	if visual == nil or visual.kind ~= "Patches" or texturesDisabled or slotsDisabled or not visual.camKnown then
+	if
+		visual == nil
+		or visual.kind ~= "Patches"
+		or texturesDisabled
+		or slotsDisabled
+		or not visual.camKnown
+		or not visual.shown
+		or waiting("Slot")
+	then
 		return nil
 	end
 	local spec = PlanetDetail.slotTexture(tier, visual.id)
-	local count = PlanetDetail.tierSpec(tier).slots
+	local count = PlanetDetail.slotCount(tier, visual.id)
 	if spec == nil or count <= 0 or not PlanetDetail.slotsWanted(visual.altitude, visual.radius) then
 		return nil
 	end
+	while #slots > count do
+		local extra = table.remove(slots)
+		if extra then
+			dropSlotImage(extra)
+		end
+	end
 	while #slots < count do
-		table.insert(slots, { image = nil, size = 0, visual = nil, patch = 0 })
+		table.insert(slots, { image = nil, handle = nil, size = 0, visual = nil, patch = 0 })
 	end
 	local c = visual.camDir
 	local wanted = PlanetDetail.desiredPatches(patchMatrixList, c.x, c.y, c.z, count)
@@ -823,14 +1087,15 @@ local function nextSlotJob(visual: Visual?): TextureJob?
 	return nil
 end
 
--- The next cloud image to paint (Medium+), nearest the camera first, or nil.
+-- The next cloud image to paint (High), nearest the camera first, or nil.
+-- CHANGED (Memory budget): only while the cloud shell is (about to be) visible
 local function nextCloudJob(): TextureJob?
 	local spec = PlanetDetail.cloudTexture(tier)
-	if spec == nil or not CLOUDS_ENABLED or cloudsDisabled or texturesDisabled then
+	if spec == nil or not CLOUDS_ENABLED or cloudsDisabled or texturesDisabled or waiting("Cloud") then
 		return nil
 	end
 	for _, visual in visuals do
-		if next(visual.cloudPart) ~= nil then
+		if visual.cloudWanted and next(visual.cloudPart) ~= nil then
 			for _, patch in patchOrder(visual) do
 				if not visual.cloudImage[patch] then
 					return {
@@ -848,12 +1113,32 @@ local function nextCloudJob(): TextureJob?
 	return nil
 end
 
--- Priority: the dominant body's base images, its detail slots, clouds, then every other body's base images.
+-- CHANGED (Memory budget): may the extras (other bodies, slots, clouds) paint yet? Not at join until the terrain
+-- around the camera is built (setExtrasGate) or STARTUP_HOLD_S passed; once open it stays open.
+local function extrasOpen(): boolean
+	if extrasReleased then
+		return true
+	end
+	local gate = extrasGate
+	local open = gate == nil or os.clock() - startedAt >= STARTUP_HOLD_S
+	if not open and gate then
+		local ok, result = pcall(gate)
+		open = not ok or result
+	end
+	extrasReleased = open
+	return open
+end
+
+-- Priority: the dominant body's base images, then (CHANGED (Memory budget): after the startup hold) every other
+-- body's base images (the Mun is always painted), the dominant body's detail slots, clouds.
 local function pickJob(): TextureJob?
 	local dominant = paintFocus
-	local job = nextBaseJob(dominant) or nextSlotJob(dominant) or nextCloudJob()
+	local job = nextBaseJob(dominant)
 	if job then
 		return job
+	end
+	if not extrasOpen() then
+		return nil
 	end
 	for _, visual in visuals do
 		if visual ~= dominant then
@@ -863,94 +1148,110 @@ local function pickJob(): TextureJob?
 			end
 		end
 	end
-	return nil
+	return nextSlotJob(dominant) or nextCloudJob()
 end
 
--- Takes a slot off the patch it shows on (that patch goes back to its base image).
-local function releaseSlot(slot: Slot)
-	local visual = slot.visual
-	if visual then
-		local patch = slot.patch
-		if visual.slotOn[patch] == slot then
-			visual.slotOn[patch] = nil
-			setTexture(visual.groundPart[patch], visual.baseImage[patch])
+-- CHANGED (Memory budget): makes the image for a job through the budget (nil: refused / unavailable, handled).
+local function imageFor(job: TextureJob): (EditableImage?, EditableBudget.Handle?)
+	local visual, patch, size = job.visual, job.patch, job.spec.size
+	if job.kind == "Slot" then
+		local slot = job.slot :: Slot
+		if slot.image == nil then
+			local created, handle, refusal = createImage("Slot", "ScaledSpace.slot", size, PRIORITY.SLOT, function()
+				dropSlotImage(slot)
+			end)
+			if created == nil then
+				if refusal == "unavailable" then
+					slotsDisabled = true
+					warn(
+						"[ScaledSpace] detail textures disabled (EditableImage unavailable); planets keep their base images."
+					)
+				end
+				return nil, nil
+			end
+			slot.image, slot.handle, slot.size = created, handle, size
+		end
+		return slot.image, slot.handle
+	end
+	local created, handle, refusal
+	if job.kind == "Cloud" then
+		created, handle, refusal = createImage("Cloud", "ScaledSpace.cloud", size, PRIORITY.CLOUD, function()
+			releaseCloud(visual, patch)
+		end)
+		if created == nil and refusal == "unavailable" then
+			cloudsDisabled = true
+			warn("[ScaledSpace] cloud textures disabled (EditableImage unavailable).")
+		end
+	else
+		created, handle, refusal =
+			createImage(job.kind, baseOwner(visual), size, visual.basePriority, baseReleaseFor(visual, patch))
+		if created == nil and refusal == "unavailable" then
+			texturesDisabled = true
+			warn(
+				"[ScaledSpace] CreateEditableImage is unavailable ("
+					.. tostring(EditableBudget.unavailableReason("Image"))
+					.. "); planet patches stay flat-coloured. Enable Game Settings > Security >"
+					.. " 'Allow Mesh / Image APIs'."
+			)
 		end
 	end
-	slot.visual = nil
-	slot.patch = 0
-end
-
--- CHANGED (Planet detail): drops every slot (tier change): patches go back to their base images.
-local function releaseAllSlots()
-	slotGeneration += 1
-	for _, slot in slots do
-		releaseSlot(slot)
-		local image = slot.image
-		if image then
-			destroyImage(image)
-		end
-	end
-	table.clear(slots)
+	return created, handle
 end
 
 -- Puts a painted buffer on its target. Runs without yielding, so a slot moves in one frame.
+-- CHANGED (Memory budget): images through the budget (imageFor); base pixels are cached; a job whose target is no
+-- longer needed (hidden proxy, invisible clouds) or already done (restored meanwhile) creates nothing
 local function applyJob(job: TextureJob, buf: buffer): boolean
 	local visual, patch, size = job.visual, job.patch, job.spec.size
-	local image: EditableImage? = nil
 	local slot = job.slot
-	if job.kind == "Slot" then
+	if job.kind == "Base" then
+		local copy = buffer.create(buffer.len(buf))
+		buffer.copy(copy, 0, buf)
+		if visual.baseCacheSize ~= size then
+			table.clear(visual.baseCache)
+			visual.baseCacheSize = size
+		end
+		visual.baseCache[patch] = copy
+	end
+	if job.kind == "Base" or job.kind == "Restore" then
+		if visual.baseImage[patch] or not visual.wanted then
+			return true
+		end
+	elseif job.kind == "Cloud" then
+		if visual.cloudImage[patch] or not visual.cloudWanted then
+			return true
+		end
+	else
 		assert(slot)
 		releaseSlot(slot) -- its old patch shows its base image again before the pixels change
-		local old = slot.image
-		if old and slot.size ~= size then
-			destroyImage(old)
-			slot.image, slot.size = nil, 0
+		if slot.image and slot.size ~= size then
+			local old = slot.handle
+			slot.image, slot.handle, slot.size = nil, nil, 0
+			EditableBudget.destroy(old)
 		end
-		if slot.image == nil then
-			local created, err = createImage(size)
-			if created == nil then
-				slotsDisabled = true
-				warn(
-					"[ScaledSpace] detail textures disabled (" .. tostring(err) .. "); planets keep their base images."
-				)
-				return false
-			end
-			slot.image, slot.size = created, size
-		end
-		image = slot.image
-	else
-		local created, err = createImage(size)
-		if created == nil then
-			if job.kind == "Cloud" then
-				cloudsDisabled = true
-				warn("[ScaledSpace] cloud textures disabled (" .. tostring(err) .. ").")
-			else
-				texturesDisabled = true
-				warn(
-					"[ScaledSpace] CreateEditableImage failed ("
-						.. tostring(err)
-						.. "); remaining planet patches stay flat-coloured. Enable Game Settings > Security >"
-						.. " 'Allow Mesh / Image APIs'."
-				)
-			end
-			return false
-		end
-		image = created
 	end
-	assert(image)
+	local image, handle = imageFor(job)
+	if image == nil then
+		return false
+	end
 	local written, writeErr = pcall(function()
 		image:WritePixelsBuffer(Vector2.zero, image.Size, buf)
 	end)
 	if not written then
 		texturesDisabled = true
 		warn("[ScaledSpace] WritePixelsBuffer failed (" .. tostring(writeErr) .. "); planet textures disabled.")
-		if job.kind ~= "Slot" then
-			destroyImage(image)
+		if slot then
+			dropSlotImage(slot)
+		else
+			EditableBudget.destroy(handle)
 		end
 		return false
 	end
-	if job.kind == "Base" then
+	if job.kind == "Base" or job.kind == "Restore" then
 		visual.baseImage[patch] = image
+		if handle then
+			visual.baseHandle[patch] = handle
+		end
 		if visual.slotOn[patch] == nil then
 			return setTexture(visual.groundPart[patch], image)
 		end
@@ -962,6 +1263,9 @@ local function applyJob(job: TextureJob, buf: buffer): boolean
 		return setTexture(visual.groundPart[patch], image)
 	end
 	visual.cloudImage[patch] = image
+	if handle then
+		visual.cloudHandle[patch] = handle
+	end
 	if not setTexture(visual.cloudPart[patch], image) then
 		cloudsDisabled = true
 		return false
@@ -969,24 +1273,11 @@ local function applyJob(job: TextureJob, buf: buffer): boolean
 	return true
 end
 
--- CHANGED (Planet detail): the cloud shell's transparency for the current fade and tier.
-local function applyCloudAlpha(visual: Visual)
-	local show = PlanetDetail.cloudTexture(tier) ~= nil and not cloudsDisabled
-	for patch, index in visual.cloudIndex do
-		local alpha = 1
-		if show and visual.cloudImage[patch] and visual.cloudFade > 0 then
-			alpha = math.max(CLOUD_MIN_TRANSPARENCY, 1 - visual.cloudFade)
-		end
-		if visual.partAlpha[index] ~= alpha then
-			setPartAlpha(visual, index, alpha)
-		end
-	end
-end
-
 --[[
 	The background painter (CHANGED (Planet detail): runs for the whole session): picks the most useful texture
 	(pickJob), paints it with Biome's painter in budgeted slices, and applies it. Idles PAINT_IDLE_S when there is
 	nothing to do (e.g. the detail slots already sit on the nearest patches).
+	CHANGED (Memory budget): a Restore job writes the cached pixels (no painting).
 ]]
 local function generateTextures()
 	local painters: { [string]: Biome.Painter } = {}
@@ -1002,6 +1293,14 @@ local function generateTextures()
 		if job == nil then
 			task.wait(PAINT_IDLE_S)
 			sliceStart = os.clock()
+			continue
+		end
+		if job.kind == "Restore" then
+			local cached = job.visual.baseCache[job.patch]
+			if cached then
+				applyJob(job, cached)
+			end
+			yieldIfDue()
 			continue
 		end
 		local spec = job.spec
@@ -1029,7 +1328,67 @@ local function generateTextures()
 	end
 end
 
+--[[
+	CHANGED (Memory budget): which images are needed this frame (header): the dominant body's base images while its
+	proxy is drawn or the camera is above RESTORE_FRACTION x the handover altitude, every other body's always; the
+	cloud images while the shell would show at CLOUD_PREPAINT x the altitude; the detail slots while their body's
+	proxy is drawn low enough. What is not needed for HIDDEN_RELEASE_S is given back.
+]]
+local function updateNeeds(dominantVisual: Visual?, altitude: number, now: number)
+	for _, visual in visuals do
+		if visual.kind ~= "Patches" then
+			continue
+		end
+		local handover = proxyMinAlt(visual.radius, limits)
+		local wanted = true
+		if visual == dominantVisual then
+			wanted = visual.entry.active or (surfaceMode and altitude > RESTORE_FRACTION * handover)
+		end
+		visual.wanted = wanted
+		visual.cloudWanted = visual.shown
+			and next(visual.cloudIndex) ~= nil
+			and PlanetDetail.cloudTexture(tier) ~= nil
+			and PlanetDetail.cloudFade(visual.altitude * CLOUD_PREPAINT, handover) > 0
+		refreshBase(visual)
+		if wanted then
+			visual.hiddenSince = nil
+		else
+			local since = visual.hiddenSince or now
+			visual.hiddenSince = since
+			if now - since >= HIDDEN_RELEASE_S and next(visual.baseHandle) ~= nil then
+				releaseAllBase(visual)
+			end
+		end
+		if visual.cloudWanted or next(visual.cloudHandle) == nil then
+			visual.cloudIdleSince = nil
+		else
+			local since = visual.cloudIdleSince or now
+			visual.cloudIdleSince = since
+			if now - since >= HIDDEN_RELEASE_S then
+				releaseAllClouds(visual)
+			end
+		end
+	end
+	local focus = paintFocus
+	local slotsActive = focus ~= nil
+		and focus.shown
+		and PlanetDetail.slotCount(tier, focus.id) > 0
+		and PlanetDetail.slotsWanted(focus.altitude, focus.radius)
+	if slotsActive or #slots == 0 then
+		slotIdleSince = nil
+	else
+		local since = slotIdleSince or now
+		slotIdleSince = since
+		if now - since >= HIDDEN_RELEASE_S then
+			releaseAllSlots()
+			slotIdleSince = nil
+		end
+	end
+end
+
 -- CHANGED (Planet detail): a new graphics tier: atmosphere layers, cloud visibility and detail slots follow it.
+-- CHANGED (Memory budget): base images of another size (and their cached pixels) go and are repainted; clouds go
+-- (repainted if the new tier shows them)
 local function applyTier(newTier: Quality.Tier)
 	if newTier == tier and initialised then
 		return
@@ -1038,8 +1397,16 @@ local function applyTier(newTier: Quality.Tier)
 	releaseAllSlots()
 	for _, visual in visuals do
 		if visual.kind == "Patches" then
+			local size = PlanetDetail.baseTexture(tier, visual.id).size
+			if visual.baseCacheSize ~= size then
+				releaseAllBase(visual)
+				table.clear(visual.baseCache)
+				visual.baseCacheSize = size
+			end
+			releaseAllClouds(visual)
 			applyAtmosphere(visual)
 			applyCloudAlpha(visual)
+			refreshBase(visual)
 		end
 	end
 end
@@ -1053,6 +1420,7 @@ function ScaledSpace.init(parent: Folder)
 		return
 	end
 	workspaceRef = game:GetService("Workspace")
+	startedAt = os.clock() -- CHANGED (Memory budget): the startup hold of the extras
 
 	local ok, meshOrError, part = pcall(buildPatchTemplate)
 	if ok then
@@ -1226,6 +1594,19 @@ function ScaledSpace.update(ctx: RenderContext.RenderContext, forceScaled: boole
 	if #moveParts > 0 then
 		ws:BulkMoveTo(moveParts, moveCFrames, Enum.BulkMoveMode.FireCFrameChanged)
 	end
+
+	-- 6. CHANGED (Memory budget): which images are needed (priorities, releases)
+	if patchTemplate then
+		updateNeeds(dominantVisual, ctx.altitude, os.clock())
+	end
+end
+
+--[[
+	CHANGED (Memory budget): `gate` returns true once the terrain around the camera is built; until then (at most
+	STARTUP_HOLD_S after init) only the dominant body's base images are painted.
+]]
+function ScaledSpace.setExtrasGate(gate: (() -> boolean)?)
+	extrasGate = gate
 end
 
 function ScaledSpace.isSurfaceMode(): boolean

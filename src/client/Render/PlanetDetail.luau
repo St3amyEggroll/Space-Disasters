@@ -5,14 +5,20 @@
 	Pure per-tier settings and decisions for the scaled-space planets (Render/ScaledSpace), testable offline.
 
 	Textures (EditableImage per patch, painted in the background):
-	  * base: every patch of every body, the same on all tiers (Earth 256 px, Mun 128 px per patch: 24 patches)
+	  * base: every patch of every body (24 patches per body). CHANGED (Memory budget): per tier: Earth 256 px on
+	    High, 128 px on Medium / Low; the Mun 128 px on every tier
 	  * detail slots: a few extra, sharper images that move to the patches nearest the camera's ground point
 	    (desiredPatches) on the dominant body; a patch shows its slot image once painted and falls back to its base
-	    image when the slot moves on. Per tier: Low 2 x 512 px, Medium 6 x 512 px, High 8 x 1024 px on Earth (Mun:
-	    half the size). From 10 km up a 1024 px patch is ~46 m per pixel instead of ~184 m.
-	  * clouds (Medium+): a sparse wispy shell with alpha through MeshPart.TextureContent
+	    image when the slot moves on. CHANGED (Memory budget): per tier and body (slotTexture / slotCount): High
+	    4 x 512 px on Earth and 2 x 256 on the Mun, Medium 2 x 512 / 2 x 256, Low none (was High 8 x 1024, Medium
+	    6 x 512, Low 2 x 512). From 10 km up a 512 px patch is ~92 m per pixel instead of ~184 m.
+	  * clouds: a sparse wispy shell with alpha through MeshPart.TextureContent. CHANGED (Memory budget): High only,
+	    128 px (was Medium 128 / High 256)
 	All ground textures bake in the relief shade (Biome / BiomeDetail.reliefShade from Sim/Relief's heights).
-	Memory (EditableImage bytes, RGBA): Low ~9.5 MB, Medium ~15 MB, High ~45.5 MB (textureBytes).
+	CHANGED (Memory budget): EditableImage bytes (RGBA, textureBytes: every base image + the largest body's slots
+	+ clouds): Low 3.0 MiB, Medium 5.0 MiB, High 13.0 MiB (was 9.5 / 15 / 45.5 MB). Render/EditableBudget holds
+	them with the terrain meshes under one per-tier ceiling: base images of the body the camera is near only while
+	its proxy is drawn, detail slots and clouds give way first.
 
 	Atmosphere: nested translucent shells; on the disc they add up to about the old single shell's tint, while
 	beyond the limb fewer shells overlap the farther out you look, so the halo fades outward (pale near the ground,
@@ -20,8 +26,9 @@
 
 	API:
 		PlanetDetail.tierSpec(tier): TierSpec
-		PlanetDetail.baseTexture(bodyId): TextureSpec
+		PlanetDetail.baseTexture(tier, bodyId): TextureSpec          CHANGED (Memory budget): per tier
 		PlanetDetail.slotTexture(tier, bodyId): TextureSpec?        nil: no detail slots for that body
+		PlanetDetail.slotCount(tier, bodyId): number                CHANGED (Memory budget): slots on that body
 		PlanetDetail.cloudTexture(tier): TextureSpec?               nil: no clouds on this tier
 		PlanetDetail.atmosphereLayers(tier): { AtmosphereLayer }    innermost first
 		PlanetDetail.closeness(m, ux, uy, uz): number               cos of the angle from u to patch m (1 inside it)
@@ -29,6 +36,7 @@
 		PlanetDetail.slotsWanted(altitude, radius): boolean          is the camera low enough for detail slots
 		PlanetDetail.cloudFade(altitude, handoverAltitude): number   0..1 cloud shell visibility
 		PlanetDetail.textureBytes(tier): number                      EditableImage memory of a tier (bytes)
+		PlanetDetail.imageBytes(spec): number                        CHANGED (Memory budget): one image's bytes
 		PlanetDetail.CLOUD_SHELL_SCALE, PlanetDetail.MAX_SHELL_SCALE, PlanetDetail.ATMOSPHERE_MAX_LAYERS
 ]]
 
@@ -42,8 +50,8 @@ export type TextureSpec = {
 	cells: number, -- Biome coarse grid cells per side
 	detail: number, -- Biome detail level (octaves): 1 coarse, 3 = Biome.sample's full detail
 }
+-- CHANGED (Memory budget): the slot count moved to slotCount (per body)
 export type TierSpec = {
-	slots: number, -- detail slots on the dominant body
 	paintBudgetS: number, -- background painting work per frame (s)
 	clouds: boolean,
 }
@@ -52,33 +60,45 @@ export type AtmosphereLayer = { scale: number, transparency: number, color: Colo
 --============================================================================
 -- Tunables
 --============================================================================
+-- CHANGED (Memory budget): fewer / smaller images (the Editable memory budget, Render/EditableBudget); clouds High only
 local TIERS: { [Tier]: TierSpec } = {
-	Low = { slots = 2, paintBudgetS = 0.0025, clouds = false },
-	Medium = { slots = 6, paintBudgetS = 0.0035, clouds = true },
-	High = { slots = 8, paintBudgetS = 0.005, clouds = true },
+	Low = { paintBudgetS = 0.0025, clouds = false },
+	Medium = { paintBudgetS = 0.0035, clouds = false },
+	High = { paintBudgetS = 0.005, clouds = true },
 }
-local BASE_TEXTURES: { [number]: TextureSpec } = {
-	[Bodies.HOMEWORLD] = { size = 256, cells = 64, detail = 1 },
-	[Bodies.MOON] = { size = 128, cells = 32, detail = 1 },
+local BASE_TEXTURES: { [Tier]: { [number]: TextureSpec } } = {
+	Low = {
+		[Bodies.HOMEWORLD] = { size = 128, cells = 32, detail = 1 },
+		[Bodies.MOON] = { size = 128, cells = 32, detail = 1 },
+	},
+	Medium = {
+		[Bodies.HOMEWORLD] = { size = 128, cells = 32, detail = 1 },
+		[Bodies.MOON] = { size = 128, cells = 32, detail = 1 },
+	},
+	High = {
+		[Bodies.HOMEWORLD] = { size = 256, cells = 64, detail = 1 },
+		[Bodies.MOON] = { size = 128, cells = 32, detail = 1 },
+	},
 }
 local DEFAULT_BASE_TEXTURE: TextureSpec = { size = 128, cells = 32, detail = 1 }
 local SLOT_TEXTURES: { [Tier]: { [number]: TextureSpec } } = {
-	Low = {
-		[Bodies.HOMEWORLD] = { size = 512, cells = 128, detail = 2 },
-		[Bodies.MOON] = { size = 256, cells = 64, detail = 2 },
-	},
+	Low = {},
 	Medium = {
 		[Bodies.HOMEWORLD] = { size = 512, cells = 128, detail = 2 },
 		[Bodies.MOON] = { size = 256, cells = 64, detail = 2 },
 	},
 	High = {
-		[Bodies.HOMEWORLD] = { size = 1024, cells = 128, detail = 3 },
-		[Bodies.MOON] = { size = 512, cells = 64, detail = 3 },
+		[Bodies.HOMEWORLD] = { size = 512, cells = 128, detail = 3 },
+		[Bodies.MOON] = { size = 256, cells = 64, detail = 3 },
 	},
 }
+local SLOT_COUNTS: { [Tier]: { [number]: number } } = {
+	Low = {},
+	Medium = { [Bodies.HOMEWORLD] = 2, [Bodies.MOON] = 2 },
+	High = { [Bodies.HOMEWORLD] = 4, [Bodies.MOON] = 2 },
+}
 local CLOUD_TEXTURES: { [Tier]: TextureSpec } = {
-	Medium = { size = 128, cells = 32, detail = 1 },
-	High = { size = 256, cells = 64, detail = 1 },
+	High = { size = 128, cells = 32, detail = 1 },
 }
 local CLOUD_SHELL_SCALE = 1.035 -- cloud shell radius / body radius (~2 km up on Earth)
 local CLOUD_FADE_START = 1.15 -- x handover altitude: clouds invisible below ...
@@ -113,13 +133,29 @@ function PlanetDetail.tierSpec(tier: Tier): TierSpec
 	return TIERS[tier] or TIERS[FALLBACK_TIER]
 end
 
-function PlanetDetail.baseTexture(bodyId: number): TextureSpec
-	return BASE_TEXTURES[bodyId] or DEFAULT_BASE_TEXTURE
+-- CHANGED (Memory budget): per tier
+function PlanetDetail.baseTexture(tier: Tier, bodyId: number): TextureSpec
+	local specs = BASE_TEXTURES[tier] or BASE_TEXTURES[FALLBACK_TIER]
+	return specs[bodyId] or DEFAULT_BASE_TEXTURE
 end
 
 function PlanetDetail.slotTexture(tier: Tier, bodyId: number): TextureSpec?
+	if PlanetDetail.slotCount(tier, bodyId) <= 0 then
+		return nil
+	end
 	local specs = SLOT_TEXTURES[tier]
 	return if specs then specs[bodyId] else nil
+end
+
+-- CHANGED (Memory budget): detail slots on `bodyId` while it is the dominant body (0: none)
+function PlanetDetail.slotCount(tier: Tier, bodyId: number): number
+	local counts = SLOT_COUNTS[tier]
+	return if counts then counts[bodyId] or 0 else 0
+end
+
+-- CHANGED (Memory budget): one image's EditableImage bytes
+function PlanetDetail.imageBytes(spec: TextureSpec): number
+	return spec.size * spec.size * BYTES_PER_PIXEL
 end
 
 function PlanetDetail.cloudTexture(tier: Tier): TextureSpec?
@@ -189,25 +225,24 @@ function PlanetDetail.cloudFade(altitude: number, handoverAltitude: number): num
 	return t * t * (3 - 2 * t)
 end
 
--- EditableImage memory of a tier (bytes): every body's base textures, the largest slot size x slots, clouds.
+-- EditableImage memory of a tier (bytes): every body's base textures, the largest body's slots, clouds.
+-- CHANGED (Memory budget): slots per body (only the dominant body has them)
 function PlanetDetail.textureBytes(tier: Tier): number
-	local spec = PlanetDetail.tierSpec(tier)
 	local bytes = 0
-	local largestSlot = 0
+	local slotBytes = 0
 	for _, body in Bodies.List do
 		if body.Kind ~= "Star" and not body.VisualOnly then
-			local base = PlanetDetail.baseTexture(body.Id)
-			bytes += PATCHES * base.size * base.size * BYTES_PER_PIXEL
+			bytes += PATCHES * PlanetDetail.imageBytes(PlanetDetail.baseTexture(tier, body.Id))
 			local slot = PlanetDetail.slotTexture(tier, body.Id)
 			if slot then
-				largestSlot = math.max(largestSlot, slot.size)
+				slotBytes = math.max(slotBytes, PlanetDetail.slotCount(tier, body.Id) * PlanetDetail.imageBytes(slot))
 			end
 		end
 	end
-	bytes += spec.slots * largestSlot * largestSlot * BYTES_PER_PIXEL
+	bytes += slotBytes
 	local cloud = PlanetDetail.cloudTexture(tier)
 	if cloud then
-		bytes += PATCHES * cloud.size * cloud.size * BYTES_PER_PIXEL
+		bytes += PATCHES * PlanetDetail.imageBytes(cloud)
 	end
 	return bytes
 end

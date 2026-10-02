@@ -22,8 +22,9 @@ local LAKE_FLAT_STEP_M = 15 -- neighbour distance for the flat-water check
 local LAKE_FLAT_TOLERANCE_M = 0.5 -- the level follows the smooth continent elevation: median slope ~0.5%, max ~2.5%
 local QUIET_RADIUS_M = 5000 -- no new feature this close to the pad
 local MB = 1024 * 1024
-local TIER_BUDGET_BYTES = { Low = 12 * MB, Medium = 20 * MB, High = 64 * MB } -- EditableImage memory per tier
-local IMAGE_CAP = 112 -- ScaledSpace.MAX_EDITABLE_IMAGES
+-- CHANGED (Memory budget): EditableImage memory per tier (Render/EditableBudget holds it with the terrain meshes)
+local TIER_BUDGET_BYTES = { Low = 4 * MB, Medium = 6 * MB, High = 14 * MB }
+local IMAGE_CAP = 112 -- images ScaledSpace may hold at once
 --============================================================================
 
 local HOMEWORLD = Bodies.HOMEWORLD
@@ -204,6 +205,7 @@ return function(t: TestKit.Context)
 		end
 	end)
 
+	-- CHANGED (Memory budget): smaller budgets, slots per body, base textures per tier, clouds on High only
 	t.test("tiers: texture memory within budget, phones never paint 1024 px slots", function()
 		local last = 0
 		for _, tier: PlanetDetail.Tier in TIERS do
@@ -216,15 +218,19 @@ return function(t: TestKit.Context)
 			for _, body in Bodies.List do
 				if body.Kind ~= "Star" and not body.VisualOnly then
 					images += 24
+					local base = PlanetDetail.baseTexture(tier, body.Id)
+					t.expectTrue(base.size >= 128, "base textures keep at least 128 px (the Mun's craters)")
 					local slot = PlanetDetail.slotTexture(tier, body.Id)
 					if slot then
-						t.expectTrue(slot.size >= PlanetDetail.baseTexture(body.Id).size, "slots are sharper")
+						t.expectTrue(slot.size >= base.size, "slots are sharper")
 						t.expectTrue(slot.size <= 1024, "EditableImage size limit")
 						t.expectTrue(slot.cells <= slot.size / 2, "grid at most half the pixels")
+						t.expectTrue(PlanetDetail.slotCount(tier, body.Id) > 0, "a slot texture comes with slots")
+						images += PlanetDetail.slotCount(tier, body.Id)
 					end
 				end
 			end
-			images += spec.slots + (if PlanetDetail.cloudTexture(tier) then 24 else 0)
+			images += if PlanetDetail.cloudTexture(tier) then 24 else 0
 			t.expectTrue(images <= IMAGE_CAP, `{tier}: {images} images`)
 			t.expectTrue(spec.paintBudgetS > 0 and spec.paintBudgetS <= 0.005, "paint budget per frame")
 		end
@@ -236,6 +242,9 @@ return function(t: TestKit.Context)
 			end
 		end
 		t.expectEqual(PlanetDetail.cloudTexture("Low"), nil)
+		t.expectEqual(PlanetDetail.cloudTexture("Medium"), nil)
+		t.expectEqual(PlanetDetail.slotTexture("Low", HOMEWORLD), nil)
+		t.expectEqual(PlanetDetail.slotCount("Low", HOMEWORLD), 0)
 	end)
 
 	t.test("detail slots go to the patch under the camera first, then its nearest neighbours", function()
