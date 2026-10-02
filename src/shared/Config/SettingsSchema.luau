@@ -19,7 +19,7 @@
 	  effectsVolume     number   0..1 (SoundService.Effects)
 	  keybinds          map      action id -> Enum.KeyCode name, one entry for every action in ACTIONS
 
-	Keybinds: ACTIONS lists every rebindable action (Flight, then Build) in display order. Only names in
+	Keybinds: ACTIONS lists every rebindable action (Flight, EVA (CHANGED Phase 6), then Build) in display order. Only names in
 	ALLOWED_KEYS can be bound; RESERVED_KEYS never can (Roblox menu, chat, player list, console, debug overlay,
 	fullscreen). Ctrl+Z (builder undo), F3 (debug overlay) and Escape are fixed. A key is used at most once per
 	context; one key may serve a Flight and a Build action (M: map view / mirror symmetry).
@@ -102,6 +102,16 @@ local ACTIONS: { Action } = {
 	{ id = "LeaveSeat", label = "Leave seat", context = "Flight", default = "F" },
 	{ id = "MapView", label = "Map view", context = "Flight", default = "M" },
 	{ id = "ToggleHUD", label = "HUD on / off", context = "Flight", default = "F2" },
+	-- CHANGED (Phase 6): EVA (spacewalk). Directions are the camera's: forward = where the camera looks. E stays free
+	-- for the seat prompts (board a craft); M (map view) and F2 (HUD) work on EVA with their Flight keys.
+	{ id = "EvaForward", label = "Jetpack forward", context = "EVA", default = "W" },
+	{ id = "EvaBack", label = "Jetpack back", context = "EVA", default = "S" },
+	{ id = "EvaLeft", label = "Jetpack left", context = "EVA", default = "A" },
+	{ id = "EvaRight", label = "Jetpack right", context = "EVA", default = "D" },
+	{ id = "EvaUp", label = "Jetpack up / hop", context = "EVA", default = "Space" },
+	{ id = "EvaDown", label = "Jetpack down", context = "EVA", default = "LeftControl" },
+	{ id = "EvaBrake", label = "Stop drifting (brake)", context = "EVA", default = "R" },
+	{ id = "EvaLight", label = "Helmet light on / off", context = "EVA", default = "L" },
 	-- Build
 	{ id = "RotateY", label = "Rotate part (yaw)", context = "Build", default = "R" },
 	{ id = "RotateX", label = "Rotate part (pitch)", context = "Build", default = "T" },
@@ -224,7 +234,7 @@ local PILOT_SINK_KEYS: { string } = {
 --============================================================================
 
 export type Units = "Metric" | "Imperial"
-export type Context = "Flight" | "Build"
+export type Context = "Flight" | "EVA" | "Build" -- CHANGED (Phase 6): EVA
 
 export type Values = {
 	mouseSensitivity: number,
@@ -253,7 +263,7 @@ type FieldKind = "Number" | "Boolean" | "Units" | "Keybinds"
 
 local SettingsSchema = {}
 
-local CONTEXTS: { Context } = { "Flight", "Build" }
+local CONTEXTS: { Context } = { "Flight", "EVA", "Build" } -- CHANGED (Phase 6): EVA
 local UNITS: { Units } = { "Metric", "Imperial" }
 local FIELDS: { string } = {
 	"mouseSensitivity",

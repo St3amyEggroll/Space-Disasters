@@ -52,6 +52,11 @@
 	the usual path: the server unseats the player (bindKeys(false), ChaseCamera.stop, HUD hidden), CraftRemoved clears
 	the simulation (onRemoved) and the identity PocketTransfer moves PocketController to the base pocket.
 	  FlightController.endFlight()                         asks to end (or leave) the flight, like the HUD button
+
+	CHANGED (Phase 6): EVA. LeaveSeat (F) works for passengers too: in flight the player gets out for a spacewalk
+	(EvaController takes over once unseated), before launch a passenger steps off beside the pad. The chase camera and
+	the own craft's effects use PocketController.craftCFrame (the seat's craft may be a secondary craft of a merged
+	bubble, drawn at the pocket's render UT).
 ]]
 
 local ContextActionService = game:GetService("ContextActionService")
@@ -882,7 +887,8 @@ local function cameraTarget(): ChaseCamera.Target?
 	end
 	local com = if sim and craftId == seatInfo.craftId then (sim :: Craft).physics.com else Vector3.zero
 	local position: Vector3
-	local craftFrame = PocketController.primaryCraftCFrame()
+	-- CHANGED (Phase 6): the seat's own craft as posed this frame (it may be a secondary craft of a merged bubble)
+	local craftFrame = PocketController.craftCFrame(seatInfo.craftId)
 	if craftFrame and seatInfo.state ~= "Prelaunch" then
 		-- CHANGED (Phase 2a feedback, D31): the craft turns inside its horizon-aligned pocket
 		position = craftFrame:PointToWorldSpace(com)
@@ -932,7 +938,11 @@ local function reportEffects()
 		design = craft.physics.design,
 		state = craft.state,
 		burning = burning,
-		craftCFrame = nil, -- from the state through the pocket frame, exactly as PocketController poses it
+		-- CHANGED (Phase 6): a secondary craft of a merged bubble exactly where PocketController posed it (at the
+		-- pocket's render UT, not at the simulation's); the primary as before, from the state through the pocket frame
+		craftCFrame = if PocketController.primaryCraftId() == id
+			then nil
+			else PocketController.craftCFrame(id :: number),
 	})
 end
 
@@ -1265,6 +1275,7 @@ function FlightController.Start()
 		end
 	end)
 	-- CHANGED (Phase 11): ToggleHUD for passengers (the pilot's binding handles it while piloting)
+	-- CHANGED (Phase 6): and LeaveSeat: passengers get out too (an EVA in flight, beside the pad before launch)
 	UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
 		if gameProcessed or bound or UIState.isInputBlocked() or currentSeat() == nil then
 			return
@@ -1272,6 +1283,10 @@ function FlightController.Start()
 		local key = Keybinds.key("ToggleHUD")
 		if key ~= Keybinds.UNBOUND and input.KeyCode == key then
 			performAction("ToggleHUD")
+		end
+		local leave = Keybinds.key("LeaveSeat")
+		if leave ~= Keybinds.UNBOUND and input.KeyCode == leave then
+			performAction("LeaveSeat")
 		end
 	end)
 

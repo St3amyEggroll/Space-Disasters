@@ -23,6 +23,8 @@ local BOOT_ORDER = {
 	"FlightService", -- CHANGED (Phase 2a): launch, staging, pilot states, crashes
 	"ServerSimService",
 	"RailsService", -- CHANGED (Phase 5): crafts on rails, SOI transitions, debris cleanup
+	"BubbleService", -- CHANGED (Phase 6): bubble merge / split, solo EVA pockets, secondary crafts
+	"EvaService", -- CHANGED (Phase 6): jetpack models, EvaInput, rescuing lost astronauts
 	"FlightRelayService",
 	"DebugService",
 }

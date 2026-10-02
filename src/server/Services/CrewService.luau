@@ -11,6 +11,10 @@
 	sit is announced (onSeated) so FlightService can start the flight when a pilot sits down.
 	CHANGED (Boarding): canBoard and sitIn are exported for FlightService's cross-pocket boarding (BoardCraft): a
 	player on foot in the base pocket boards a craft that already moved into its flight pocket.
+	CHANGED (Phase 6): astronauts on EVA board through the real SitPrompts of the crafts in their pocket (also
+	uncrewed crafts, which BubbleService turns into real secondary crafts near them). A SitPrompt trigger must first
+	pass the seat reach check BubbleService installs (setSeatReach): clients pose flying models themselves, so the
+	server measures the player's distance to where the clients draw the seat.
 ]]
 
 local Players = game:GetService("Players")
@@ -37,6 +41,7 @@ local watchedSeats: { [Seat]: boolean } = {}
 local friendCache: { [string]: { value: boolean, time: number } } = {}
 local lastHatch: { [Player]: number } = {}
 local seatedListeners: { (player: Player, seat: Seat) -> () } = {}
+local seatReach: ((player: Player, seat: Seat) -> boolean)? = nil -- CHANGED (Phase 6): BubbleService.seatInReach
 
 -- Owner user id and boarding mode for whatever contains `instance` (a craft or a hangar build).
 local function ownership(instance: Instance): (number?, string)
@@ -165,6 +170,13 @@ local function onSitPrompt(prompt: ProximityPrompt, player: Player)
 	if not (seat and seat:IsA("Seat")) or seat.Occupant ~= nil then
 		return
 	end
+	-- CHANGED (Phase 6): prompts are triggered by the client; in a flight pocket only the clients know where the
+	-- seat really is (they pose the model), so BubbleService checks the reach against that pose
+	local reach = seatReach
+	if reach and not reach(player, seat) then
+		notifyRemote:FireClient(player, "Get closer to the seat", "Error")
+		return
+	end
 	if not canBoard(player, seat) then
 		notifyRemote:FireClient(player, "The owner hasn't allowed you to board this craft", "Error")
 		return
@@ -238,6 +250,12 @@ CrewService.sitIn = sitIn
 -- CHANGED (Phase 2a feedback): called (in its own thread) whenever a player sits down in a craft seat.
 function CrewService.onSeated(listener: (player: Player, seat: Seat) -> ())
 	table.insert(seatedListeners, listener)
+end
+
+-- CHANGED (Phase 6): the check a SitPrompt trigger must pass first (the player can reach the seat where the
+-- clients draw it). BubbleService sets it.
+function CrewService.setSeatReach(check: (player: Player, seat: Seat) -> boolean)
+	seatReach = check
 end
 
 function CrewService.Start()

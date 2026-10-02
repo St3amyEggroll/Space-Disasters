@@ -22,6 +22,7 @@ local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local CraftService = require(script.Parent.CraftService)
+local FlightService = require(script.Parent.FlightService) -- CHANGED (Phase 6): /base from a spacewalk
 local PlotService = require(script.Parent.PlotService)
 local RailsService = require(script.Parent.RailsService) -- CHANGED (Phase 5)
 
@@ -124,6 +125,13 @@ local function toBase(player: Player)
 	local character = player.Character
 	local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
 	if character == nil or humanoid == nil then
+		return
+	end
+	-- CHANGED (Phase 6): from a flight pocket (a spacewalk too) like End Flight / Return to plot: a PocketTransfer
+	-- home (an astronaut's client places his character every frame and would undo a bare teleport)
+	local pocketId = player:GetAttribute("PocketId")
+	if type(pocketId) == "number" and pocketId ~= 0 and humanoid.SeatPart == nil then
+		FlightService.sendHome(player, pocketId)
 		return
 	end
 	local seat = humanoid.SeatPart

@@ -72,6 +72,15 @@ local DEFINITIONS: { [string]: Kind } = {
 	EndFlight = "Reliable", -- client -> server () no arguments; the craft is the one whose seat the player sits in.
 	--   Its pilot (or its owner aboard) ends the flight for everyone: the craft is removed and everyone aboard goes
 	--   back to their plot. Anyone else only leaves: they go back to their plot and the craft flies on.
+	--   CHANGED (Phase 6): an astronaut on EVA (on foot in a pocket other than the base) goes back to their plot
+	--   ("Return to plot" on the EVA HUD).
+	-- CHANGED (Phase 6): EVA
+	EvaInput = "Reliable", -- client -> server (kind: "Thrust" | "Light", on: boolean) the astronaut's jetpack firing /
+	--   helmet light, shown to every client in his pocket (attributes on his jetpack model). Only on EVA, rate-limited.
+	EvaBoard = "Reliable", -- client -> server (craftId: number, seatBlockId: number) an astronaut on EVA triggered the
+	--   SitPrompt of a seat of a craft in his own pocket. Sent next to the prompt's own server trigger, so boarding
+	--   works even if the engine checks the prompt's range against the server's (never turned, D31) copy of the
+	--   model; whichever arrives second finds the seat taken. Rate-limited; reach and permission checked.
 	-- CHANGED (Boarding): boarding a craft in another pocket from the base (Shared/Craft/Boarding)
 	BoardCraft = "Reliable", -- client -> server (craftId: number, seatBlockId: number) a player on foot in the base
 	--   pocket triggered a seat prompt on the cosmetic copy of a craft flying in another pocket; seatBlockId is the

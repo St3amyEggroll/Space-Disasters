@@ -21,6 +21,17 @@
 	Hiding (spike S2): LocalTransparencyModifier on parts, CastShadow off, decals/textures transparent, GUIs and
 	ProximityPrompts disabled, name tags hidden. Client raycasts always use Include filters (hidden parts still
 	block rays).
+
+	CHANGED (Phase 6): EVA and bubbles.
+	  * INERTIAL pockets (an astronaut's solo pocket in space): the reference is a free-falling point propagated on
+	    its conic from the folder's RefX../RefVX../RefUT attributes, with the horizon / sun axes (Shared/Sim/
+	    PocketFrames); renderUT is now. SURFACE_ALIGNED solo pockets read their attributes like the base.
+	  * EVERY craft model in the pocket is posed, not only the primary: a pocket can hold secondary crafts (merged
+	    bubbles, uncrewed crafts near an astronaut). Each is drawn at the pocket's render UT: this client's own
+	    simulation moved back / forward to it, a rail sampled at it, or the stream sampled at it (led to it when the
+	    frame runs at the present, StateBuffer.lead). craftCFrame(id) gives any posed craft's frame (the pilot of a
+	    secondary craft's chase camera and effects use it), and RemoteCraftRenderer learns which crafts are real in
+	    this pocket every frame (no cosmetic copy for them).
 ]]
 
 local Players = game:GetService("Players")
@@ -32,7 +43,10 @@ local CraftBuilder = require(ReplicatedStorage.Shared.Craft.CraftBuilder)
 local CraftDesign = require(ReplicatedStorage.Shared.Craft.CraftDesign)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
+local PocketFrames = require(ReplicatedStorage.Shared.Sim.PocketFrames) -- CHANGED (Phase 6)
+local Rails = require(ReplicatedStorage.Shared.Sim.Rails) -- CHANGED (Phase 6): secondary crafts on rails
 local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
+local StateBuffer = require(ReplicatedStorage.Shared.Net.StateBuffer) -- CHANGED (Phase 6)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
@@ -72,6 +86,7 @@ local frameMode = "SURFACE_ALIGNED"
 local primaryProvider: PrimaryProvider? = nil
 local pocketChanged = Instance.new("BindableEvent")
 local primaryCraftCFrame: CFrame? = nil -- workspace CFrame of the posed primary craft's reference frame
+local primaryCraftId: number? = nil -- CHANGED (Phase 6): the primary craft posed this frame
 -- CHANGED (Phase 10): velocity of the pocket's reference point relative to frame.refBodyId (universe axes); the
 -- primary craft's velocity in a flight pocket, zero otherwise (planets do not rotate)
 local frameVelocity = Vec3d.zero()
@@ -91,7 +106,10 @@ type PoseCache = {
 	dirty: boolean, -- a part was removed: drop missing parts before the next move
 	connection: RBXScriptConnection,
 }
-local poseCache: PoseCache? = nil
+-- CHANGED (Phase 6): one cache per posed model (primary and secondary crafts), and what was posed this frame
+local poseCaches: { [Model]: PoseCache } = {}
+local posedThisFrame: { [Model]: boolean } = {}
+local posedCFrames: { [number]: CFrame } = {} -- craft id -> workspace CFrame of its craft reference frame
 
 -- Hidden-state bookkeeping so we can restore what we changed
 local hiddenRoots: { [Instance]: RBXScriptConnection } = {}
@@ -329,11 +347,13 @@ end
 -- Posing the primary craft (HORIZON_ALIGNED pockets)
 --============================================================================
 
-local function dropPoseCache()
-	local cache = poseCache
-	if cache then
-		cache.connection:Disconnect()
-		poseCache = nil
+-- CHANGED (Phase 6): drops the caches of models not posed this frame (every cache when `all`).
+local function dropPoseCaches(all: boolean)
+	for model, cache in poseCaches do
+		if all or not posedThisFrame[model] then
+			cache.connection:Disconnect()
+			poseCaches[model] = nil
+		end
 	end
 end
 
@@ -391,23 +411,22 @@ local function buildPoseCache(model: Model): PoseCache?
 	return cache
 end
 
-local function poseCraft(folder: Instance, craftId: number, pos: Vec3d.Vec3d, rot: CFrame, flags: number?)
-	local crafts = folder:FindFirstChild("Crafts")
-	local found = if crafts then crafts:FindFirstChild(`Craft_{craftId}`) else nil
-	local model: Model? = if found and found:IsA("Model") then found else nil
-	local target = Frames.cframeToWorkspace(frame, pos, rot)
-	primaryCraftCFrame = target
-	-- only while the server says the model belongs to this flight pocket (cleared, in order, before it moves it
-	-- out again: a stale local pose would otherwise stick, since replication only sends changes)
-	if not model or model:GetAttribute("FlightPocket") ~= pocketId then
-		dropPoseCache()
-		return
-	end
-	local cache = poseCache
-	if cache == nil or cache.model ~= model or cache.epoch ~= model:GetAttribute("PoseEpoch") then
-		dropPoseCache()
+-- CHANGED (Phase 6): poses one real model (was: only the primary's) at `target`, the workspace CFrame of its craft
+-- reference frame. Only call it while the model's FlightPocket attribute names this pocket (the server clears it,
+-- in order, before it moves the model out again: a stale local pose would otherwise stick, since replication only
+-- sends changes).
+local function poseModel(model: Model, target: CFrame, flags: number?)
+	posedThisFrame[model] = true
+	local cache: PoseCache? = poseCaches[model]
+	if cache == nil or cache.epoch ~= model:GetAttribute("PoseEpoch") then
+		if cache then
+			cache.connection:Disconnect()
+			poseCaches[model] = nil
+		end
 		cache = buildPoseCache(model)
-		poseCache = cache
+		if cache then
+			poseCaches[model] = cache
+		end
 	end
 	if cache == nil then
 		return
@@ -444,12 +463,87 @@ local function poseCraft(folder: Instance, craftId: number, pos: Vec3d.Vec3d, ro
 	end
 end
 
+--[[
+	CHANGED (Phase 6): the state of a NON-primary craft at the pocket's render UT: this client's own simulation moved
+	there with its velocity (a secondary craft's pilot sees his craft where everyone in the pocket sees it), a rail
+	sampled there, or the stream sampled there (led forward to it when the frame runs at the present).
+]]
+local function secondaryState(craftId: number, now: number): PrimaryState?
+	local provider = primaryProvider
+	local own = if provider then provider(craftId) else nil
+	if own then
+		local vel = own.vel
+		local dt = renderUT - own.ut
+		if vel == nil or dt == 0 then
+			return own
+		end
+		return {
+			bodyId = own.bodyId,
+			pos = Vec3d.addScaled(own.pos, vel, dt),
+			vel = vel,
+			rot = own.rot,
+			ut = renderUT,
+			flags = own.flags,
+		}
+	end
+	local rails = RemoteCraftRenderer.railsOf(craftId)
+	if rails then
+		return Rails.stateAt(rails, renderUT)
+	end
+	local sampleUT = math.min(renderUT, now - INTERP_DELAY)
+	local sampled = RemoteCraftRenderer.sampleState(craftId, sampleUT)
+	if sampled and renderUT > sampleUT then
+		return StateBuffer.lead(sampled, renderUT, INTERP_DELAY)
+	end
+	return sampled
+end
+
+-- CHANGED (Phase 6): poses every real craft model of the pocket (the primary from `primaryState`).
+local function poseCrafts(folder: Instance, primaryId: number?, primaryState: PrimaryState?, now: number)
+	table.clear(posedThisFrame)
+	local crafts = folder:FindFirstChild("Crafts")
+	if crafts then
+		for _, child in crafts:GetChildren() do
+			if not child:IsA("Model") or child:GetAttribute("FlightPocket") ~= pocketId then
+				continue
+			end
+			local id = child:GetAttribute("CraftId")
+			if type(id) ~= "number" then
+				continue
+			end
+			local state = if id == primaryId then primaryState else secondaryState(id, now)
+			if state == nil then
+				continue
+			end
+			local s = state :: PrimaryState
+			local known: CFrame? = posedCFrames[id] -- the primary's pose is already computed
+			local target: CFrame
+			if known then
+				target = known
+			else
+				local offset = if s.bodyId ~= frame.refBodyId
+					then Universe.bodyOffset(s.bodyId, frame.refBodyId, renderUT)
+					else nil
+				target = Frames.cframeToWorkspace(frame, s.pos, s.rot, offset)
+				posedCFrames[id] = target
+			end
+			poseModel(child, target, s.flags)
+		end
+	end
+	dropPoseCaches(false)
+	RemoteCraftRenderer.setLocalPocketCrafts(posedCFrames)
+end
+
 -- Recomputes the current pocket frame; call once per render frame before drawing.
 function PocketController.update()
 	local now = UniverseTime.now()
 	renderUT = now
+	table.clear(posedCFrames) -- CHANGED (Phase 6)
 	local folder = pocketFolder(pocketId)
 	if folder == nil then
+		table.clear(posedThisFrame)
+		dropPoseCaches(true)
+		RemoteCraftRenderer.setLocalPocketCrafts(posedCFrames)
 		return
 	end
 	local slot = folder:GetAttribute("SlotOrigin")
@@ -459,7 +553,10 @@ function PocketController.update()
 	local mode = folder:GetAttribute("FrameMode")
 	frameMode = if type(mode) == "string" then mode else "SURFACE_ALIGNED"
 	primaryCraftCFrame = nil
+	primaryCraftId = nil -- CHANGED (Phase 6)
 	Vec3d.set(frameVelocity, 0, 0, 0) -- CHANGED (Phase 10)
+	local primaryId: number? = nil
+	local primaryState: PrimaryState? = nil
 	if frameMode == "HORIZON_ALIGNED" then
 		local primary = folder:GetAttribute("PrimaryId")
 		if type(primary) == "number" then
@@ -486,19 +583,51 @@ function PocketController.update()
 					state.pos,
 					Universe.pocketRotation(state.bodyId, state.pos, renderUT)
 				)
-				poseCraft(folder, primary, state.pos, state.rot, state.flags)
-				return
+				-- the primary's reference point is the pocket reference (it sits at the slot origin)
+				local target = Frames.cframeToWorkspace(frame, state.pos, state.rot)
+				primaryCraftCFrame = target
+				posedCFrames[primary] = target
+				primaryId, primaryState = primary, state
+				primaryCraftId = primary -- CHANGED (Phase 6)
 			end
 		end
+		if primaryState == nil then
+			frameFromAttributes(folder)
+		end
+	elseif frameMode == "INERTIAL" then
+		-- CHANGED (Phase 6): an astronaut's solo pocket in space: a free-falling reference (PocketFrames)
+		local ref = PocketFrames.fromAttributes(function(name: string): unknown
+			return folder:GetAttribute(name)
+		end)
+		if ref then
+			local r = ref :: PocketFrames.Reference
+			local pos, vel = PocketFrames.referenceAt(r, now)
+			Frames.setReference(frame, r.bodyId, pos, PocketFrames.rotationAt(r, pos, now))
+			Vec3d.copyInto(frameVelocity, vel)
+		else
+			frameFromAttributes(folder)
+		end
+	else
+		frameFromAttributes(folder)
 	end
-	dropPoseCache()
-	frameFromAttributes(folder)
+	poseCrafts(folder, primaryId, primaryState, now) -- CHANGED (Phase 6): every craft of the pocket
 end
 
 -- CHANGED (Phase 2a feedback, D31): workspace CFrame of the current pocket's primary craft reference frame
 -- (root block centre, craft axes) as posed this frame; nil outside flight pockets or before the state arrives.
 function PocketController.primaryCraftCFrame(): CFrame?
 	return primaryCraftCFrame
+end
+
+-- CHANGED (Phase 6): workspace CFrame of any craft posed in the current pocket this frame (primary or secondary;
+-- craft reference frame: root block centre, craft axes), or nil.
+function PocketController.craftCFrame(craftId: number): CFrame?
+	return posedCFrames[craftId]
+end
+
+-- CHANGED (Phase 6): the id of the craft the current pocket's frame follows (nil outside craft pockets).
+function PocketController.primaryCraftId(): number?
+	return primaryCraftId
 end
 
 function PocketController.frame(): Frames.Frame
