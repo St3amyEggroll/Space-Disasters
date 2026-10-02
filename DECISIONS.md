@@ -612,7 +612,18 @@ Steamy asked for "an effects phase, to update effects of rockets and everything"
   - prop shadows, menu Bloom/SunRays and ground puppets follow the tier;
   - consoles max Medium;
   - mobile draw distance on Automatic is 1400.
-- **Terrain fixes:** see the terrain commit message (mesh budget on camera jumps, the menu at quality 1, true-scale objects behind scaled bands, the site copy staying visible, props, collision updates).
+- **Terrain fixes:**
+  - `TerrainMath.planStep` never exceeds the mesh budget on camera jumps, and a refused band is probed back every 30 s.
+  - The menu view forces scaled mode, so quality 1 no longer thrashes.
+  - Band 0 is now a true-scale near band: leaves in a ±760 m square, split to 400 m, as one part.
+  - Each band uses the tightest of five frames.
+  - The launch-site copy is drawn scaled about the camera like the ground under it, so it shows up to 25 km.
+  - Props only go on true-scale ground.
+  - Meshes are centred on their exact vertex box.
+  - Collision wedges update per cell.
+  - Stale meshes stay visible while a plan catches up.
+  - The map predicts impacts on the heightmap (opt-in `Rails.predict` terrain).
+- **Still open:** objects more than about 1 km away over scaled ground can still be hidden by it, mostly on High. The proper fix is to draw remote crafts, puppets and effects scaled like the ground under them (`TerrainMesh.scaleAt`).
 
 ## Phase 0 spike results
 
