@@ -1,8 +1,9 @@
 --!strict
 --[[
 	UniverseRenderer (spec 7.6)
-	Once per render frame, after the camera has moved: refresh the pocket frame (PocketController), build the
-	RenderContext and hand it to every render layer in order:
+	Once per render frame, after the camera has moved: refresh the pocket frame (PocketController; CHANGED (Rocket
+	shudder): already computed before the camera, this reuses it), build the RenderContext and hand it to every
+	render layer in order:
 	  ScaledSpace          sun, planets and moons as scaled proxies (and the surface-mode handover)
 	  Surface              the ground under the camera (CHANGED Phase 8: heightmap terrain, collision near the player,
 	                       props) and the cosmetic Space Disasters Inc. copy
@@ -50,6 +51,7 @@
 	  UniverseRenderer.hasViewOverride() -> boolean         CHANGED (Phase 11)
 ]]
 
+local Players = game:GetService("Players") -- CHANGED (Rocket shudder / orbit shadows): characters' shadows
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
@@ -64,6 +66,7 @@ local PocketController = require(script.Parent.PocketController)
 local RemoteCraftRenderer = require(script.Parent.RemoteCraftRenderer)
 local RenderContext = require(script.Parent.Parent.Render.RenderContext)
 local ScaledSpace = require(script.Parent.Parent.Render.ScaledSpace)
+local ShadowGate = require(script.Parent.Parent.Render.ShadowGate) -- CHANGED (Rocket shudder / orbit shadows)
 local SkyCube = require(script.Parent.Parent.Render.SkyCube)
 local SkyLighting = require(script.Parent.Parent.Render.SkyLighting)
 local Quality = require(script.Parent.Parent.Render.Quality) -- CHANGED (Night review)
@@ -249,6 +252,45 @@ local function stepViewOverride(override: Frames.Frame, camera: Camera, dt: numb
 	)
 end
 
+--[[
+	CHANGED (Rocket shudder / orbit shadows): Steamy in orbit: "still a shaddow forming" (five rocket-shaped shadows on
+	the planet). Above the handover the ground is a ScaledSpace proxy (and its nested atmosphere shells) a few hundred
+	studs away, and the true-scale craft's sun shadow fell on it and on every shell. While the ground is a proxy,
+	nothing true-scale casts a shadow (Render/ShadowGate): this pocket's crafts, the RemoteCrafts folder (copies,
+	markers, puppets), the effects and every player's character; back in surface mode every original CastShadow is
+	restored, so shadows on the real terrain near the ground stay. Free in surface mode; in scaled mode a lookup per
+	root and frame (parts are only touched on the mode change and when added).
+]]
+local shadowRoots: { Instance } = {}
+local function updateShadowGate()
+	-- never in the base pocket: it is always at the launch site (and its folder holds every plot: no sweep over it
+	-- while ScaledSpace is still initialising and reports scaled mode)
+	local scaled = not ScaledSpace.isSurfaceMode() and PocketController.pocketId() ~= 0
+	if not scaled and not ShadowGate.isScaledMode() then
+		return
+	end
+	table.clear(shadowRoots)
+	if scaled then
+		local pockets = Workspace:FindFirstChild("Pockets")
+		local pocket = if pockets then pockets:FindFirstChild(`Pocket_{PocketController.pocketId()}`) else nil
+		if pocket then
+			table.insert(shadowRoots, pocket)
+		end
+		local remote = Workspace:FindFirstChild("RemoteCrafts")
+		if remote then
+			table.insert(shadowRoots, remote)
+		end
+		table.insert(shadowRoots, Effects.folder())
+		for _, player in Players:GetPlayers() do
+			local character = player.Character
+			if character then
+				table.insert(shadowRoots, character)
+			end
+		end
+	end
+	ShadowGate.setScaledMode(scaled, shadowRoots)
+end
+
 local function step(dt: number)
 	local camera = Workspace.CurrentCamera
 	if camera == nil then
@@ -257,6 +299,8 @@ local function step(dt: number)
 	refreshDrawDistance(dt)
 	-- CHANGED (EVA shake): computed once per render frame; on EVA EvaController already did it before the camera, so
 	-- this reuses that frame (the astronaut, the crafts and the world are drawn with one frame and one render UT)
+	-- CHANGED (Rocket shudder): PocketController now computes it itself at Camera - 2, before every camera, so this
+	-- call only reuses that frame (the chase camera, the craft poses and the world share one render UT)
 	PocketController.update()
 
 	local frame = PocketController.frame()
@@ -293,6 +337,7 @@ local function step(dt: number)
 	timed("ScaledSpace", function()
 		ScaledSpace.update(ctx)
 	end)
+	updateShadowGate() -- CHANGED (Rocket shudder / orbit shadows)
 	timed("Surface", function()
 		-- CHANGED (Phase 8): the handover altitude lets the terrain build before surface mode
 		Surface.update(ctx, ScaledSpace.isSurfaceMode(), ScaledSpace.proxyMinAltitude(ctx.dominantBodyId))

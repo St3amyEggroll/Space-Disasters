@@ -38,6 +38,23 @@
 	and so do pocket changes and transfers). EvaController calls it BEFORE the camera (it places the floating
 	astronaut there, so the stock camera follows where he is drawn this frame), UniverseRenderer after the camera as
 	before; both see the same frame. Without an EVA nothing changes: UniverseRenderer computes it.
+
+	CHANGED (Rocket shudder): Steamy: "my rocket keeps moving back aswell like shuddering" (mid-air, mostly in the
+	atmosphere). Two frame-order faults:
+	  * The pilot's own craft (the primary provider) was drawn from its LAST fixed 60 Hz step. The pocket frame
+	    follows that state, so the terrain, scaled space, sky, sun, the other crafts (drawn at the frame's render UT)
+	    and the effects' air drift moved in 60 Hz steps: on a 144 Hz screen 58% of frames repeated the previous frame,
+	    at 60 FPS frame-time noise gave 0-step / 2-step frames (0, 10, 0, 10 m of ground per frame at 300 m/s) while
+	    the engine-simulated smoke moved smoothly: the rocket jerked back and forth against the world. The provider
+	    now returns the state interpolated between the last two steps at the accumulator's fraction
+	    (FlightController / Shared/Sim/SimInterp), so renderUT advances by the frame's dt every frame and the frame,
+	    the poses and the world all use that one render time.
+	  * The chase camera (Camera + 1) read craftCFrame / frame() BEFORE UniverseRenderer (Camera + 10) computed this
+	    frame's, i.e. the previous frame's pose. update() now runs at UPDATE_PRIORITY (Camera - 2) every frame,
+	    before any camera; EvaController's and UniverseRenderer's calls reuse it (EVA fix unchanged: still once per
+	    frame, still before the stock camera).
+	Streamed primaries (passengers) were already sampled at a smooth UT (now - INTERP_DELAY) and are unchanged; the
+	server never moves the model in flight (PoseEpoch) and the posed parts are anchored.
 ]]
 
 local Players = game:GetService("Players")
@@ -60,6 +77,7 @@ local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local DebugOverlay = require(script.Parent.DebugOverlay)
 local RemoteCraftRenderer = require(script.Parent.RemoteCraftRenderer)
 local Gear = require(script.Parent.Parent.Render.Gear)
+local ShadowGate = require(script.Parent.Parent.Render.ShadowGate) -- CHANGED (Rocket shudder / orbit shadows)
 
 --============================================================================
 -- Tunables
@@ -71,6 +89,12 @@ local POSE_MOVE_MODE = Enum.BulkMoveMode.FireCFrameChanged
 -- CHANGED (EVA shake): marks the frame stale at the start of every render frame (before anything reads it)
 local NEW_FRAME_STEP_NAME = "PocketFrameNewFrame"
 local NEW_FRAME_PRIORITY = Enum.RenderPriority.First.Value
+-- CHANGED (Rocket shudder): the frame and every craft pose are computed here, BEFORE any camera (EVA's stock camera
+-- at Camera, ChaseCamera at Camera + 1, EvaController's own step at Camera - 1), so the camera reads this frame's
+-- pose (it read the previous frame's: UniverseRenderer computed it at Camera + 10, after the camera)
+local UPDATE_STEP_NAME = "PocketFrameUpdate"
+local UPDATE_PRIORITY = Enum.RenderPriority.Camera.Value - 2
+local HIDE_SHADOW_REASON = "PocketHidden" -- CHANGED (Rocket shudder / orbit shadows): ShadowGate reason
 --============================================================================
 
 -- What the pilot's simulation reports for its own craft (a subset of FlightModel.CraftState).
@@ -125,7 +149,8 @@ local posedCFrames: { [number]: CFrame } = {} -- craft id -> workspace CFrame of
 
 -- Hidden-state bookkeeping so we can restore what we changed
 local hiddenRoots: { [Instance]: RBXScriptConnection } = {}
-local savedCastShadow: { [BasePart]: boolean } = setmetatable({}, { __mode = "k" }) :: any
+-- CHANGED (Rocket shudder / orbit shadows): CastShadow goes through Render/ShadowGate (reason HIDE_SHADOW_REASON), so
+-- hiding and the scaled-mode shadow gate never restore each other's stale value (was a local savedCastShadow map)
 local savedTransparency: { [Instance]: number } = setmetatable({}, { __mode = "k" }) :: any
 local savedEnabled: { [Instance]: boolean } = setmetatable({}, { __mode = "k" }) :: any
 local hiddenCharacters: { [Model]: boolean } = {}
@@ -137,10 +162,7 @@ local hiddenCharacters: { [Model]: boolean } = {}
 local function hideInstance(instance: Instance)
 	if instance:IsA("BasePart") then
 		instance.LocalTransparencyModifier = 1
-		if savedCastShadow[instance] == nil then
-			savedCastShadow[instance] = instance.CastShadow
-		end
-		instance.CastShadow = false
+		ShadowGate.suppress(instance, HIDE_SHADOW_REASON) -- CHANGED (Rocket shudder / orbit shadows)
 	elseif instance:IsA("Decal") then -- includes Texture
 		if savedTransparency[instance] == nil then
 			savedTransparency[instance] = instance.Transparency
@@ -169,11 +191,7 @@ end
 local function showInstance(instance: Instance)
 	if instance:IsA("BasePart") then
 		instance.LocalTransparencyModifier = 0
-		local shadow = savedCastShadow[instance]
-		if shadow ~= nil then
-			instance.CastShadow = shadow
-			savedCastShadow[instance] = nil
-		end
+		ShadowGate.release(instance, HIDE_SHADOW_REASON) -- CHANGED (Rocket shudder / orbit shadows)
 	elseif instance:IsA("Decal") then
 		local transparency = savedTransparency[instance]
 		if transparency ~= nil then
@@ -583,6 +601,7 @@ end
 -- CHANGED (EVA shake): only the first call in a render frame (or after a pocket change / transfer) does the work;
 -- later calls in the same frame keep that frame, so whoever calls first (EvaController before the camera,
 -- UniverseRenderer after it) and everyone after it draw with the same frame and the same render UT.
+-- CHANGED (Rocket shudder): normally the first call is this module's own step at UPDATE_PRIORITY (Camera - 2).
 function PocketController.update()
 	if frameFresh then
 		return
@@ -735,6 +754,10 @@ function PocketController.Start()
 	-- CHANGED (EVA shake): every render frame starts with a stale frame (update() header)
 	RunService:BindToRenderStep(NEW_FRAME_STEP_NAME, NEW_FRAME_PRIORITY, function()
 		frameFresh = false
+	end)
+	-- CHANGED (Rocket shudder): this frame's frame and poses before any camera reads them (UPDATE_PRIORITY)
+	RunService:BindToRenderStep(UPDATE_STEP_NAME, UPDATE_PRIORITY, function()
+		PocketController.update()
 	end)
 	Remotes.event("PocketTransfer").OnClientEvent:Connect(onTransfer)
 	player:GetAttributeChangedSignal("PocketId"):Connect(function()

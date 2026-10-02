@@ -77,16 +77,21 @@ local FIT_RADIUS_MULT = 2.5 -- default zoom = this x the craft's bounding radius
 -- craft farther than that (zoomed out) can end up behind the planet's proxy: a dark "shadow" swallowed the ship.
 -- The zoom is kept so the whole craft stays inside that zone, with this margin.
 local ZOOM_CLEAR_MARGIN = 20 -- studs
-local SHAKE_THRUST_AMPLITUDE = 0.004 -- rad at full thrust, high up
-local SHAKE_GROUND_BOOST = 2 -- x extra thrust shake right at the ground (rumble off the pad)
-local SHAKE_Q_AMPLITUDE = 0.003 -- rad at SHAKE_Q_FULL dynamic pressure and above
+-- CHANGED (Rocket shudder): Steamy read the shake as the rocket shuddering ("moving back aswell like shuddering",
+-- mostly in the atmosphere, where thrust and dynamic pressure add up). It was up to 0.007 rad mid-air (0.4 deg: about
+-- +-6 px on a 1080p screen) and 0.012 rad off the pad, at 9 / 14.5 Hz, which a 60 FPS frame rate turns into jitter.
+-- Now a slow, subtle sway: at most 0.0025 rad mid-air (0.14 deg, about +-2 px) and 0.003 rad off the pad, at
+-- 3.5 / 6 Hz, fading in and out over about a quarter second.
+local SHAKE_THRUST_AMPLITUDE = 0.0015 -- rad at full thrust, high up (was 0.004)
+local SHAKE_GROUND_BOOST = 1 -- x extra thrust shake right at the ground (rumble off the pad) (was 2)
+local SHAKE_Q_AMPLITUDE = 0.001 -- rad at SHAKE_Q_FULL dynamic pressure and above (was 0.003)
 local SHAKE_Q_FULL = 20000 -- Pa
-local SHAKE_FREQUENCY_LOW = 9 -- Hz, main noise component
-local SHAKE_FREQUENCY_HIGH = 14.5 -- Hz, faster flutter on top
-local SHAKE_HIGH_WEIGHT = 0.35 -- share of the fast component
+local SHAKE_FREQUENCY_LOW = 3.5 -- Hz, main noise component (was 9)
+local SHAKE_FREQUENCY_HIGH = 6 -- Hz, faster flutter on top (was 14.5)
+local SHAKE_HIGH_WEIGHT = 0.25 -- share of the fast component (was 0.35)
 local SHAKE_ROLL_SHARE = 0.5 -- roll shake relative to pitch / yaw
 local SHAKE_NOISE_GAIN = 2 -- math.noise is about +-0.5: scale to about +-1
-local SHAKE_RESPONSE = 12 -- 1/s, how fast the shake amplitude follows its inputs (no hard pops)
+local SHAKE_RESPONSE = 4 -- 1/s, how fast the shake amplitude follows its inputs (no hard pops) (was 12)
 local GROUND_CLEARANCE = 3 -- CHANGED (Phase 8): studs the camera keeps above the terrain
 --============================================================================
 
