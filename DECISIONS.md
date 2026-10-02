@@ -509,7 +509,7 @@ Steamy asked for "an effects phase, to update effects of rockets and everything"
 
 - **Pods without chutes still crash:** terminal speed is about 105 m/s, against a crash tolerance of 12. Parachutes (Phase 2b) are still to do.
 - **Speed cues:**
-  - a cloud deck (`Render/Clouds`) at a fraction of the atmosphere top;
+  - (a cloud deck was tried and removed: Steamy said it looked bad);
   - trees and rocks right up to the site plate;
   - a vapour cone that can actually trigger (pressure gate 0.005-0.05);
   - chase zoom fitted to the craft size;

@@ -40,7 +40,7 @@ Phase 2 is split into 2a/2b so you can playtest halfway through (agreed with Ste
 - **Physics feel:**
   - lighter air drag and engines x1.5;
   - Earth back to 60 km (orbit about 710 m/s);
-  - clouds, trees by the pads, the vapour cone, camera fit and shake, a taller tower.
+  - trees by the pads, the vapour cone, camera fit and shake, a taller tower.
 - **Multiplayer:**
   - Dropped stages no longer jump backwards.
   - Players on the ground can board your rocket after you sit (you need a free seat, e.g. an External Seat).
@@ -61,7 +61,7 @@ Phase 2 is split into 2a/2b so you can playtest halfway through (agreed with Ste
    - Save and Load work.
 5. **Flight:**
    - Roll Out and press Space. It should leave the pad fast (100 m/s in about 5 s), with the camera rumbling.
-   - The altimeter wheels roll. You pass through clouds around 2-3 km, and the vapour cone shows near the speed of sound.
+   - The altimeter wheels roll. The vapour cone shows near the speed of sound.
    - Orbit is about 710 m/s at 10 km.
 6. **HUD:**
    - F2 hides it.
