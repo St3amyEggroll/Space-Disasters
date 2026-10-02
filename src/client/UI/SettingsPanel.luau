@@ -57,7 +57,8 @@ local TAB_CONTROLS = "Controls & Camera"
 local TAB_INTERFACE = "Interface"
 local TAB_AUDIO = "Audio"
 local TABS = { TAB_CONTROLS, TAB_INTERFACE, TAB_AUDIO }
-local CONTEXT_TITLES: { [string]: string } = { Flight = "Flight", Build = "Builder" }
+-- CHANGED (Phase 6): the EVA (spacewalk) keys get their own group
+local CONTEXT_TITLES: { [string]: string } = { Flight = "Flight", EVA = "Spacewalk (EVA)", Build = "Builder" }
 local CAPTURE_TEXT = "Press a key..."
 local FIXED_KEYS_NOTE = "Ctrl+Z (undo) and F3 (debug overlay) are fixed and cannot be rebound."
 local HUD_NOTE = "Press %s in flight to show or hide the HUD."

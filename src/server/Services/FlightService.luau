@@ -50,6 +50,22 @@
 	base -> flight pocket (the server placed the character, so the client must not move it again). Pilot seat: the
 	usual onSeated path applies (handBack hands a server-simulated craft to the new pilot). Leaving is unchanged:
 	the boarded player is an ordinary passenger (or pilot) of the craft.
+
+	CHANGED (Phase 6): EVA (BubbleService and EvaService do the bubbles; this service the seats).
+	  * Leaving a seat in flight (F for everyone now, or the jump key) starts an EVA: the player is unseated and
+	    stays in the pocket; their client puts the astronaut outside the hatch and flies the jetpack. Before
+	    ignition a PASSENGER still steps off beside the pad into the base pocket (the pilot's F still returns the
+	    whole craft to the pad).
+	  * End Flight from an astronaut on EVA sends only them home ("Return to plot" on the EVA HUD). A pilot / owner
+	    ending a flight sends home everyone aboard that craft, plus everyone in its pocket only when no other craft
+	    shares the pocket (merged bubbles keep the other crews); the pocket itself is re-pointed or released by
+	    BubbleService (CraftService.onRemoving).
+	  * A craft whose reference block is destroyed kills only the players SEATED in it; anyone else in the pocket
+	    (astronauts, other crews) lives on.
+	  * When a pocket is released every craft whose model was in it (primary and secondaries) goes back to an
+	    uncrewed, server-simulated craft.
+	  * Exported for BubbleService / EvaService: sendTransfer (also pins the player's PocketId, PocketService.pin),
+	    bumpPoseEpoch, seatedIn, isBusy, sendHome.
 ]]
 
 local Players = game:GetService("Players")
@@ -257,6 +273,7 @@ local function sendTransfer(player: Player, source: number, dest: number, m: CFr
 	local id = nextTransferId
 	nextTransferId += 1
 	player:SetAttribute("PocketId", dest)
+	PocketService.pin(player, dest) -- CHANGED (Phase 6): the replicated position lags the transfer
 	pendingTransfers[id] = { player = player, m = m, deadline = os.clock() + ACK_TIMEOUT_S }
 	remotes.PocketTransfer:FireClient(player, id, source, dest, m, epoch)
 end
@@ -306,13 +323,29 @@ function FlightService.applyDestruction(record: CraftRecord, ids: { number })
 	end
 	remotes.PartsDestroyed:FireAllClients(record.id, ids, sim.state.ut, piecesInfo)
 	if originLost then
-		if record.pocketId then
-			for _, player in PocketService.playersIn(record.pocketId :: number) do
+		-- CHANGED (Phase 6): only the players seated in it (was: everyone in its pocket). Astronauts on EVA and the
+		-- crews of other crafts sharing the pocket live on; BubbleService re-points or releases the pocket.
+		local model = record.model
+		if model then
+			for _, player in FlightService.seatedIn(model) do
 				kill(player)
 			end
 		end
 		CraftService.remove(record.id)
 	end
+end
+
+-- CHANGED (Phase 6): the players seated in a craft model.
+function FlightService.seatedIn(model: Model): { Player }
+	local seated = {}
+	for _, player in Players:GetPlayers() do
+		local humanoid = humanoidOf(player)
+		local seat = if humanoid then humanoid.SeatPart else nil
+		if seat and seat:IsDescendantOf(model) then
+			table.insert(seated, player)
+		end
+	end
+	return seated
 end
 
 --============================================================================
@@ -420,6 +453,8 @@ local function returnToPad(record: CraftRecord, pilot: Player?)
 	end
 	returning[record.id] = true
 	local crew = crewOf(model)
+	-- (CHANGED (Phase 6) note: astronauts on EVA in the pocket go back too, moved by M like unseated crew; no other
+	-- craft can share this pocket, BubbleService never merges pockets inside BASE_BUBBLE of the launch site)
 	for _, player in PocketService.playersIn(pocketId) do
 		if not table.find(crew, player) then
 			table.insert(crew, player)
@@ -711,6 +746,32 @@ local function onReportDestroyed(player: Player, craftId: unknown, ids: unknown,
 	FlightService.applyDestruction(record, clean)
 end
 
+-- CHANGED (Phase 6): the craft record whose seat (any seat) the player occupies (forward: defined with End Flight).
+local seatedCraft: (player: Player) -> CraftRecord?
+
+--[[
+	CHANGED (Phase 6): a passenger leaves a craft that still waits on its pad (in its flight pocket, nothing ignited):
+	they step off beside the pad into the base pocket, placed by the server (identity transfer), like the pilot in
+	returnToPad. Anywhere else, leaving a seat starts an EVA.
+]]
+local function standBesidePad(player: Player, record: CraftRecord)
+	local humanoid = humanoidOf(player)
+	local character = player.Character
+	local pocketId = record.pocketId
+	if humanoid == nil or character == nil or pocketId == nil then
+		return
+	end
+	unseat(humanoid)
+	local padIndex = CraftService.padOf(record.id)
+	local origin = record.origin
+	local target = if padIndex
+		then BaseLayout.pad(padIndex).top.Position + Vector3.new(-(BaseLayout.PAD_SIZE / 2 + PAD_STEP_OFF), 3, 0)
+		else PlotService.spawnCFrame(player).Position
+	local look = if padIndex then BaseLayout.pad(padIndex).top.Position else origin.Position
+	character:PivotTo(CFrame.lookAt(target, Vector3.new(look.X, target.Y, look.Z)))
+	sendTransfer(player, pocketId, PocketService.BASE_POCKET_ID, CFrame.identity, 0)
+end
+
 local function onLeaveSeat(player: Player)
 	-- CHANGED (Phase 2a feedback): before ignition, standing up puts the craft back on the pad
 	local record = pilotSeatCraft(player)
@@ -719,11 +780,18 @@ local function onLeaveSeat(player: Player)
 		returnToPad(record, player)
 		return
 	end
+	-- CHANGED (Phase 6): a passenger of a craft still on its pad steps off beside the pad (base pocket)
+	local seated = seatedCraft(player)
+	if seated and seated.pilot ~= player and seated.pocketId ~= nil and canReturnToPad(seated) then
+		standBesidePad(player, seated)
+		return
+	end
 	local humanoid = humanoidOf(player)
 	if humanoid then
 		unseat(humanoid)
 	end
 	-- CHANGED (Phase 3): after ignition the server takes the craft over
+	-- CHANGED (Phase 6): and the player is on EVA (their client puts them outside the hatch)
 	checkPilotSeat(player, false)
 end
 
@@ -757,7 +825,8 @@ end
 --============================================================================
 
 -- The craft record whose seat (any seat) the player occupies, or nil.
-local function seatedCraft(player: Player): CraftRecord?
+-- CHANGED (Phase 6): assigned to the forward declaration above (onLeaveSeat uses it too)
+seatedCraft = function(player: Player): CraftRecord?
 	local humanoid = humanoidOf(player)
 	local seat = if humanoid then humanoid.SeatPart else nil
 	local model = if seat then craftModelOf(seat) else nil
@@ -775,6 +844,22 @@ end
 local function sendHome(player: Player, fromPocket: number?)
 	local humanoid = humanoidOf(player)
 	local character = player.Character
+	-- CHANGED (Phase 6): an astronaut on EVA moves himself: his client places his character every frame, so a server
+	-- teleport arriving a frame before this transfer could be overwritten. M takes his character from where the
+	-- server sees it to his plot; his client applies it to where it really is (off by his motion over the lag).
+	local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
+	if
+		humanoid
+		and humanoid.SeatPart == nil
+		and root
+		and root:IsA("BasePart")
+		and fromPocket
+		and fromPocket ~= PocketService.BASE_POCKET_ID
+	then
+		local m = PlotService.spawnCFrame(player) * root.CFrame:Inverse()
+		sendTransfer(player, fromPocket, PocketService.BASE_POCKET_ID, m, 0)
+		return
+	end
 	if humanoid and character then
 		unseat(humanoid)
 		character:PivotTo(PlotService.spawnCFrame(player))
@@ -795,7 +880,18 @@ local function endFlight(record: CraftRecord, ender: Player)
 	local pocketId = record.pocketId
 	local model = record.model
 	local aboard: { Player } = if model then crewOf(model) else {}
+	-- CHANGED (Phase 6): everyone in the pocket only when no other craft shares it (a merged bubble keeps the other
+	-- crafts' crews and astronauts; BubbleService re-points the pocket when this craft is removed)
+	local shared = false
 	if pocketId then
+		for _, other in CraftService.all() do
+			if other ~= record and other.pocketId == pocketId then
+				shared = true
+				break
+			end
+		end
+	end
+	if pocketId and not shared then
 		for _, player in PocketService.playersIn(pocketId) do
 			if not table.find(aboard, player) then
 				table.insert(aboard, player)
@@ -814,7 +910,9 @@ local function endFlight(record: CraftRecord, ender: Player)
 	lastValid[id] = nil
 	strikes[id] = nil
 	CraftService.remove(id) -- CraftRemoved: every client drops its simulation / copy of the craft
-	if pocketId then
+	-- CHANGED (Phase 6): BubbleService (CraftService.onRemoving) already re-pointed a shared pocket or released an
+	-- empty one; release what is left only if nobody is in it
+	if pocketId and PocketService.flightPocket(pocketId) and #PocketService.playersIn(pocketId) == 0 then
 		PocketService.releaseFlightPocket(pocketId) -- its release listener finds the craft already gone
 	end
 	for _, player in aboard do
@@ -833,7 +931,21 @@ local function onEndFlight(player: Player)
 	end
 	lastEndFlight[player] = now
 	local record = seatedCraft(player)
-	if record == nil or record.isDebris or record.state == "Destroyed" then
+	if record == nil then
+		-- CHANGED (Phase 6): an astronaut on EVA ("Return to plot") goes home alone
+		local humanoid = humanoidOf(player)
+		local pocketId = player:GetAttribute("PocketId")
+		if
+			humanoid
+			and humanoid.SeatPart == nil
+			and type(pocketId) == "number"
+			and pocketId ~= PocketService.BASE_POCKET_ID
+		then
+			sendHome(player, pocketId)
+		end
+		return
+	end
+	if record.isDebris or record.state == "Destroyed" then
 		return
 	end
 	local isPilot = record.pilot == player or pilotSeatCraft(player) == record
@@ -1059,18 +1171,23 @@ function FlightService.Start()
 	end
 
 	-- When a flight pocket empties, its craft carries on uncrewed as a server-simulated craft.
+	-- CHANGED (Phase 6): every craft whose model is in it (primary and secondaries); a Solo pocket may have none
 	PocketService.onReleased(function(pocket)
-		local record = CraftService.get(pocket.craftId)
-		if record == nil or record.pocketId ~= pocket.id then
-			return -- gone, or already moved back to the pad (returnToPad)
+		local inPocket: { CraftRecord } = {}
+		for _, record in CraftService.all() do
+			if record.pocketId == pocket.id then -- gone, or already moved back to the pad (returnToPad), are skipped
+				table.insert(inPocket, record)
+			end
 		end
-		if record.model then
-			(record.model :: Model):Destroy()
-			record.model = nil
+		for _, record in inPocket do
+			if record.model then
+				(record.model :: Model):Destroy()
+				record.model = nil
+			end
+			record.pocketId = nil
+			takeOver(record, true) -- CHANGED (Phase 3): uncrewed: zero input, throttle cut
+			CraftService.announce(record)
 		end
-		record.pocketId = nil
-		takeOver(record, true) -- CHANGED (Phase 3): uncrewed: zero input, throttle cut
-		CraftService.announce(record)
 	end)
 
 	-- Transfer acks: teleport unseated crew the server never heard back from.
@@ -1091,6 +1208,30 @@ function FlightService.Start()
 			end
 		end
 	end)
+end
+
+--============================================================================
+-- CHANGED (Phase 6): for BubbleService and EvaService
+--============================================================================
+
+-- Sends a PocketTransfer (and moves the player's PocketId, pinned for a moment: PocketService.pin).
+function FlightService.sendTransfer(player: Player, source: number, dest: number, m: CFrame, epoch: number)
+	sendTransfer(player, source, dest, m, epoch)
+end
+
+-- Bumps a real craft model's PoseEpoch after a server-side move (clients re-read the part offsets).
+function FlightService.bumpPoseEpoch(model: Model)
+	bumpPoseEpoch(model)
+end
+
+-- Is a craft in the middle of launching, returning to its pad or ending its flight? (Leave it alone then.)
+function FlightService.isBusy(craftId: number): boolean
+	return launching[craftId] == true or returning[craftId] == true or ending[craftId] == true
+end
+
+-- Sends one player back to their plot (base pocket), from `fromPocket` (nil = already in the base).
+function FlightService.sendHome(player: Player, fromPocket: number?)
+	sendHome(player, fromPocket)
 end
 
 return FlightService

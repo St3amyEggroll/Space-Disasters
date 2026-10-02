@@ -18,6 +18,10 @@
 	CHANGED (Phase 3): rolled-out crafts on their pads are announced too (CraftSpawned with info.prelaunch), so
 	players in other pockets get a cosmetic copy of them. A client asks for the join snapshot (RequestSnapshot)
 	once its handlers are connected, and gets one CraftSpawned per craft.
+
+	CHANGED (Phase 6): onRemoving listeners (BubbleService re-points the craft's pocket), isBoardable and
+	buildFlightModel (an uncrewed craft in flight gets a real model again as a secondary craft in an astronaut's
+	pocket). Every change of record.pocketId is re-announced (CraftSpawned) so clients know which pocket draws it.
 ]]
 
 local Players = game:GetService("Players")
@@ -34,6 +38,7 @@ local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d) -- CHANGED (Phase 3):
 local Protocol = require(ReplicatedStorage.Shared.Net.Protocol)
 local Rails = require(ReplicatedStorage.Shared.Sim.Rails) -- CHANGED (Phase 5)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
+local Parts = require(ReplicatedStorage.Shared.Config.Parts) -- CHANGED (Phase 6): seats (isBoardable)
 local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
 local BuildService = require(script.Parent.BuildService)
 local PlotService = require(script.Parent.PlotService)
@@ -86,6 +91,8 @@ local lastRollout: { [Player]: number } = {}
 local rolledOutListeners: { (player: Player, record: CraftRecord) -> () } = {}
 local announcedIds: { [number]: boolean } = {} -- CHANGED (Phase 3): crafts clients know about (CraftRemoved owed)
 local lastSnapshot: { [Player]: number } = {} -- CHANGED (Phase 3)
+local removingListeners: { (record: CraftRecord) -> () } = {} -- CHANGED (Phase 6)
+local ownerNames: { [number]: string } = {} -- CHANGED (Phase 6): craft id -> owner display name at roll-out
 
 local function removeCraft(id: number)
 	local record = crafts[id]
@@ -93,6 +100,17 @@ local function removeCraft(id: number)
 		return
 	end
 	crafts[id] = nil
+	-- CHANGED (Phase 6): BubbleService finds a new primary for the craft's pocket (or releases it) right away, in
+	-- the same server frame, before CraftRemoved reaches the clients (they would otherwise briefly draw the
+	-- pocket from a stale reference). Listeners run synchronously and must not yield.
+	for _, listener in removingListeners do
+		local ok, err = pcall(function()
+			listener(record)
+		end)
+		if not ok then
+			warn(`[CraftService] onRemoving listener failed: {err}`)
+		end
+	end
 	if padCraftByUser[record.ownerUserId] == id then
 		padCraftByUser[record.ownerUserId] = nil
 	end
@@ -102,6 +120,7 @@ local function removeCraft(id: number)
 		craftOnPad[pad] = nil
 	end
 	record.state = "Destroyed"
+	ownerNames[id] = nil -- CHANGED (Phase 6)
 	if record.model then
 		record.model:Destroy()
 	end
@@ -198,6 +217,7 @@ local function onRollOut(player: Player)
 	model:SetAttribute(BOARDING_ATTRIBUTE, player:GetAttribute(BOARDING_ATTRIBUTE) or GameConfig.DEFAULT_BOARDING)
 	model:SetAttribute("State", "Prelaunch")
 	model.Parent = PocketService.baseCrafts()
+	ownerNames[id] = player.DisplayName -- CHANGED (Phase 6): kept for models rebuilt in flight (buildFlightModel)
 
 	crafts[id] = {
 		id = id,
@@ -351,7 +371,7 @@ local function ownerNameOf(record: CraftRecord): string
 	end
 	local model = record.model
 	local stored = if model then model:GetAttribute("OwnerName") else nil
-	return if type(stored) == "string" then stored else ""
+	return if type(stored) == "string" then stored else ownerNames[record.id] or "" -- CHANGED (Phase 6)
 end
 
 --[[
@@ -460,6 +480,61 @@ end
 
 function CraftService.remove(id: number)
 	removeCraft(id)
+end
+
+-- CHANGED (Phase 6): called synchronously (must not yield) when a craft is removed, before its model is destroyed
+-- and before CraftRemoved is sent; record.pocketId still names the pocket its model was in.
+function CraftService.onRemoving(listener: (record: CraftRecord) -> ())
+	table.insert(removingListeners, listener)
+end
+
+--[[
+	CHANGED (Phase 6): can this craft be boarded at all? Not debris, still has a command part (FlightModel's reference
+	block) and at least one seat. Only such crafts become real secondary crafts in an astronaut's pocket.
+]]
+function CraftService.isBoardable(record: CraftRecord): boolean
+	local sim = record.sim
+	if record.isDebris or sim == nil or record.state == "Destroyed" or record.state == "Prelaunch" then
+		return false
+	end
+	local design = sim.physics.design
+	if CraftDesign.rootBlock(design) == nil then
+		return false
+	end
+	for _, block in design.blocks do
+		local def = Parts.find(block.type)
+		if def and def.Seats > 0 then
+			return true
+		end
+	end
+	return false
+end
+
+--[[
+	CHANGED (Phase 6): builds the REAL model of a craft that is already in flight (its current design), placed with its
+	design origin at `origin`, with the usual attributes (CraftId, OwnerUserId, OwnerName, DesignName, Boarding = the
+	owner's current mode, State, FlightPocket = pocketId, PoseEpoch) and parented to `parent`. Used when an uncrewed
+	craft becomes a secondary craft in an astronaut's pocket (BubbleService). Sets record.model / origin / pocketId.
+]]
+function CraftService.buildFlightModel(record: CraftRecord, origin: CFrame, pocketId: number, parent: Instance): Model
+	local sim = record.sim :: FlightModel.Craft
+	local design = sim.physics.design
+	local model = CraftBuilder.build(design, "Real", origin, `Craft_{record.id}`)
+	local owner = Players:GetPlayerByUserId(record.ownerUserId)
+	local mode = if owner then owner:GetAttribute(BOARDING_ATTRIBUTE) else nil
+	model:SetAttribute("CraftId", record.id)
+	model:SetAttribute("OwnerUserId", record.ownerUserId)
+	model:SetAttribute("OwnerName", ownerNameOf(record))
+	model:SetAttribute("DesignName", record.design.name)
+	model:SetAttribute(BOARDING_ATTRIBUTE, if type(mode) == "string" then mode else GameConfig.DEFAULT_BOARDING)
+	model:SetAttribute("State", "Flying")
+	model:SetAttribute("PoseEpoch", 1)
+	model:SetAttribute("FlightPocket", pocketId)
+	model.Parent = parent
+	record.model = model
+	record.origin = origin
+	record.pocketId = pocketId
+	return model
 end
 
 return CraftService

@@ -100,10 +100,17 @@ local function pocketReference(player: Player): (number, number, Vec3d.Vec3d)
 	local pocketId = if type(id) == "number" then id else PocketService.BASE_POCKET_ID
 	if pocketId ~= PocketService.BASE_POCKET_ID then
 		local pocket = PocketService.flightPocket(pocketId)
-		local record = if pocket then CraftService.get(pocket.craftId) else nil
+		-- CHANGED (Phase 6): a craft pocket's primary craft (craftId is nil for an astronaut's solo pocket)
+		local craftId = if pocket then pocket.craftId else nil
+		local record = if craftId then CraftService.get(craftId) else nil
 		local sim = if record then record.sim else nil
 		if sim then
 			return pocketId, sim.state.bodyId, sim.state.pos
+		end
+		-- CHANGED (Phase 6): a solo pocket's reference
+		local bodyId, pos = PocketService.soloReference(pocketId, UniverseTime.now())
+		if bodyId and pos then
+			return pocketId, bodyId, pos
 		end
 	end
 	local base = PocketService.baseFrame()

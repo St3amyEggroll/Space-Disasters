@@ -55,7 +55,7 @@ return function(t: TestKit.Context)
 	end)
 
 	t.test("default keys are allowed and unique per context", function()
-		local seen: { [string]: { [string]: string } } = { Flight = {}, Build = {} }
+		local seen: { [string]: { [string]: string } } = { Flight = {}, EVA = {}, Build = {} } -- CHANGED (Phase 6)
 		local ids: { [string]: boolean } = {}
 		for _, action in SettingsSchema.ACTIONS do
 			t.expectTrue(SettingsSchema.isAllowedKey(action.default), action.id .. " default allowed")
@@ -67,7 +67,39 @@ return function(t: TestKit.Context)
 		end
 		t.expectEqual(#SettingsSchema.actionsFor("Flight"), 17)
 		t.expectEqual(#SettingsSchema.actionsFor("Build"), 9)
+		t.expectEqual(#SettingsSchema.actionsFor("EVA"), 8) -- CHANGED (Phase 6)
 		t.expectTrue(SettingsSchema.findAction("Teleport") == nil)
+	end)
+
+	-- CHANGED (Phase 6): the EVA keys (spacewalk jetpack, brake, light)
+	t.test("EVA defaults: WASD / Space / Ctrl jetpack, R brake, L light, E left for the seat prompts", function()
+		local expected: { [string]: string } = {
+			EvaForward = "W",
+			EvaBack = "S",
+			EvaLeft = "A",
+			EvaRight = "D",
+			EvaUp = "Space",
+			EvaDown = "LeftControl",
+			EvaBrake = "R",
+			EvaLight = "L",
+		}
+		local binds = SettingsSchema.defaultKeybinds()
+		for id, key in expected do
+			local action = SettingsSchema.findAction(id)
+			t.expectTrue(action ~= nil and action.context == "EVA", id .. " is an EVA action")
+			t.expectEqual(binds[id], key, id)
+		end
+		for _, action in SettingsSchema.actionsFor("EVA") do
+			t.expectTrue(action.default ~= "E", "E boards (seat prompts)")
+			t.expectTrue(action.default ~= "M" and action.default ~= "F2", "map and HUD keys keep working on EVA")
+		end
+		t.expectEqual(SettingsSchema.CONTEXTS[2], "EVA", "EVA is shown between Flight and Builder")
+		-- an EVA key may repeat a flight key (separate contexts), and a clash inside EVA falls back to defaults
+		local raw = SettingsSchema.defaultKeybinds()
+		raw.EvaBrake = "W"
+		local clean = SettingsSchema.sanitizeKeybinds(raw)
+		t.expectEqual(clean.EvaBrake, "R", "the later EVA action gives way")
+		t.expectEqual(clean.PitchDown, "W", "the flight context keeps its key")
 	end)
 
 	t.test("flight defaults are the Phase 2a keys", function()

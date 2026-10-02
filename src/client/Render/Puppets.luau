@@ -34,6 +34,10 @@
 	(other players' animations still play on this client) are copied onto the puppet's matching joints, retargeted
 	when the rigs differ (R6 character -> R15 puppet, or the stand-in); joints without a match stay neutral.
 	Aboard / seated puppets keep their fixed pose; a puppet that switches between the two resets its joints.
+
+	CHANGED (Phase 6): EVA puppets. Astronauts on EVA in another pocket are ground puppets at their true position,
+	including in an astronaut's own solo pocket: an INERTIAL pocket's frame is its free-falling reference
+	(Shared/Sim/PocketFrames) at our UT; SURFACE_ALIGNED solo pockets read their attributes like the base.
 ]]
 
 local Players = game:GetService("Players")
@@ -45,6 +49,7 @@ local CraftDesign = require(ReplicatedStorage.Shared.Craft.CraftDesign)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 local LineOfSight = require(ReplicatedStorage.Shared.Sim.LineOfSight) -- CHANGED (Ground puppets)
+local PocketFrames = require(ReplicatedStorage.Shared.Sim.PocketFrames) -- CHANGED (Phase 6): solo EVA pockets
 local Protocol = require(ReplicatedStorage.Shared.Net.Protocol)
 local StateBuffer = require(ReplicatedStorage.Shared.Net.StateBuffer) -- CHANGED (Ground puppets)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
@@ -501,6 +506,19 @@ local function setPocketReference(
 		end
 		local s = StateBuffer.lead(sampled, ut, INTERP_DELAY)
 		Frames.setReference(frame, s.bodyId, s.pos, Universe.pocketRotation(s.bodyId, s.pos, ut))
+		return true
+	end
+	-- CHANGED (Phase 6): an astronaut's solo pocket in space: its free-falling reference at our UT (PocketFrames)
+	if pocket:GetAttribute("FrameMode") == "INERTIAL" then
+		local ref = PocketFrames.fromAttributes(function(name: string): unknown
+			return pocket:GetAttribute(name)
+		end)
+		if ref == nil then
+			return false
+		end
+		local r = ref :: PocketFrames.Reference
+		local pos = PocketFrames.referenceAt(r, ut)
+		Frames.setReference(frame, r.bodyId, pos, PocketFrames.rotationAt(r, pos, ut))
 		return true
 	end
 	local x, y, z = pocket:GetAttribute("RefX"), pocket:GetAttribute("RefY"), pocket:GetAttribute("RefZ")

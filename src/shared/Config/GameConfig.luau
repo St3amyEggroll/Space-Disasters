@@ -158,6 +158,14 @@ local GameConfig = {
 	EVA_PROPELLANT_S = 60, -- s of full thrust
 	EVA_REBASE_DIST = 300,
 	EVA_SURFACE_HOP_G = 1.5, -- vertical jetpack thrust as a multiple of body g
+	-- CHANGED (Phase 6): EVA, bubbles and boarding (Shared/Sim/Eva, Shared/Sim/Bubbles, BubbleService)
+	EVA_REFILL_S = 4, -- s to refill an empty jetpack while seated in a craft
+	BASE_JOIN_HEIGHT = 150, -- m above the ground under which an astronaut within BASE_BUBBLE joins the base pocket
+	BUBBLE_SWITCH_RATIO = 0.5, -- an astronaut changes pocket when another pocket's nearest craft is this much closer
+	EVA_SURFACE_ENTER_HEIGHT = 30, -- m: a solo astronaut lower than this (and slow) gets a SURFACE_ALIGNED pocket
+	EVA_SURFACE_EXIT_HEIGHT = 300, -- m: ... and an INERTIAL one again above this
+	EVA_SURFACE_MAX_SPEED = 30, -- m/s relative to the ground for a SURFACE_ALIGNED pocket
+	EVA_SURFACE_EXIT_SPEED = 60, -- m/s: faster than this goes back to INERTIAL
 
 	--========================================================================
 	-- Time

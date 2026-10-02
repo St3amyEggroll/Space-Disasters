@@ -34,6 +34,10 @@
 	smoke trail, dust, re-entry heat from the interpolated state), and so is the real model of this pocket's primary
 	craft when this client does not fly it (passengers: their own rocket now has flames and smoke too). CraftStaged
 	and PartsDestroyed call Effects.blockEvent before the blocks are removed (separation puffs, explosions).
+
+	CHANGED (Phase 6): a pocket can hold several real crafts (bubbles). PocketController tells this renderer every
+	frame which crafts it posed in the local pocket (setLocalPocketCrafts): they get no cosmetic copy, and each of
+	them (not only the primary) is reported to Effects at that pose.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -110,6 +114,9 @@ local frameStats = { copies = 0, markers = 0, frozen = 0 }
 -- CHANGED (Phase 5): crafts on rails, sampled analytically instead of from the state buffer (RailsController
 -- fills this from CraftRails / CraftOffRails / CraftSpawned and mirrors SOI changes).
 local railsById: { [number]: Rails.Rails } = {}
+-- CHANGED (Phase 6): crafts whose REAL model PocketController posed in the local pocket this frame (craft id ->
+-- craft reference CFrame): primary and secondary crafts of a merged bubble get no cosmetic copy
+local localPocketCrafts: { [number]: CFrame } = {}
 
 --============================================================================
 -- Interpolation (CHANGED Phase 3: Shared/Net/StateBuffer)
@@ -160,6 +167,12 @@ end
 
 function RemoteCraftRenderer.railsOf(craftId: number): Rails.Rails?
 	return railsById[craftId]
+end
+
+-- CHANGED (Phase 6): PocketController hands over, every frame before rendering, the crafts it posed in the local
+-- pocket (craft id -> craft reference CFrame). The table is kept, not copied (it is reused every frame).
+function RemoteCraftRenderer.setLocalPocketCrafts(posed: { [number]: CFrame })
+	localPocketCrafts = posed
 end
 
 -- CHANGED (Phase 5): ids of every known craft (map view).
@@ -379,11 +392,14 @@ end
 	CHANGED (Phase 10): the real model of this pocket's primary craft, for passengers (and anyone in the pocket who
 	does not fly it). PocketController poses it from sampleState at the render UT; the effects use the same state.
 	The pilot's own "Local" report wins inside Effects.
+	CHANGED (Phase 6): every craft posed in this pocket (secondary crafts of a merged bubble too), at the pose
+	PocketController gave it this frame.
 ]]
 local function reportPocketCraft(entry: Entry, ctx: RenderContext.RenderContext)
+	local posed: CFrame? = localPocketCrafts[entry.id]
 	local pockets = Workspace:FindFirstChild("Pockets")
 	local pocket = if pockets then pockets:FindFirstChild(`Pocket_{ctx.pocketId}`) else nil
-	if pocket == nil or pocket:GetAttribute("PrimaryId") ~= entry.id then
+	if pocket == nil or posed == nil then
 		return
 	end
 	local crafts = pocket:FindFirstChild("Crafts")
@@ -401,7 +417,7 @@ local function reportPocketCraft(entry: Entry, ctx: RenderContext.RenderContext)
 		design = entry.design,
 		state = s,
 		burning = burningOf(entry, s),
-		craftCFrame = nil,
+		craftCFrame = posed,
 	})
 end
 
@@ -425,6 +441,8 @@ function RemoteCraftRenderer.render(ctx: RenderContext.RenderContext)
 		local inMyPocket = if entry.prelaunch
 			then ctx.pocketId == 0
 			else entry.pocketId ~= 0 and entry.pocketId == ctx.pocketId
+		-- CHANGED (Phase 6): a craft whose real model is posed here (it just joined this pocket) has no copy either
+		inMyPocket = inMyPocket or (localPocketCrafts[id] :: CFrame?) ~= nil
 		local state: State? = nil
 		if inMyPocket and not entry.prelaunch and #entry.design.blocks > 0 then
 			reportPocketCraft(entry, ctx) -- CHANGED (Phase 10)

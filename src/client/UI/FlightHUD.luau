@@ -888,15 +888,16 @@ function FlightHUD.create(callbacks: Callbacks): FlightHUD
 				`{keyText("ThrottleUp")}/{keyText("ThrottleDown")} throttle   {keyText("ThrottleFull")} full   {keyText(
 					"ThrottleCut"
 				)} cut`,
-				`{keyText("Stage")} stage   {keyText("ToggleSAS")} SAS   {keyText("ToggleGear")} legs   {keyText(
-					"LeaveSeat"
-				)} leave seat`,
+				-- CHANGED (Phase 6): leaving the seat in flight is a spacewalk (EVA)
+				`{keyText("Stage")} stage   {keyText(
+					"ToggleSAS"
+				)} SAS   {keyText("ToggleGear")} legs   {keyText("LeaveSeat")} get out`,
 				`{keyText("ToggleCamera")} camera   {keyText("MapView")} map   {keyText("ToggleHUD")} hide HUD`,
 				"Right-drag: orbit camera   Wheel: zoom",
 			}
 		else
 			lines = {
-				`{keyText("MapView")} map   {keyText("ToggleHUD")} hide HUD`,
+				`{keyText("LeaveSeat")} get out   {keyText("MapView")} map   {keyText("ToggleHUD")} hide HUD`, -- CHANGED (Phase 6)
 				"Right-drag: orbit camera   Wheel: zoom",
 			}
 		end

@@ -224,6 +224,13 @@ local function occupiedReferences(): { { bodyId: number, pos: Vec3d.Vec3d } }
 			table.insert(list, { bodyId = sim.state.bodyId, pos = sim.state.pos })
 		end
 	end
+	-- CHANGED (Phase 6): astronauts' solo pockets count too (debris near a spacewalker stays)
+	for id in PocketService.flightPockets() do
+		local bodyId, pos = PocketService.soloReference(id, UniverseTime.now())
+		if bodyId and pos and #PocketService.playersIn(id) > 0 then
+			table.insert(list, { bodyId = bodyId, pos = pos })
+		end
+	end
 	return list
 end
 
