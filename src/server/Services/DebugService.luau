@@ -165,8 +165,11 @@ local function toBase(player: Player)
 	end
 	-- CHANGED (Phase 6): from a flight pocket (a spacewalk too) like End Flight / Return to plot: a PocketTransfer
 	-- home (an astronaut's client places his character every frame and would undo a bare teleport)
+	-- CHANGED (Night review): seated in a flight pocket too (was: unseat, teleport and a bare PocketId = 0 without a
+	-- transfer or pin, so trackPlayers could flip the PocketId back for a moment and the client started an EVA at
+	-- the plot)
 	local pocketId = player:GetAttribute("PocketId")
-	if type(pocketId) == "number" and pocketId ~= 0 and humanoid.SeatPart == nil then
+	if type(pocketId) == "number" and pocketId ~= 0 then
 		FlightService.sendHome(player, pocketId)
 		return
 	end

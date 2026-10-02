@@ -32,7 +32,8 @@
 	       BUBBLE_SWITCH_RATIO times as far (Join; symmetric, so he never flips back and forth).
 	  4. Secondary crafts (crafts in a pocket that are not its primary): a crewed one farther than BUBBLE_SPLIT_DIST
 	     from the pocket anchor gets its own pocket (SplitCraft); an uncrewed one farther than that from the anchor
-	     AND from every astronaut in the pocket goes back to a cosmetic copy (DropCraft).
+	     AND from every astronaut in the pocket goes back to a cosmetic copy (DropCraft). CHANGED (Night review): not
+	     while an astronaut of that pocket is unsettled (his position is unknown: he may be right beside it).
 	  5. Uncrewed boardable crafts without a pocket (Phase 3: they only exist as simulation and copies) within
 	     BUBBLE_MERGE_DIST of an occupied pocket's anchor or of an astronaut in it become a real secondary craft there
 	     (AddCraft), so they can be boarded through their real seats. Debris (not boardable) never does.
@@ -115,10 +116,13 @@ type Index = {
 	astronautsIn: { [number]: { Astronaut } }, -- pocket id -> SETTLED astronauts on EVA there (positions are trusted)
 	astronautById: { [number]: Astronaut }, -- every astronaut (settled or not: presence only)
 	craftById: { [number]: Craft },
+	-- CHANGED (Night review): pockets with an astronaut whose position is not trusted yet (just transferred)
+	unsettledIn: { [number]: boolean },
 }
 
 local function buildIndex(snapshot: Snapshot): Index
-	local index: Index = { pockets = {}, craftsIn = {}, astronautsIn = {}, astronautById = {}, craftById = {} }
+	local index: Index =
+		{ pockets = {}, craftsIn = {}, astronautsIn = {}, astronautById = {}, craftById = {}, unsettledIn = {} }
 	for _, pocket in snapshot.pockets do
 		index.pockets[pocket.id] = pocket
 		index.craftsIn[pocket.id] = {}
@@ -137,6 +141,8 @@ local function buildIndex(snapshot: Snapshot): Index
 		-- is used for nothing until he settles
 		if astronaut.settled and index.astronautsIn[astronaut.pocketId] then
 			table.insert(index.astronautsIn[astronaut.pocketId], astronaut)
+		elseif not astronaut.settled then
+			index.unsettledIn[astronaut.pocketId] = true -- CHANGED (Night review)
 		end
 	end
 	return index
@@ -398,7 +404,9 @@ local function decideCrafts(snapshot: Snapshot, index: Index, touched: { [number
 					nearest = math.min(nearest, Vec3d.distance(astronaut.pos, craft.pos))
 				end
 			end
-			if nearest > SPLIT_DIST then
+			-- CHANGED (Night review): never while an astronaut in the pocket is unsettled: his position is unknown, and
+			-- he may be right next to the craft (just joined, or pinned by a repoint / rebase transfer)
+			if nearest > SPLIT_DIST and not index.unsettledIn[pocketId] then
 				add(actions, { kind = "DropCraft", craftId = craft.id })
 			end
 		end

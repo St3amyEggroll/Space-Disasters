@@ -11,6 +11,8 @@
 	PocketFrames reference; the base pocket is PocketService.baseFrame(). An astronaut's true position is his
 	replicated HumanoidRootPart through his pocket's frame; his velocity the pocket reference's velocity plus the
 	replicated assembly velocity (the EVA client keeps that equal to his velocity relative to the pocket).
+	CHANGED (Night review): both are client-authoritative, so a sample is only trusted (settled) when it follows from
+	his last trusted one (Eva.plausibleMove: no teleports, no absurd velocities); an untrusted one decides nothing.
 
 	Transfers (spec 7.5 transfer protocol, through FlightService.sendTransfer, which also pins the player's PocketId
 	for a moment because the replicated position lags): M = Frames.relativeTransform(old frame, new frame). Unseated
@@ -95,6 +97,8 @@ export type Astronaut = {
 local BubbleService = {}
 
 local accumulator = 0
+-- CHANGED (Night review): each astronaut's last trusted replicated sample (Eva.plausibleMove), body-relative
+local trusted: { [Player]: Eva.Sample } = {}
 
 --============================================================================
 -- States and frames
@@ -612,8 +616,21 @@ local function check()
 	local astronauts: { Bubbles.Astronaut } = {}
 	for _, player in Players:GetPlayers() do
 		local astronaut = astronautOf(player, ut)
+		if astronaut == nil then
+			trusted[player] = nil -- CHANGED (Night review): off EVA: the next EVA starts a new history
+		end
 		if astronaut and not skip[astronaut.pocket.id] then
 			local a = astronaut :: Astronaut
+			-- CHANGED (Night review): his replicated motion is client-authoritative; a sample that does not follow
+			-- from the last trusted one (Eva.plausibleMove: a teleport, an absurd velocity) is used for nothing
+			if a.settled then
+				local sample: Eva.Sample = Eva.new(a.bodyId, a.pos, a.vel, ut)
+				if Eva.plausibleMove(trusted[player], sample) then
+					trusted[player] = sample
+				else
+					a.settled = false
+				end
+			end
 			ctx.astronauts[player.UserId] = a
 			table.insert(astronauts, {
 				userId = player.UserId,
@@ -835,9 +852,13 @@ end
 function BubbleService.Init()
 	CraftService.onRemoving(onCraftRemoving)
 	CrewService.setSeatReach(BubbleService.seatInReach)
+	CrewService.setEvaCheck(BubbleService.isEva) -- CHANGED (Night review): one Notify per failed EVA boarding
 end
 
 function BubbleService.Start()
+	Players.PlayerRemoving:Connect(function(player: Player)
+		trusted[player] = nil -- CHANGED (Night review)
+	end)
 	RunService.Heartbeat:Connect(function(dt: number)
 		accumulator += dt
 		if accumulator < CHECK_INTERVAL then

@@ -168,8 +168,10 @@ local function onCaptureInput(input: InputObject, _gameProcessed: boolean)
 	if key == Enum.KeyCode.Escape or key == Keybinds.UNBOUND then
 		return -- Escape cancels through the escape stack
 	end
-	if not SettingsSchema.isAllowedKey(key.Name) then
+	-- CHANGED (Night review): isKeyAllowedFor: also a key reserved where the action listens (E on EVA: boarding)
+	if not SettingsSchema.isKeyAllowedFor(action, key.Name) then
 		local reserved = table.find(SettingsSchema.RESERVED_KEYS, key.Name) ~= nil
+			or SettingsSchema.isAllowedKey(key.Name)
 		Kit.toast(
 			string.format(if reserved then RESERVED_TOAST else UNBINDABLE_TOAST, Keybinds.keyLabel(key)),
 			"Warning"

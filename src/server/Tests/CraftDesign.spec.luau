@@ -151,6 +151,25 @@ return function(t: TestKit.Context)
 		local root = CraftDesign.rootBlock(design)
 		t.expectTrue(root ~= nil and root.type == "pod_mk1")
 	end)
+	-- CHANGED (Night review): the chase camera's craft size about its orbit centre (the centre of mass)
+	t.test("reachFrom: the farthest block corner from a point", function()
+		local design = Fixtures.sanity()
+		local minV, maxV = CraftDesign.bounds(design)
+		local grid = CraftDesign.GRID
+		local middle = (minV + maxV) / 2 * grid
+		local halfDiagonal = (maxV - minV).Magnitude * grid / 2
+		t.expectTrue(CraftDesign.reachFrom(design, middle) <= halfDiagonal + 1e-6, "inside the bounding sphere")
+		-- from the bottom of the stack the top corners are much farther than half the diagonal
+		local low = Vector3.new(middle.X, minV.Y * grid, middle.Z)
+		t.expectTrue(CraftDesign.reachFrom(design, low) > halfDiagonal * 1.5, "an off-centre point reaches farther")
+		-- one block: exactly the distance to its far corner
+		local one = CraftDesign.new("One")
+		table.insert(one.blocks, { id = 1, type = "pod_mk1", gx = 0, gy = 0, gz = 0, rot = 0 })
+		local size = CraftDesign.blockSize(one.blocks[1]) * grid
+		t.expectNear(CraftDesign.reachFrom(one, Vector3.zero), size.Magnitude, 1e-6, "from a corner")
+		t.expectNear(CraftDesign.reachFrom(one, size / 2), size.Magnitude / 2, 1e-6, "from the centre")
+		t.expectEqual(CraftDesign.reachFrom(CraftDesign.new("Empty"), Vector3.zero), 0, "empty")
+	end)
 	-- CHANGED (Phase 2a remodel): removed parts (Crew Cabin, Ladder) are dropped from old saves
 	t.test("old saves with removed parts still load", function()
 		local text = '{"v":1,"name":"Old","blocks":[{"id":1,"t":"pod_mk1","x":0,"y":0,"z":0,"r":0},'

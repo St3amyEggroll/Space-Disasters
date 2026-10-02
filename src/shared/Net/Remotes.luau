@@ -53,7 +53,9 @@ local DEFINITIONS: { [string]: Kind } = {
 	CraftRemoved = "Reliable", -- (craftId)
 	CraftStaged = "Reliable", -- (craftId, stageIndex, ut, ignited: {number}, decoupled: {number}, debris: {{craftId, blockIds}})
 	PartsDestroyed = "Reliable", -- (craftId, blockIds: {number}, ut, pieces: {{craftId, blockIds}})
-	PocketTransfer = "Reliable", -- (transferId, sourcePocket, destPocket, M: CFrame, frameEpoch)
+	PocketTransfer = "Reliable", -- (transferId, sourcePocket, destPocket, M: CFrame, frameEpoch, absolute: CFrame?)
+	--   CHANGED (Night review): absolute = where the server put the character (sendHome); an unseated character is
+	--   placed there instead of being moved by M (M came from the server's lagging copy of its position)
 	PocketTransferAck = "Reliable", -- (transferId)
 	PilotState = "Unreliable", -- client -> server, Protocol.encodePilotState (20 Hz)
 	CraftStates = "Unreliable", -- server -> client, Protocol.encodeStates batches

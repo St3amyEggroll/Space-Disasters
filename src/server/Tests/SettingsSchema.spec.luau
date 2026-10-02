@@ -229,9 +229,10 @@ return function(t: TestKit.Context)
 		t.expectEqual(values.keybinds.PitchDown, "K", "the earlier action keeps the key")
 		t.expectEqual(values.keybinds.Stage, "Space", "the later action gets its default")
 		-- a swap is not a duplicate
-		local swapped = SettingsSchema.sanitize({ keybinds = { Stage = "M", MapView = "Space" } })
-		t.expectEqual(swapped.keybinds.Stage, "M")
-		t.expectEqual(swapped.keybinds.MapView, "Space")
+		-- CHANGED (Night review): was Stage / MapView; MapView on Space now clashes with EvaUp on EVA
+		local swapped = SettingsSchema.sanitize({ keybinds = { Stage = "T", ToggleSAS = "Space" } })
+		t.expectEqual(swapped.keybinds.Stage, "T")
+		t.expectEqual(swapped.keybinds.ToggleSAS, "Space")
 	end)
 
 	t.test("a duplicate that survives the default resets that context only", function()
@@ -242,6 +243,112 @@ return function(t: TestKit.Context)
 			t.expectEqual(values.keybinds[action.id], action.default, "flight reset: " .. action.id)
 		end
 		t.expectEqual(values.keybinds.RotateY, "K", "the build context keeps its keys")
+	end)
+
+	-- CHANGED (Night review): on EVA the EVA keys, MapView / ToggleHUD and the seat prompts' E all listen
+	t.test("EVA: map view and HUD keys count there, E is reserved", function()
+		t.expectTrue(SettingsSchema.sharesKeys("EvaLight", "MapView"), "MapView listens on EVA")
+		t.expectTrue(SettingsSchema.sharesKeys("ToggleHUD", "EvaBrake"), "ToggleHUD listens on EVA")
+		t.expectTrue(SettingsSchema.sharesKeys("MapView", "Stage"), "and in flight")
+		t.expectTrue(not SettingsSchema.sharesKeys("EvaLight", "ToggleSAS"), "other flight keys do not")
+		t.expectTrue(not SettingsSchema.sharesKeys("EvaLight", "EvaLight"), "not with itself")
+		t.expectTrue(not SettingsSchema.sharesKeys("MapView", "SymmetryMirror"), "nor with the builder")
+		t.expectTrue(not SettingsSchema.isKeyAllowedFor("EvaBrake", "E"), "E boards on EVA")
+		t.expectTrue(not SettingsSchema.isKeyAllowedFor("MapView", "E"), "MapView listens on EVA too")
+		t.expectTrue(SettingsSchema.isKeyAllowedFor("RollLeft", "E"), "flight-only actions may use E")
+		t.expectTrue(not SettingsSchema.isKeyAllowedFor("EvaBrake", "Escape"), "reserved everywhere")
+		t.expectTrue(not SettingsSchema.isKeyAllowedFor("Teleport", "K"), "unknown action")
+		-- sanitizing
+		local clean = SettingsSchema.sanitizeKeybinds({ EvaLight = "M", EvaBrake = "E", EvaUp = "F2" })
+		t.expectEqual(clean.EvaLight, "L", "an EVA action on MapView's key gives way")
+		t.expectEqual(clean.EvaBrake, "R", "an EVA action on E gets its default")
+		t.expectEqual(clean.EvaUp, "Space", "an EVA action on ToggleHUD's key gives way")
+		t.expectEqual(clean.MapView, "M")
+		t.expectEqual(clean.ToggleHUD, "F2")
+		local onE = SettingsSchema.sanitizeKeybinds({ MapView = "E" })
+		t.expectEqual(onE.MapView, "M", "MapView may not be E")
+		t.expectEqual(onE.RollLeft, "E")
+		-- old saved data: MapView on an EVA default key. The EVA defaults still meet it, so MapView gives way.
+		local old = SettingsSchema.sanitizeKeybinds({ MapView = "L", Stage = "K" })
+		t.expectEqual(old.EvaLight, "L")
+		t.expectEqual(old.MapView, "M", "MapView back to its default")
+		t.expectEqual(old.Stage, "K", "the rest of the flight keys are kept")
+		-- ... and if M is taken in flight too, the flight keys reset
+		local worse = SettingsSchema.sanitizeKeybinds({ MapView = "L", Stage = "M" })
+		t.expectEqual(worse.EvaLight, "L")
+		t.expectEqual(worse.MapView, "M")
+		t.expectEqual(worse.Stage, "Space", "flight reset")
+		for _, context: SettingsSchema.Context in SettingsSchema.CONTEXTS do
+			local used: { [string]: string } = {}
+			for _, action in SettingsSchema.ACTIONS do
+				for _, listened in SettingsSchema.listensIn(action.id) do
+					if listened == context then
+						local key = worse[action.id]
+						t.expectTrue(used[key] == nil, `{context}: {action.id} and {used[key]} share {key}`)
+						used[key] = action.id
+					end
+				end
+			end
+		end
+		-- the defaults are consistent with these rules
+		local defaults = SettingsSchema.defaultKeybinds()
+		for _, action in SettingsSchema.ACTIONS do
+			t.expectEqual(SettingsSchema.sanitizeKeybinds(defaults)[action.id], action.default, action.id)
+		end
+	end)
+
+	-- CHANGED (Night review): the settings screen's rebind (Settings.setKeybind)
+	t.test("rebind swaps with every action listening at the same time", function()
+		local binds = SettingsSchema.defaultKeybinds()
+		local ok, swapped = SettingsSchema.rebind(binds, "Stage", "T")
+		t.expectTrue(ok)
+		t.expectEqual(swapped, "ToggleSAS", "flight: swapped with ToggleSAS")
+		t.expectEqual(binds.ToggleSAS, "Space")
+		t.expectEqual(binds.RotateX, "T", "the builder keeps its T")
+		-- Stage onto M would hand MapView Space, which EvaUp holds on EVA: refused
+		binds = SettingsSchema.defaultKeybinds()
+		t.expectTrue(not (SettingsSchema.rebind(binds, "Stage", "M")), "MapView may not take EvaUp's Space")
+		t.expectEqual(binds.Stage, "Space", "unchanged")
+		-- an EVA action onto MapView's key: swapped across contexts
+		binds = SettingsSchema.defaultKeybinds()
+		ok, swapped = SettingsSchema.rebind(binds, "EvaLight", "M")
+		t.expectTrue(ok)
+		t.expectEqual(swapped, "MapView", "swapped across contexts")
+		t.expectEqual(binds.EvaLight, "M")
+		t.expectEqual(binds.MapView, "L")
+		-- MapView onto W: PitchDown (flight) and EvaForward (EVA) both hold W and both take M
+		binds = SettingsSchema.defaultKeybinds()
+		ok = SettingsSchema.rebind(binds, "MapView", "W")
+		t.expectTrue(ok)
+		t.expectEqual(binds.MapView, "W")
+		t.expectEqual(binds.PitchDown, "M")
+		t.expectEqual(binds.EvaForward, "M")
+		-- refused (and nothing changes): E for anything listening on EVA, reserved keys, a swap that would hand E to
+		-- MapView, a swap that would clash for the other action
+		binds = SettingsSchema.defaultKeybinds()
+		t.expectTrue(not (SettingsSchema.rebind(binds, "EvaBrake", "E")), "E on EVA")
+		t.expectTrue(not (SettingsSchema.rebind(binds, "ToggleHUD", "E")), "ToggleHUD listens on EVA")
+		t.expectTrue(not (SettingsSchema.rebind(binds, "Stage", "Escape")), "reserved")
+		t.expectTrue(not (SettingsSchema.rebind(binds, "RollLeft", "M")), "MapView would get RollLeft's E")
+		for _, action in SettingsSchema.ACTIONS do
+			t.expectEqual(binds[action.id], action.default, `unchanged: {action.id}`)
+		end
+		binds.MapView = "K"
+		binds.ToggleSAS = "J"
+		binds.EvaLight = "J" -- fine: ToggleSAS does not listen on EVA
+		local snapshot = table.clone(binds)
+		ok = SettingsSchema.rebind(binds, "EvaLight", "K")
+		t.expectTrue(not ok, "MapView cannot take J: ToggleSAS holds it in flight")
+		for id, key in snapshot do
+			t.expectEqual(binds[id], key, `unchanged: {id}`)
+		end
+		-- after any successful rebind the binds are what sanitizing keeps
+		binds = SettingsSchema.defaultKeybinds()
+		SettingsSchema.rebind(binds, "EvaLight", "F2")
+		local clean = SettingsSchema.sanitizeKeybinds(binds)
+		for _, action in SettingsSchema.ACTIONS do
+			t.expectEqual(clean[action.id], binds[action.id], `stable: {action.id}`)
+		end
 	end)
 
 	t.test("one key may serve a flight and a build action", function()
@@ -312,8 +419,10 @@ return function(t: TestKit.Context)
 		values.hints = false
 		values.musicVolume = 0
 		values.effectsVolume = 1
-		values.keybinds.Stage = "M"
-		values.keybinds.MapView = "Space"
+		-- CHANGED (Night review): was Stage = M / MapView = Space; MapView on Space now clashes with EvaUp on EVA
+		values.keybinds.Stage = "T"
+		values.keybinds.ToggleSAS = "Space"
+		values.keybinds.MapView = "K"
 		values.keybinds.RotateY = "Q"
 		local decoded = SettingsSchema.decode(SettingsSchema.encode(values))
 		expectSameValues(decoded, values, "round trip")

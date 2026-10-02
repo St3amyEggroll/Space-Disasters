@@ -235,6 +235,26 @@ function CraftDesign.bounds(design: Design): (Vector3, Vector3)
 	return minV, maxV
 end
 
+--[[
+	CHANGED (Night review): the largest distance (studs) from `centre` (design-local, studs) to any corner of any
+	block: the radius of the sphere about that point that holds the whole craft. The chase camera orbits the centre
+	of mass, so its zoom cap needs this, not half the bounding box's diagonal (that is only right about the box's
+	centre; an off-centre CoM let tall stacks reach past the true-scale zone). 0 for an empty design.
+]]
+function CraftDesign.reachFrom(design: Design, centre: Vector3): number
+	local best = 0
+	for _, block in design.blocks do
+		local lo = CraftDesign.blockMin(block) * GameConfig.GRID_SIZE - centre
+		local hi = CraftDesign.blockMax(block) * GameConfig.GRID_SIZE - centre
+		-- the farthest corner takes, on each axis, the end farther from the centre
+		local x = math.max(math.abs(lo.X), math.abs(hi.X))
+		local y = math.max(math.abs(lo.Y), math.abs(hi.Y))
+		local z = math.max(math.abs(lo.Z), math.abs(hi.Z))
+		best = math.max(best, math.sqrt(x * x + y * y + z * z))
+	end
+	return best
+end
+
 function CraftDesign.findBlock(design: Design, id: number): Block?
 	for _, block in design.blocks do
 		if block.id == id then

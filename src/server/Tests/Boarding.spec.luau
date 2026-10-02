@@ -62,7 +62,12 @@ return function(t: TestKit.Context)
 	t.test("prompts only for slow crafts in another pocket, seen from the base", function()
 		t.expectTrue(Boarding.offersPrompts(BASE, FLIGHT_POCKET, false, false, 0))
 		t.expectTrue(not Boarding.offersPrompts(FLIGHT_POCKET, 3, false, false, 0), "player not in the base")
-		t.expectTrue(not Boarding.offersPrompts(BASE, BASE, false, false, 0), "craft in the base pocket")
+		-- CHANGED (Night review): a flying craft announced in pocket 0 has no real model (its pocket was released,
+		-- e.g. landed near the base after its crew went home): it can be boarded, the server builds the model
+		t.expectTrue(Boarding.offersPrompts(BASE, BASE, false, false, 0), "uncrewed craft without a real model")
+		t.expectTrue(Boarding.withoutRealModel(BASE), "pocket 0: no real model")
+		t.expectTrue(not Boarding.withoutRealModel(FLIGHT_POCKET), "a flight pocket holds its real model")
+		t.expectTrue(not Boarding.offersPrompts(BASE, BASE, true, false, 0), "pad craft in the base pocket")
 		t.expectTrue(not Boarding.offersPrompts(BASE, FLIGHT_POCKET, true, false, 0), "pad craft (real model shown)")
 		t.expectTrue(not Boarding.offersPrompts(BASE, FLIGHT_POCKET, false, true, 0), "debris")
 		t.expectTrue(
