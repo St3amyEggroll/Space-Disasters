@@ -67,6 +67,22 @@ local function groundRadius(bodyId: number, d: Vec3d): number
 end
 
 return function(t: TestKit.Context)
+	-- CHANGED (Night review): Render/Effects only looks for launch dust below SurfaceHeight.bounds' highest ground
+	t.test("heightmap: the drawn ground never rises above SurfaceHeight.bounds", function()
+		for _, bodyId in { HOMEWORLD, MOON } do
+			local low, high = SurfaceHeight.bounds(bodyId)
+			local reliefLow, reliefHigh = Relief.bounds(bodyId)
+			t.expectEqual(low, reliefLow, "lowest ground matches Relief")
+			t.expectEqual(high, reliefHigh, "highest ground matches Relief")
+			local radius = Bodies.get(bodyId).Radius
+			for i = 0, SPHERE_SAMPLES - 1 do
+				local h = groundRadius(bodyId, fibonacci(i, SPHERE_SAMPLES)) - radius
+				t.expectTrue(h <= high + 1e-6, `ground {h} m above the highest bound {high} m`)
+			end
+		end
+		t.expectTrue(select(2, SurfaceHeight.bounds(HOMEWORLD)) > 1000, "Earth has ground far above sea level")
+	end)
+
 	t.test("heightmap: deterministic, bounded, oceans at sea level", function()
 		local _, earthMax = Relief.bounds(HOMEWORLD)
 		local moonMin, moonMax = Relief.bounds(MOON)

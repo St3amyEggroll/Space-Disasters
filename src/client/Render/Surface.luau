@@ -19,6 +19,15 @@
 	CHANGED (Phase 8): it is only shown while the terrain under it is drawn at true scale (a scaled-down terrain band
 	would be drawn in front of it).
 
+	CHANGED (Night review): mobile / quality pass. In a flight pocket within SITE_VIEW_DISTANCE of the site the
+	pocket frame moves every frame, and the copy's 1004 parts were re-posed every frame (1004 CFrames + a BulkMoveTo).
+	Now the copy is one assembly: its Ground plate (the PrimaryPart) is the only anchored part and every other part is
+	welded to it (unanchored, Massless, no collision / queries / touches), so only the root's CFrame is written. By
+	tier: the Plots (612 parts) and the Decor (lamps, tanks, control building, street lines: 93) are only in the copy
+	on High, and the site's lights only shine on High (Render/SiteLights, which also handles the real base). A tier
+	change rebuilds the copy the next time it is shown. Props get a shadow radius and a smaller radius / part cap while
+	the pocket frame moves, per tier (PROPS_BY_TIER, SurfaceProps.setDetail).
+
 	Positions are kept in doubles relative to their body and converted with Frames only after the reference is
 	subtracted (invariant I1).
 
@@ -33,13 +42,13 @@
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Workspace = game:GetService("Workspace")
 
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local HomeBase = require(ReplicatedStorage.Shared.Sites.HomeBase)
 local Quality = require(script.Parent.Quality) -- CHANGED (Phase 8)
 local RenderContext = require(script.Parent.RenderContext)
+local SiteLights = require(script.Parent.SiteLights) -- CHANGED (Night review)
 local SurfaceProps = require(script.Parent.SurfaceProps)
 local TerrainCollision = require(script.Parent.TerrainCollision) -- CHANGED (Phase 8)
 local TerrainMesh = require(script.Parent.TerrainMesh) -- CHANGED (Phase 8)
@@ -61,13 +70,38 @@ local PREBUILD_FACTOR = 1.4 -- CHANGED (Phase 8): build the terrain below this x
 
 -- CHANGED (Phase 8): props per Quality tier: draw radius (m; at most ~0.7 x TerrainMesh's near-disc radius, so props
 -- only stand on true-scale terrain), part cap and density (share of Biome's props per hectare)
-local PROPS_BY_TIER: { [string]: { radius: number, maxParts: number, density: number } } = {
-	Low = { radius = 400, maxParts = 300, density = 0.4 },
-	Medium = { radius = 520, maxParts = 600, density = 0.7 },
-	High = { radius = 650, maxParts = 1000, density = 1 },
+-- CHANGED (Night review): + shadowRadius (m; props nearer than this cast shadows) and the radius / part cap while the
+-- pocket frame moves (every drawn prop part is re-posed each frame then)
+type PropDetail = {
+	radius: number,
+	maxParts: number,
+	density: number,
+	shadowRadius: number,
+	movingRadius: number,
+	movingMaxParts: number,
 }
-
-local BULK_MOVE_MODE = Enum.BulkMoveMode.FireCFrameChanged
+local PROPS_BY_TIER: { [string]: PropDetail } = {
+	Low = { radius = 400, maxParts = 300, density = 0.4, shadowRadius = 0, movingRadius = 250, movingMaxParts = 120 },
+	Medium = {
+		radius = 520,
+		maxParts = 600,
+		density = 0.7,
+		shadowRadius = 100,
+		movingRadius = 320,
+		movingMaxParts = 240,
+	},
+	High = {
+		radius = 650,
+		maxParts = 1000,
+		density = 1,
+		shadowRadius = 220,
+		movingRadius = 500,
+		movingMaxParts = 500,
+	},
+}
+-- CHANGED (Night review): launch-site copy content that is only built on this tier (HomeBase top-level folders)
+local SITE_FULL_TIER = "High"
+local SITE_FULL_ONLY: { string } = { "Plots", "Decor" }
 --============================================================================
 
 local Surface = {}
@@ -99,21 +133,34 @@ end
 local root: Folder? = nil
 
 local siteModel: Model? = nil
-local siteParts: { BasePart } = {}
-local siteBaseCFrames: { CFrame } = {}
-local siteCFrames: { CFrame } = {}
+-- CHANGED (Night review): one anchored root (the Ground plate) with every other part welded to it (was every part
+-- anchored and moved with BulkMoveTo)
+local siteRoot: BasePart? = nil
+local siteRootBase: CFrame = CFrame.identity -- the root's base-pocket CFrame
 local siteLastTransform: CFrame? = nil
+local siteUntrackLights: (() -> ())? = nil
 
 --============================================================================
 -- Launch site copy
 --============================================================================
-local function buildSiteCopy(): Model
+-- CHANGED (Night review): the copy for a Quality tier, as one welded assembly; returns the model and its root.
+local function buildSiteCopy(tier: string): (Model, BasePart)
 	local model = HomeBase.build()
 	model.Name = "HomeBaseView"
+	if tier ~= SITE_FULL_TIER then
+		for _, name in SITE_FULL_ONLY do
+			local folder = model:FindFirstChild(name)
+			if folder then
+				folder:Destroy()
+			end
+		end
+	end
+	local rootPart = model.PrimaryPart
+	assert(rootPart, "HomeBase.build() has no PrimaryPart")
+	local rootCFrame = rootPart.CFrame
 	local doomed: { Instance } = {}
 	for _, d in model:GetDescendants() do
 		if d:IsA("BasePart") then
-			d.Anchored = true
 			d.CanCollide = false
 			d.CanQuery = false
 			d.CanTouch = false
@@ -122,9 +169,19 @@ local function buildSiteCopy(): Model
 			if d:IsA("SpawnLocation") then
 				d.Enabled = false
 			end
-			table.insert(siteParts, d)
-			table.insert(siteBaseCFrames, d.CFrame)
-			table.insert(siteCFrames, d.CFrame)
+			if d == rootPart then
+				d.Anchored = true
+			else
+				-- explicit offsets (not a WeldConstraint) so the joint is right whatever the copy's parent is
+				d.Anchored = false
+				local weld = Instance.new("Weld")
+				weld.Name = "SiteWeld"
+				weld.Part0 = rootPart
+				weld.Part1 = d
+				weld.C0 = rootCFrame:ToObjectSpace(d.CFrame)
+				weld.C1 = CFrame.identity
+				weld.Parent = d
+			end
 		elseif d:IsA("ProximityPrompt") or d:IsA("ClickDetector") or d:IsA("BaseScript") then
 			table.insert(doomed, d)
 		end
@@ -132,7 +189,7 @@ local function buildSiteCopy(): Model
 	for _, d in doomed do
 		d:Destroy()
 	end
-	return model
+	return model, rootPart
 end
 
 local function hideSite()
@@ -141,6 +198,23 @@ local function hideSite()
 		model.Parent = nil
 		siteLastTransform = nil
 	end
+end
+
+-- CHANGED (Night review): a tier change drops the copy; it is rebuilt for the new tier the next time it is shown.
+local function destroySite()
+	local model = siteModel
+	if model == nil then
+		return
+	end
+	local untrack = siteUntrackLights
+	if untrack then
+		untrack()
+	end
+	siteUntrackLights = nil
+	model:Destroy()
+	siteModel = nil
+	siteRoot = nil
+	siteLastTransform = nil
 end
 
 local function updateSite(ctx: RenderContext.RenderContext, surfaceMode: boolean)
@@ -155,22 +229,23 @@ local function updateSite(ctx: RenderContext.RenderContext, surfaceMode: boolean
 		hideSite()
 		return
 	end
-	local model = siteModel
-	if model == nil then
-		model = buildSiteCopy()
-		siteModel = model
+	local model, rootPart = siteModel, siteRoot
+	if model == nil or rootPart == nil then
+		local built, builtRoot = buildSiteCopy(Quality.tier()) -- CHANGED (Night review)
+		model, rootPart = built, builtRoot
+		siteModel, siteRoot = built, builtRoot
+		siteRootBase = builtRoot.CFrame
+		siteUntrackLights = SiteLights.track(built) -- CHANGED (Night review): lights on High only
 	end
-	assert(model)
+	assert(model and rootPart)
 	local m = siteTransform(ctx.frame, ctx.ut)
 	if model.Parent ~= parent then
 		model.Parent = parent
 		siteLastTransform = nil
 	end
 	if siteLastTransform ~= m then
-		for i, base in siteBaseCFrames do
-			siteCFrames[i] = m * base
-		end
-		Workspace:BulkMoveTo(siteParts, siteCFrames, BULK_MOVE_MODE)
+		-- CHANGED (Night review): only the root moves; the welded parts follow (was 1004 CFrames + BulkMoveTo)
+		rootPart.CFrame = m * siteRootBase
 		siteLastTransform = m
 	end
 end
@@ -180,9 +255,17 @@ end
 --============================================================================
 
 -- CHANGED (Phase 8): prop detail follows the Quality tier.
+-- CHANGED (Night review): + shadow radius and the moving-pocket radius / part cap.
 local function applyPropTier(tier: string)
 	local props = PROPS_BY_TIER[tier] or PROPS_BY_TIER.High
-	SurfaceProps.setDetail(props.radius, props.maxParts, props.density)
+	SurfaceProps.setDetail(
+		props.radius,
+		props.maxParts,
+		props.density,
+		props.shadowRadius,
+		props.movingRadius,
+		props.movingMaxParts
+	)
 end
 
 function Surface.init(parent: Folder)
@@ -194,6 +277,7 @@ function Surface.init(parent: Folder)
 	applyPropTier(Quality.tier())
 	Quality.onChanged(function(tier: Quality.Tier)
 		applyPropTier(tier)
+		destroySite() -- CHANGED (Night review): the copy's content depends on the tier
 	end)
 end
 
@@ -232,6 +316,8 @@ Surface._test = table.freeze({
 	siteTransform = siteTransform,
 	siteFrame = SITE_FRAME,
 	sitePos = SITE_POS,
+	buildSiteCopy = buildSiteCopy, -- CHANGED (Night review)
+	PROPS_BY_TIER = PROPS_BY_TIER, -- CHANGED (Night review)
 })
 
 return table.freeze(Surface)

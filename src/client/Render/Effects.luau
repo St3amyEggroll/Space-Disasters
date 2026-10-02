@@ -60,6 +60,12 @@
 	  * Separation: a pyro flash, a white puff and sparks. Smoke trail: warm where it leaves the flame, greyer for
 	    boosters, column length per tier. Dust: emitters per ring per tier. Vapour cone: + a puffy collar (Medium+).
 	  * F3 shows the tier.
+
+	CHANGED (Night review): mobile / quality pass.
+	  * Plumes are budgeted per tier (EffectsMath.BUDGETS plumes): over-budget engines get core + glow beams only
+	    (Render/Plumes), and at most budget.plumeEvents ignition / cut-off bursts are spawned per frame.
+	  * Launch / landing dust is looked for below the body's highest ground (SurfaceHeight.bounds) plus the dust
+	    height, so it shows on hills and mountains; its colour is sampled straight below the craft.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -479,6 +485,7 @@ local quality = 1 -- Quality.scale(): particle rate / burst count multiplier
 local tierApplied = false
 local tierConnection: RBXScriptConnection? = nil
 local heatLightsUsed = 0 -- this frame
+local plumeEventsLeft = 0 -- CHANGED (Night review): Ignite / Cutoff bursts still allowed this frame
 
 -- Stats (F3)
 local stats = { crafts = 0, trails = 0, dust = 0, aero = 0, bursts = 0, tints = 0 }
@@ -1318,6 +1325,7 @@ local function applyTier()
 		halo = budget.plumeHalo,
 		machDiamonds = budget.machDiamonds,
 		flicker = budget.plumeFlicker,
+		full = budget.plumes, -- CHANGED (Night review): engines drawn in full per frame, the rest core + glow
 	})
 	-- continuous slots: released now, taken again within the new caps on the next step
 	for _, record in records do
@@ -2010,15 +2018,25 @@ local function processCraft(record: CraftRecord, report: CraftReport, ctx: Rende
 	if model.Parent ~= nil then
 		Plumes.update(model, report.burning, pressure, ctx.dt, eventScratch)
 	end
-	if #eventScratch > 0 then
+	-- CHANGED (Night review): at most budget.plumeEvents bursts per frame (a 100-engine cluster lighting at once
+	-- spawned 100 bursts in one frame, recycling the same few pooled bursts over and over)
+	if #eventScratch > 0 and plumeEventsLeft > 0 then
 		local loose = looseVelocity(record) -- CHANGED (Effects v2)
 		for _, event in eventScratch do
+			if plumeEventsLeft <= 0 then
+				break
+			end
+			plumeEventsLeft -= 1
 			plumeEvent(event, loose, pressure)
 		end
 	end
 
 	-- Burning engines in workspace
-	local nearGround = altitude < EffectsMath.DUST_MAX_HEIGHT + 2 * info.half.Magnitude + DUST_CHECK_MARGIN
+	-- CHANGED (Night review): above the body's highest ground, not sea level (Phase 8 relief: hills and mountains up to
+	-- 1800 m on Earth had no launch / landing dust); the exact terrain height below decides the rest
+	local _, groundTop = SurfaceHeight.bounds(s.bodyId)
+	local nearGround = altitude - math.max(groundTop, 0)
+		< EffectsMath.DUST_MAX_HEIGHT + 2 * info.half.Magnitude + DUST_CHECK_MARGIN
 	local height, up: Vec3d?, upWs = 0, nil, Vector3.yAxis
 	if nearGround then
 		local h, normal = SurfaceHeight.height(s.bodyId, s.pos)
@@ -2085,7 +2103,9 @@ local function processCraft(record: CraftRecord, report: CraftReport, ctx: Rende
 		record.dustColorTimer -= ctx.dt
 		if record.dustColorTimer <= 0 then
 			record.dustColorTimer = DUST_COLOR_INTERVAL
-			record.dustColor = dustColorFor(s.bodyId, up :: Vec3d)
+			-- CHANGED (Night review): the ground colour straight below the craft (was sampled along the terrain
+			-- triangle's normal, which on a slope points at ground kilometres away)
+			record.dustColor = dustColorFor(s.bodyId, Vec3d.normalize(s.pos))
 		end
 		local nozzles = dustPos / dustWeight
 		-- straight down from the nozzles onto the ground plane (SurfaceHeight's tile plane = the visible ground)
@@ -2384,6 +2404,7 @@ function Effects.step(ctx: RenderContext, frameVelocity: Vec3d)
 	end
 	Plumes.beginFrame()
 	heatLightsUsed = 0
+	plumeEventsLeft = budget.plumeEvents -- CHANGED (Night review)
 	explosionBudget = math.min(explosionBudget + EXPLOSIONS_PER_SECOND * dt, EXPLOSION_BUDGET)
 
 	-- Pocket motion: a pocket switch or rebase invalidates every particle position

@@ -23,6 +23,9 @@
 	qualityScale(SavedQualityLevel) is gone: Render/Quality is the one tier every client layer follows.
 	  budget(tier)                            per-tier caps (emitters, active effects, lights) for Render/Effects
 	  worstCaseEmitters(budget)               emitters Effects can have alive at once under a budget (plumes aside)
+	  plumeLoad(budget, engines)              CHANGED (Night review): worst-case beams, emitters and PointLights the
+	                                          plumes of `engines` burning engines use (budget.plumes are drawn in full,
+	                                          the rest as core + glow beams only)
 	  plasma(heat)                            re-entry intensity curves (shell opacity, flame length, streaks, embers)
 	  heatColor(heat, t)                      plasma colour ramp: t = 0 at the shock front, 1 at the flame tails
 	  heatSoak(current, target, dt)           part heat glow: fast to heat up, slow to cool down
@@ -174,6 +177,10 @@ local BUDGETS = {
 		plumeHalo = false, -- third, widest flame layer
 		machDiamonds = false,
 		plumeFlicker = false,
+		-- CHANGED (Night review): engines drawn in full per frame (emitter, halo, diamonds, flicker, light); the rest
+		-- get a cheap plume (core + glow beams only), and Ignite / Cutoff bursts handled per frame
+		plumes = 6,
+		plumeEvents = 2,
 		plumeLights = 0, -- PointLights
 		heatLights = 0,
 		flashLights = 0,
@@ -200,6 +207,8 @@ local BUDGETS = {
 		plumeHalo = true,
 		machDiamonds = true,
 		plumeFlicker = true,
+		plumes = 12, -- CHANGED (Night review)
+		plumeEvents = 4,
 		plumeLights = 0,
 		heatLights = 0,
 		flashLights = 0,
@@ -226,6 +235,8 @@ local BUDGETS = {
 		plumeHalo = true,
 		machDiamonds = true,
 		plumeFlicker = true,
+		plumes = 24, -- CHANGED (Night review)
+		plumeEvents = 8,
 		plumeLights = 4,
 		heatLights = 2,
 		flashLights = 4,
@@ -274,6 +285,8 @@ export type Budget = {
 	plumeHalo: boolean,
 	machDiamonds: boolean,
 	plumeFlicker: boolean,
+	plumes: number, -- CHANGED (Night review)
+	plumeEvents: number, -- CHANGED (Night review)
 	plumeLights: number,
 	heatLights: number,
 	flashLights: number,
@@ -469,6 +482,18 @@ function EffectsMath.worstCaseEmitters(budget: Budget): number
 		+ (if budget.embers then 1 else 0)
 		+ (if budget.vaporCollar then 1 else 0)
 	return budget.trails + budget.dust * budget.dustEmitters + budget.aero * perAero + budget.bursts * 3
+end
+
+--[[
+	CHANGED (Night review): worst-case plume load for `engines` burning engines under a budget (Render/Plumes): every
+	engine has a core and a glow beam; only the first budget.plumes per frame are drawn in full (+ particle emitter,
+	halo beam, shock-diamond beam, PointLight while the light budget lasts). Returns beams, emitters, lights.
+]]
+function EffectsMath.plumeLoad(budget: Budget, engines: number): (number, number, number)
+	local count = math.max(math.floor(engines), 0)
+	local full = math.min(count, budget.plumes)
+	local extraBeams = (if budget.plumeHalo then 1 else 0) + (if budget.machDiamonds then 1 else 0)
+	return 2 * count + full * extraBeams, full, math.min(full, budget.plumeLights)
 end
 
 function EffectsMath.plasma(heat: number): PlasmaShape
