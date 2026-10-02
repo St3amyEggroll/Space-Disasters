@@ -21,10 +21,18 @@
 	parts (MAX_PROP_PARTS hard cap), nearest chunks first, moved with one BulkMoveTo whenever the frame or the
 	assignment changes. All parts are Anchored, CanCollide / CanQuery / CanTouch false: purely cosmetic.
 
+	CHANGED (Night review): mobile / quality pass.
+	  * The shadow radius follows the Quality tier too (setDetail's shadowRadius: Low 0 = no prop shadows).
+	  * In a moving flight pocket (the frame's reference moves, so every prop part is re-posed every frame) the props
+	    are drawn within the tier's smaller moving radius / part cap (setDetail's moving*), until the frame has been
+	    still for MOVING_HOLD_S.
+
 	API (driven by Surface):
 		SurfaceProps.init(parent)
 		SurfaceProps.update(ctx, surfaceMode)
-		SurfaceProps.setDetail(radius, maxParts, density)   CHANGED (Phase 8): Quality tier
+		SurfaceProps.setDetail(radius, maxParts, density, shadowRadius?, movingRadius?, movingMaxParts?)
+		                                                    CHANGED (Phase 8): Quality tier
+		                                                    CHANGED (Night review): + shadows, moving-pocket detail
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -51,7 +59,8 @@ local PROP_RADIUS = 1000 -- m (= studs), props farther than this from the camera
 local CELL_SIZE = 28 -- m, one prop at most per cell
 local CHUNK_CELLS = 8 -- cells per chunk side (224 m chunks)
 local MAX_PROP_PARTS = 1000 -- hard cap on pooled parts in use -- CHANGED (Physics feel): was 600
-local SHADOW_RADIUS = 220 -- m, props nearer than this cast shadows
+local SHADOW_RADIUS = 220 -- m, props nearer than this cast shadows (CHANGED (Night review): default; setDetail)
+local MOVING_HOLD_S = 2 -- CHANGED (Night review): s the frame must stay still before the full detail returns
 local REFRESH_DISTANCE = 35 -- m of camera movement before the prop set is re-chosen
 local GEN_BUDGET_S = 0.001 -- chunk generation work per frame
 local CHUNK_CACHE_MAX = 400 -- cached chunks before far ones are dropped -- CHANGED (Physics feel): was 300 (bigger radius)
@@ -327,8 +336,20 @@ end
 
 -- CHANGED (Phase 8): share of Biome's prop density that is placed, draw radius and part cap (Quality tier, setDetail)
 local densityScale = 1
+-- CHANGED (Night review): propRadius / maxPropParts are the values in use: the tier's detail* values, or its moving*
+-- values while the pocket frame moves
 local propRadius = PROP_RADIUS
 local maxPropParts = MAX_PROP_PARTS
+local detailRadius = PROP_RADIUS
+local detailMaxParts = MAX_PROP_PARTS
+local movingRadius = PROP_RADIUS
+local movingMaxParts = MAX_PROP_PARTS
+local shadowRadius = SHADOW_RADIUS
+local movingTimer = 0 -- s of moving-frame detail left
+local watchedPocket = -1 -- the pocket / frame epoch / reference the moving test last saw
+local watchedEpoch = -1
+local watchedRefX, watchedRefY, watchedRefZ = 0, 0, 0
+local watchedRot: CFrame = CFrame.identity
 
 -- Deterministic props of one chunk (cells ci * CHUNK_CELLS .. + CHUNK_CELLS - 1 along X, same for cj along Z).
 local function generateChunk(bodyId: number, info: TileInfo, ci: number, cj: number): { Prop }
@@ -642,7 +663,7 @@ local function assignVisible(camera: Vec3d, folder: Folder)
 			changed = true
 		end
 	end
-	local shadowSq = SHADOW_RADIUS * SHADOW_RADIUS
+	local shadowSq = shadowRadius * shadowRadius -- CHANGED (Night review): per tier
 	for id, prop in wanted do
 		local shadow = Vec3d.distanceSq(prop.pos, camera) <= shadowSq
 		local a = assigned[id]
@@ -732,6 +753,19 @@ local function placeAll(ctx: RenderContext.RenderContext, bodyId: number)
 	moveDirty = false
 end
 
+-- CHANGED (Night review): the radius / part cap in use (the tier's, or its moving-pocket values); a change re-chooses
+-- the drawn props.
+local function applyActiveDetail()
+	local moving = movingTimer > 0
+	local radius = if moving then math.min(movingRadius, detailRadius) else detailRadius
+	local parts = if moving then math.min(movingMaxParts, detailMaxParts) else detailMaxParts
+	if radius ~= propRadius or parts ~= maxPropParts then
+		propRadius = radius
+		maxPropParts = parts
+		needsRefresh = true
+	end
+end
+
 local function hide()
 	local folder = propsFolder
 	if folder and folder.Parent ~= nil then
@@ -768,6 +802,20 @@ function SurfaceProps.update(ctx: RenderContext.RenderContext, surfaceMode: bool
 		releaseAll()
 		currentBodyId = bodyId
 	end
+	-- CHANGED (Night review): while the pocket frame moves (a flight pocket's reference follows its craft) every prop
+	-- part is re-posed each frame, so fewer, nearer props are drawn. A pocket switch or rebase does not count.
+	local frame = ctx.frame
+	local ref = frame.refPos
+	if ctx.pocketId ~= watchedPocket or frame.frameEpoch ~= watchedEpoch then
+		watchedPocket, watchedEpoch = ctx.pocketId, frame.frameEpoch
+	elseif ref.x ~= watchedRefX or ref.y ~= watchedRefY or ref.z ~= watchedRefZ or frame.refRot ~= watchedRot then
+		movingTimer = MOVING_HOLD_S
+	else
+		movingTimer = math.max(movingTimer - math.max(ctx.dt, 0), 0)
+	end
+	watchedRefX, watchedRefY, watchedRefZ, watchedRot = ref.x, ref.y, ref.z, frame.refRot
+	applyActiveDetail()
+
 	local camera = ctx.cameraDominant
 	-- far above the ground nothing is in reach: keep what is assigned but skip the work
 	-- CHANGED (Phase 8): height above the terrain, not sea level (props on mountains)
@@ -797,10 +845,25 @@ end
 --[[
 	CHANGED (Phase 8): detail from the Quality tier (Surface): draw radius (m), part cap and density (share of Biome's
 	props per hectare, 0..1). A new density regenerates the cached chunks.
+	CHANGED (Night review): + shadowRadius (m, props nearer than this cast shadows; 0 = none) and the radius / part
+	cap used while the pocket frame moves (each defaults to the still value).
 ]]
-function SurfaceProps.setDetail(radius: number, maxParts: number, density: number)
-	propRadius = radius
-	maxPropParts = maxParts
+function SurfaceProps.setDetail(
+	radius: number,
+	maxParts: number,
+	density: number,
+	newShadowRadius: number?,
+	newMovingRadius: number?,
+	newMovingMaxParts: number?
+)
+	detailRadius = radius
+	detailMaxParts = maxParts
+	movingRadius = newMovingRadius or radius
+	movingMaxParts = newMovingMaxParts or maxParts
+	shadowRadius = newShadowRadius or SHADOW_RADIUS
+	propRadius = -1 -- re-chosen below (forces a refresh)
+	applyActiveDetail()
+	-- shadows are rewritten on the refresh for assigned props whose CastShadow no longer matches
 	local scale = math.clamp(density, 0.05, 1)
 	if scale ~= densityScale then
 		densityScale = scale

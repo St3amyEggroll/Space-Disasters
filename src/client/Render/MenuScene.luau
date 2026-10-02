@@ -20,7 +20,9 @@
 	    a big decoupler, a nose cone, a tank with its cone) and a satellite made of parts (body, two solar panels,
 	    a dish, a blinking light), tumbling slowly across the view and respawning off-screen after they leave it.
 	  * Shooting stars: short-lived neon streaks with a Trail, far behind the scene.
-	  * Sun glare: a Bloom and a SunRays effect in Lighting while the scene runs, and the lens flare overlay
+	  * Sun glare: a Bloom and a SunRays effect in Lighting while the scene runs (CHANGED (Night review): by the
+	    Render/Quality tier: Bloom on Medium and High, SunRays on High only, re-applied when the tier changes while
+	    the menu is open; both are full-screen post passes, costly on phones), and the lens flare overlay
 	    (Render/MenuSceneFlare) in the menu's ScreenGui, faded out when the sun is off-screen or behind Earth, the
 	    Mun or the avatar. A soft blue fill light keeps the avatar's shadow side readable.
 	  * The real universe around it: UniverseRenderer.setViewOverride(frame) with a frame that maps MENU_ORIGIN to a
@@ -61,6 +63,7 @@ local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime) -- CHANG
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local MenuSceneFlare = require(script.Parent.MenuSceneFlare)
 local MenuSceneMath = require(script.Parent.MenuSceneMath)
+local Quality = require(script.Parent.Quality) -- CHANGED (Night review)
 local UniverseRenderer = require(script.Parent.Parent.Controllers.UniverseRenderer)
 
 --============================================================================
@@ -220,6 +223,9 @@ local SUNRAYS_INTENSITY = 0.04
 local SUNRAYS_SPREAD = 0.55
 local BLOOM_NAME = "MainMenuBloom"
 local SUNRAYS_NAME = "MainMenuSunRays"
+-- CHANGED (Night review): the Render/Quality tiers that get each post effect
+local BLOOM_TIERS: { [string]: boolean } = { Medium = true, High = true }
+local SUNRAYS_TIERS: { [string]: boolean } = { High = true }
 local FLARE_EDGE_MARGIN = 0.1 -- fraction of the screen height over which the flare fades at the edges
 local FLARE_DISTANCE = 1000 -- studs along the sun direction for the viewport projection
 local FILL_LIGHT_OFFSET = Vector3.new(-4, 3, -3) -- camera-local
@@ -966,19 +972,25 @@ local function removeLightingEffects()
 	end
 end
 
+-- CHANGED (Night review): only the effects the Quality tier allows (called again when the tier changes).
 local function addLightingEffects()
 	removeLightingEffects()
-	local bloom = Instance.new("BloomEffect")
-	bloom.Name = BLOOM_NAME
-	bloom.Intensity = BLOOM_INTENSITY
-	bloom.Size = BLOOM_SIZE
-	bloom.Threshold = BLOOM_THRESHOLD
-	bloom.Parent = Lighting
-	local rays = Instance.new("SunRaysEffect")
-	rays.Name = SUNRAYS_NAME
-	rays.Intensity = SUNRAYS_INTENSITY
-	rays.Spread = SUNRAYS_SPREAD
-	rays.Parent = Lighting
+	local tier = Quality.tier()
+	if BLOOM_TIERS[tier] then
+		local bloom = Instance.new("BloomEffect")
+		bloom.Name = BLOOM_NAME
+		bloom.Intensity = BLOOM_INTENSITY
+		bloom.Size = BLOOM_SIZE
+		bloom.Threshold = BLOOM_THRESHOLD
+		bloom.Parent = Lighting
+	end
+	if SUNRAYS_TIERS[tier] then
+		local rays = Instance.new("SunRaysEffect")
+		rays.Name = SUNRAYS_NAME
+		rays.Intensity = SUNRAYS_INTENSITY
+		rays.Spread = SUNRAYS_SPREAD
+		rays.Parent = Lighting
+	end
 end
 
 --============================================================================
@@ -1218,6 +1230,8 @@ function MenuScene.start(flareParent: GuiObject)
 	)
 
 	addLightingEffects()
+	-- CHANGED (Night review): the post effects follow the tier while the menu is open
+	table.insert(connections, Quality.onChanged(addLightingEffects))
 	-- CHANGED (Phase 11 review): the menu's own time (header)
 	local now = UniverseTime.now()
 	menuUT = now + menuTimeOffset(now)

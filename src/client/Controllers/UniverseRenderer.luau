@@ -34,6 +34,10 @@
 	background before surface mode starts; under the main menu view the pocket's own ground (the base) is prebuilt.
 	F3 shows a "Terrain:" line.
 
+	CHANGED (Night review): mobile / quality pass. Automatic graphics quality on a phone / tablet assumes
+	MOBILE_AUTOMATIC_DRAW_DISTANCE (Roblox draws much less far there than on a desktop's Automatic), and the real
+	base's lights follow the Quality tier (Render/SiteLights.watchBase, started here).
+
 	API:
 	  UniverseRenderer.setMapMode(enabled, cubeHalfSize?)   MapViewController
 	  UniverseRenderer.isMapMode() -> boolean
@@ -59,6 +63,8 @@ local RenderContext = require(script.Parent.Parent.Render.RenderContext)
 local ScaledSpace = require(script.Parent.Parent.Render.ScaledSpace)
 local SkyCube = require(script.Parent.Parent.Render.SkyCube)
 local SkyLighting = require(script.Parent.Parent.Render.SkyLighting)
+local Quality = require(script.Parent.Parent.Render.Quality) -- CHANGED (Night review)
+local SiteLights = require(script.Parent.Parent.Render.SiteLights) -- CHANGED (Night review)
 local Surface = require(script.Parent.Parent.Render.Surface)
 
 --============================================================================
@@ -84,6 +90,8 @@ local DRAW_DISTANCE_BY_QUALITY: { [number]: number } = {
 	[10] = 20000,
 }
 local DEFAULT_DRAW_DISTANCE = 3000
+-- CHANGED (Night review): Automatic (level 0) on a phone / tablet (Quality.isMobile); Roblox picks a low level there
+local MOBILE_AUTOMATIC_DRAW_DISTANCE = 1400
 local QUALITY_POLL_S = 1
 local HIDE_MAP = "Map" -- CHANGED (Phase 11): hide reasons (hideLayer)
 local HIDE_MENU = "Menu"
@@ -137,7 +145,11 @@ local function refreshDrawDistance(dt: number)
 	end
 	qualityTimer = 0
 	local level = userGameSettings.SavedQualityLevel.Value
-	drawDistance = DRAW_DISTANCE_BY_QUALITY[level] or DEFAULT_DRAW_DISTANCE
+	if level == 0 and Quality.isMobile() then
+		drawDistance = MOBILE_AUTOMATIC_DRAW_DISTANCE -- CHANGED (Night review)
+	else
+		drawDistance = DRAW_DISTANCE_BY_QUALITY[level] or DEFAULT_DRAW_DISTANCE
+	end
 end
 
 -- Walks the SOI tree from the pocket's reference body to the body that actually contains the camera.
@@ -396,6 +408,7 @@ function UniverseRenderer.Start()
 	end
 	globals:GetAttributeChangedSignal(Universe.SUN_OFFSET_ATTRIBUTE):Connect(applySunOffset)
 	applySunOffset()
+	SiteLights.watchBase() -- CHANGED (Night review): the base's lamps and beacons on High only
 	RunService:BindToRenderStep(RENDER_STEP_NAME, RENDER_PRIORITY, step)
 end
 

@@ -44,6 +44,14 @@
 	  * configure(settings) is called by Render/Effects with the Render/Quality tier's budget: particle rate scale,
 	    halo / diamonds / flicker switches and the PointLight budget (High only). A new configuration rewrites every
 	    plume on its next update. beginFrame() resets the per-frame light budget.
+
+	CHANGED (Night review): a 100-engine craft built ~1000 instances on ignition (4 attachments, an emitter, 4 beams
+	and a light per engine) and rewrote ~200 properties a frame (flicker). Now only `settings.full` engines per frame
+	(EffectsMath.BUDGETS plumes: Low 6 / Medium 12 / High 24, shared by every model drawn that frame) get the full
+	plume; every other burning engine gets a cheap plume: the core and glow beams only (no particles, halo, shock
+	diamonds, flicker, ignition flash or light), which writes nothing during a steady burn. The emitter, halo,
+	diamonds and light are created lazily the first time a plume is drawn in full with them switched on. A plume keeps
+	its full slot from frame to frame while the budget lasts (no flip-flopping between the two looks).
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -166,20 +174,22 @@ export type Settings = {
 	halo: boolean,
 	machDiamonds: boolean,
 	flicker: boolean,
+	full: number, -- CHANGED (Night review): plumes drawn in full per frame (the rest: core + glow only)
 }
 
 type Plume = {
 	exhaust: Attachment,
 	tip: Attachment,
 	coreTip: Attachment, -- CHANGED (Phase 10): the core's own tip (shorter than the glow in vacuum)
-	haloTip: Attachment, -- CHANGED (Effects v2)
-	diamondTip: Attachment, -- CHANGED (Effects v2)
-	emitter: ParticleEmitter,
+	-- CHANGED (Night review): the full plume's parts are created lazily (nil on a plume never drawn in full with them)
+	haloTip: Attachment?, -- CHANGED (Effects v2)
+	diamondTip: Attachment?, -- CHANGED (Effects v2)
+	emitter: ParticleEmitter?,
 	core: Beam,
 	glow: Beam,
-	halo: Beam, -- CHANGED (Effects v2)
-	diamonds: Beam, -- CHANGED (Effects v2)
-	light: PointLight,
+	halo: Beam?, -- CHANGED (Effects v2)
+	diamonds: Beam?, -- CHANGED (Effects v2)
+	light: PointLight?,
 	diameter: number, -- unscaled nozzle diameter, studs
 	solid: boolean, -- CHANGED (Phase 10): solid booster (was a length multiplier from the block's shape)
 	throttle: number, -- last applied throttle (0 = off)
@@ -194,6 +204,8 @@ type Plume = {
 	baseGlowWidth: number, -- CHANGED (Effects v2): glow Width0 without the flicker
 	lightOn: boolean, -- CHANGED (Effects v2): holds one of the frame's light budget
 	seed: number, -- CHANGED (Effects v2): flicker phase
+	full: boolean, -- CHANGED (Night review): drawn in full (else core + glow only)
+	fullStamp: number, -- CHANGED (Night review): frame in which it holds one of the full-plume slots
 }
 
 type ModelState = {
@@ -207,21 +219,38 @@ local Plumes = {}
 
 local states: { [Model]: ModelState } = setmetatable({}, { __mode = "k" }) :: any
 -- CHANGED (Effects v2): the tier's settings (High until Render/Effects configures them) and the frame's lights
-local settings: Settings = { rateScale = 1, lights = 0, halo = true, machDiamonds = true, flicker = true }
+local settings: Settings = {
+	rateScale = 1,
+	lights = 0,
+	halo = true,
+	machDiamonds = true,
+	flicker = true,
+	full = EffectsMath.budget("High").plumes, -- CHANGED (Night review)
+}
 local settingsVersion = 0
 local lightsUsed = 0
+-- CHANGED (Night review): the frame's full-plume slots (beginFrame)
+local fullUsed = 0
+local frameStamp = 0
+
+local function destroyIfAny(instance: Instance?)
+	if instance then
+		instance:Destroy()
+	end
+end
 
 local function destroyPlume(plume: Plume)
-	plume.emitter:Destroy()
+	-- CHANGED (Night review): the full plume's parts may not exist
+	destroyIfAny(plume.emitter)
 	plume.core:Destroy()
 	plume.glow:Destroy()
-	plume.halo:Destroy()
-	plume.diamonds:Destroy()
-	plume.light:Destroy()
+	destroyIfAny(plume.halo)
+	destroyIfAny(plume.diamonds)
+	destroyIfAny(plume.light)
 	plume.tip:Destroy()
 	plume.coreTip:Destroy()
-	plume.haloTip:Destroy()
-	plume.diamondTip:Destroy()
+	destroyIfAny(plume.haloTip)
+	destroyIfAny(plume.diamondTip)
 end
 
 -- CHANGED (Phase 10): a NumberSequence from base keypoints with `extra` transparency added (clamped to 1).
@@ -261,24 +290,77 @@ local function isSolid(exhaust: Attachment, size: Vector3, diameter: number): bo
 	return size.Y > diameter * BOOSTER_ASPECT
 end
 
+-- CHANGED (Night review): the parts below are shared by createPlume and the lazy full-plume parts.
+local function tipAttachment(exhaust: Attachment, name: string): Attachment
+	local attachment = Instance.new("Attachment")
+	attachment.Name = name
+	attachment.CFrame = exhaust.CFrame
+	attachment.Parent = exhaust.Parent
+	return attachment
+end
+
+local function newBeam(exhaust: Attachment, name: string, tip: Attachment): Beam
+	local b = Instance.new("Beam")
+	b.Name = name
+	b.Enabled = false
+	b.Attachment0 = exhaust
+	b.Attachment1 = tip
+	b.FaceCamera = true
+	b.LightEmission = 1
+	b.LightInfluence = 0
+	b.Segments = BEAM_SEGMENTS
+	b.CurveSize0 = 0
+	b.CurveSize1 = 0
+	b.Parent = exhaust
+	return b
+end
+
+-- CHANGED (Night review): only the core and glow (and their tips) are built up front; the rest is lazy (below).
 local function createPlume(exhaust: Attachment, modelScale: number, blockId: number): Plume
 	local bounds = exhaust.Parent :: BasePart
 	local size = bounds.Size / math.max(modelScale, 1e-3)
 	local diameter = math.max(math.min(size.X, size.Z), 0.5)
 	local solid = isSolid(exhaust, size, diameter)
+	local tip = tipAttachment(exhaust, TIP_NAME)
+	local coreTip = tipAttachment(exhaust, CORE_TIP_NAME)
+	return {
+		exhaust = exhaust,
+		tip = tip,
+		coreTip = coreTip,
+		haloTip = nil,
+		diamondTip = nil,
+		emitter = nil,
+		core = newBeam(exhaust, CORE_NAME, coreTip),
+		glow = newBeam(exhaust, GLOW_NAME, tip),
+		halo = nil,
+		diamonds = nil,
+		light = nil,
+		diameter = diameter,
+		solid = solid,
+		throttle = 0,
+		shown = 0,
+		vacuum = -1,
+		colorVacuum = -1,
+		scale = modelScale,
+		version = -1,
+		flash = 0,
+		baseLight = 0,
+		baseCore = 0,
+		baseGlowWidth = 0,
+		lightOn = false,
+		seed = (blockId * 1.618) % 6.283,
+		full = false,
+		fullStamp = -1,
+	}
+end
 
-	local function tipAttachment(name: string): Attachment
-		local attachment = Instance.new("Attachment")
-		attachment.Name = name
-		attachment.CFrame = exhaust.CFrame
-		attachment.Parent = bounds
-		return attachment
+-- CHANGED (Night review): the full plume's particle emitter, created the first time it is needed.
+local function ensureEmitter(plume: Plume): ParticleEmitter
+	local existing = plume.emitter
+	if existing then
+		return existing
 	end
-	local tip = tipAttachment(TIP_NAME)
-	local coreTip = tipAttachment(CORE_TIP_NAME)
-	local haloTip = tipAttachment(HALO_TIP_NAME)
-	local diamondTip = tipAttachment(DIAMOND_TIP_NAME)
-
+	local solid = plume.solid
 	local emitter = Instance.new("ParticleEmitter")
 	emitter.Name = EMITTER_NAME
 	emitter.Enabled = false
@@ -295,68 +377,76 @@ local function createPlume(exhaust: Attachment, modelScale: number, blockId: num
 	emitter.Drag = 1.5
 	emitter.ZOffset = 0.5
 	emitter.Rate = 0
-	emitter.Parent = exhaust
+	emitter.Parent = plume.exhaust
+	plume.emitter = emitter
+	return emitter
+end
 
-	local function beam(name: string, tipAttachment: Attachment): Beam
-		local b = Instance.new("Beam")
-		b.Name = name
-		b.Enabled = false
-		b.Attachment0 = exhaust
-		b.Attachment1 = tipAttachment
-		b.FaceCamera = true
-		b.LightEmission = 1
-		b.LightInfluence = 0
-		b.Segments = BEAM_SEGMENTS
-		b.CurveSize0 = 0
-		b.CurveSize1 = 0
-		b.Parent = exhaust
-		return b
+-- CHANGED (Night review): the halo beam (Medium+), created the first time it is needed.
+local function ensureHalo(plume: Plume): (Beam, Attachment)
+	local halo, haloTip = plume.halo, plume.haloTip
+	if halo and haloTip then
+		return halo, haloTip
 	end
-	local core = beam(CORE_NAME, coreTip)
-	local glow = beam(GLOW_NAME, tip)
-	local halo = beam(HALO_NAME, haloTip) -- CHANGED (Effects v2)
-	halo.Brightness = HALO_BRIGHTNESS
-	halo.Transparency = fadedSequence(HALO_TRANSPARENCY_KEYS, 0)
-	local diamonds = beam(DIAMOND_NAME, diamondTip) -- CHANGED (Effects v2)
-	diamonds.Color = DIAMOND_COLOR
-	diamonds.Brightness = DIAMOND_BRIGHTNESS
-	diamonds.ZOffset = 0.2 -- drawn over the core
+	local tip = tipAttachment(plume.exhaust, HALO_TIP_NAME)
+	local beam = newBeam(plume.exhaust, HALO_NAME, tip)
+	beam.Brightness = HALO_BRIGHTNESS
+	beam.Transparency = fadedSequence(HALO_TRANSPARENCY_KEYS, 0)
+	plume.halo, plume.haloTip = beam, tip
+	plume.colorVacuum = -1 -- its colours are written with the others
+	return beam, tip
+end
 
+-- CHANGED (Night review): the shock-diamond beam (Medium+, liquid engines), created the first time it is needed.
+local function ensureDiamonds(plume: Plume): (Beam, Attachment)
+	local diamonds, diamondTip = plume.diamonds, plume.diamondTip
+	if diamonds and diamondTip then
+		return diamonds, diamondTip
+	end
+	local tip = tipAttachment(plume.exhaust, DIAMOND_TIP_NAME)
+	local beam = newBeam(plume.exhaust, DIAMOND_NAME, tip)
+	beam.Color = DIAMOND_COLOR
+	beam.Brightness = DIAMOND_BRIGHTNESS
+	beam.ZOffset = 0.2 -- drawn over the core
+	plume.diamonds, plume.diamondTip = beam, tip
+	return beam, tip
+end
+
+-- CHANGED (Night review): the PointLight (High), created the first time the plume holds one of the frame's lights.
+local function ensureLight(plume: Plume): PointLight
+	local existing = plume.light
+	if existing then
+		return existing
+	end
 	local light = Instance.new("PointLight")
 	light.Name = LIGHT_NAME
 	light.Enabled = false
-	light.Color = if solid then LIGHT_COLOR_SOLID else LIGHT_COLOR
+	light.Color = if plume.solid then LIGHT_COLOR_SOLID else LIGHT_COLOR
 	light.Shadows = false
 	light.Brightness = 0
-	light.Parent = exhaust
+	light.Range = math.min(plume.diameter * plume.scale * LIGHT_RANGE, LIGHT_RANGE_MAX)
+	light.Parent = plume.exhaust
+	plume.light = light
+	return light
+end
 
-	return {
-		exhaust = exhaust,
-		tip = tip,
-		coreTip = coreTip,
-		haloTip = haloTip,
-		diamondTip = diamondTip,
-		emitter = emitter,
-		core = core,
-		glow = glow,
-		halo = halo,
-		diamonds = diamonds,
-		light = light,
-		diameter = diameter,
-		solid = solid,
-		throttle = 0,
-		shown = 0,
-		vacuum = -1,
-		colorVacuum = -1,
-		scale = modelScale,
-		version = -1,
-		flash = 0,
-		baseLight = 0,
-		baseCore = 0,
-		baseGlowWidth = 0,
-		lightOn = false,
-		seed = (blockId * 1.618) % 6.283,
-	}
+-- CHANGED (Night review): switches the full plume's extra parts off (they are kept for a later promotion).
+local function disableExtras(plume: Plume)
+	local emitter, halo, diamonds, light = plume.emitter, plume.halo, plume.diamonds, plume.light
+	if emitter then
+		emitter.Enabled = false -- live particles finish their short lifetime
+	end
+	if halo then
+		halo.Enabled = false
+	end
+	if diamonds then
+		diamonds.Enabled = false
+	end
+	if light then
+		light.Enabled = false
+	end
+	plume.lightOn = false
+	plume.flash = 0
 end
 
 -- CHANGED (Phase 10): a transition event at the nozzle, in workspace.
@@ -377,14 +467,9 @@ local function switchOff(plume: Plume, modelScale: number, events: { PlumeEvent 
 	end
 	plume.throttle = 0
 	plume.shown = 0 -- CHANGED (Effects v2)
-	plume.flash = 0
-	plume.emitter.Enabled = false -- live particles finish their short lifetime
 	plume.core.Enabled = false
 	plume.glow.Enabled = false
-	plume.halo.Enabled = false -- CHANGED (Effects v2)
-	plume.diamonds.Enabled = false -- CHANGED (Effects v2)
-	plume.light.Enabled = false
-	plume.lightOn = false -- CHANGED (Effects v2)
+	disableExtras(plume) -- CHANGED (Night review): emitter, halo, diamonds, light (when they exist)
 	if events then
 		table.insert(events, event(plume, "Cutoff", modelScale))
 	end
@@ -405,12 +490,16 @@ local function applyColors(plume: Plume, vacuum: number)
 	})
 	local glowColor = ColorSequence.new(glowStart, glowEnd)
 	plume.glow.Color = glowColor
-	plume.halo.Color = glowColor
+	local halo = plume.halo -- CHANGED (Night review): lazy
+	if halo then
+		halo.Color = glowColor
+	end
 end
 
 -- CHANGED (Phase 10): the shape now depends on the air pressure (EffectsMath.plumeShape). Returns whether any
 -- property was written, and whether the plume just lit.
 -- CHANGED (Effects v2): + colours, halo, shock diamonds, tier settings (a new configuration forces a rewrite).
+-- CHANGED (Night review): a cheap plume (not plume.full) only writes its core and glow.
 local function apply(plume: Plume, throttle: number, pressure: number, modelScale: number): (boolean, boolean)
 	local wasOn = plume.throttle > 0
 	local rescaled = math.abs(modelScale - plume.scale) > SCALE_EPSILON * plume.scale
@@ -429,29 +518,33 @@ local function apply(plume: Plume, throttle: number, pressure: number, modelScal
 	plume.scale = modelScale
 	plume.version = settingsVersion
 
+	local full = plume.full
 	local shape = EffectsMath.plumeShape(throttle, pressure, plume.solid)
 	local d = plume.diameter * modelScale -- scaled nozzle diameter, studs
 	local k = (plume.diameter / REFERENCE_DIAMETER) * modelScale -- length factor
 
-	-- Particles
-	local emitter = plume.emitter
-	local rate = PARTICLE_RATE_MIN + (PARTICLE_RATE_MAX - PARTICLE_RATE_MIN) * throttle
-	emitter.Rate = rate * settings.rateScale * (if plume.solid then PARTICLE_RATE_SOLID_MULT else 1)
-	local speed = shape.particleSpeed * k
-	emitter.Speed = NumberRange.new(speed * 0.85, speed)
-	emitter.SpreadAngle = Vector2.new(shape.spreadDeg, shape.spreadDeg)
-	local sizeK = d * shape.particleSize
-	emitter.Size = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, sizeK * PARTICLE_SIZE_START),
-		NumberSequenceKeypoint.new(0.4, sizeK * PARTICLE_SIZE_MID),
-		NumberSequenceKeypoint.new(1, sizeK * PARTICLE_SIZE_END),
-	})
-	emitter.Transparency = fadedSequence(
-		if plume.solid then PARTICLE_TRANSPARENCY_KEYS_SOLID else PARTICLE_TRANSPARENCY_KEYS_LIQUID,
-		shape.fade
-	)
-	if not wasOn then
-		emitter.Enabled = true
+	-- Particles (CHANGED (Night review): full plumes only)
+	if full then
+		local emitter = ensureEmitter(plume)
+		local rate = PARTICLE_RATE_MIN + (PARTICLE_RATE_MAX - PARTICLE_RATE_MIN) * throttle
+		emitter.Rate = rate * settings.rateScale * (if plume.solid then PARTICLE_RATE_SOLID_MULT else 1)
+		local speed = shape.particleSpeed * k
+		emitter.Speed = NumberRange.new(speed * 0.85, speed)
+		emitter.SpreadAngle = Vector2.new(shape.spreadDeg, shape.spreadDeg)
+		local sizeK = d * shape.particleSize
+		emitter.Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, sizeK * PARTICLE_SIZE_START),
+			NumberSequenceKeypoint.new(0.4, sizeK * PARTICLE_SIZE_MID),
+			NumberSequenceKeypoint.new(1, sizeK * PARTICLE_SIZE_END),
+		})
+		emitter.Transparency = fadedSequence(
+			if plume.solid then PARTICLE_TRANSPARENCY_KEYS_SOLID else PARTICLE_TRANSPARENCY_KEYS_LIQUID,
+			shape.fade
+		)
+		-- CHANGED (Night review): also after a promotion from a cheap plume (was: only when it lit)
+		if not emitter.Enabled then
+			emitter.Enabled = true
+		end
 	end
 
 	-- Beam flame: the tips ride along the exhaust direction (the attachment's local +Y)
@@ -469,52 +562,71 @@ local function apply(plume: Plume, throttle: number, pressure: number, modelScal
 	plume.glow.Transparency = fadedSequence(GLOW_TRANSPARENCY_KEYS, shape.fade)
 	plume.glow.Brightness = shape.glowBrightness
 	plume.baseCore = shape.coreBrightness
+	-- CHANGED (Night review): the halo exists before the colours are written (they include its colour)
+	local wantHalo = full and settings.halo
+	if wantHalo then
+		ensureHalo(plume)
+	end
 	applyColors(plume, vacuum)
 	if not wasOn then
 		plume.core.Enabled = true
 		plume.glow.Enabled = true
 	end
+	-- CHANGED (Night review): a cheap plume shows its core at the base brightness (applyBrightness only runs for
+	-- full plumes)
+	if not full then
+		plume.core.Brightness = plume.baseCore
+	end
 
 	-- CHANGED (Effects v2): halo (Medium+): wider and fainter than the glow, a little shorter
-	if settings.halo then
-		plume.haloTip.CFrame = plume.exhaust.CFrame * CFrame.new(0, length * HALO_LENGTH, 0)
-		plume.halo.Width0 = d * shape.glowWidth0 * HALO_WIDTH_MULT
-		plume.halo.Width1 = d * shape.glowWidth1 * HALO_WIDTH_MULT
-		plume.halo.Transparency = fadedSequence(HALO_TRANSPARENCY_KEYS, shape.fade)
+	local halo, haloTip = plume.halo, plume.haloTip
+	if wantHalo and halo and haloTip then
+		haloTip.CFrame = plume.exhaust.CFrame * CFrame.new(0, length * HALO_LENGTH, 0)
+		halo.Width0 = d * shape.glowWidth0 * HALO_WIDTH_MULT
+		halo.Width1 = d * shape.glowWidth1 * HALO_WIDTH_MULT
+		halo.Transparency = fadedSequence(HALO_TRANSPARENCY_KEYS, shape.fade)
+		halo.Enabled = true
+	elseif halo then
+		halo.Enabled = false
 	end
-	plume.halo.Enabled = settings.halo
 
 	-- CHANGED (Effects v2): shock diamonds along the core, liquid engines in thick air only (Medium+)
 	local diamondStrength = 0
-	if settings.machDiamonds and not plume.solid then
+	if full and settings.machDiamonds and not plume.solid then -- CHANGED (Night review): full plumes only
 		local thick = 1 - EffectsMath.smoothstep(DIAMOND_VACUUM_START, DIAMOND_VACUUM_END, vacuum)
 		diamondStrength = thick * (0.5 + 0.5 * math.sqrt(throttle))
 	end
+	local existingDiamonds = plume.diamonds
 	if diamondStrength > DIAMOND_MIN_STRENGTH then
+		local diamonds, diamondTip = ensureDiamonds(plume)
 		local diamondLength = coreLength * DIAMOND_LENGTH
-		plume.diamondTip.CFrame = plume.exhaust.CFrame * CFrame.new(0, diamondLength, 0)
-		plume.diamonds.Width0 = d * DIAMOND_WIDTH0
-		plume.diamonds.Width1 = d * DIAMOND_WIDTH1
+		diamondTip.CFrame = plume.exhaust.CFrame * CFrame.new(0, diamondLength, 0)
+		diamonds.Width0 = d * DIAMOND_WIDTH0
+		diamonds.Width1 = d * DIAMOND_WIDTH1
 		local count = math.floor(diamondLength / math.max(d * DIAMOND_SPACING, 1e-3))
 		local keys = EffectsMath.machDiamondKeys(count, diamondStrength)
 		local points = table.create(#keys)
 		for index, key in keys do
 			points[index] = NumberSequenceKeypoint.new(key[1], key[2])
 		end
-		plume.diamonds.Transparency = NumberSequence.new(points)
-		plume.diamonds.Enabled = true
-	else
-		plume.diamonds.Enabled = false
+		diamonds.Transparency = NumberSequence.new(points)
+		diamonds.Enabled = true
+	elseif existingDiamonds then
+		existingDiamonds.Enabled = false
 	end
 
 	-- Light
 	plume.baseLight = shape.light
-	plume.light.Range = math.min(d * LIGHT_RANGE, LIGHT_RANGE_MAX)
+	local light = plume.light
+	if light then
+		light.Range = math.min(d * LIGHT_RANGE, LIGHT_RANGE_MAX)
+	end
 	return true, not wasOn
 end
 
 -- CHANGED (Phase 10): light and core brightness, including the decaying ignition flash.
 -- CHANGED (Effects v2): + the flicker (Medium+) on the core brightness, glow width and light.
+-- CHANGED (Night review): full plumes only (a cheap plume has no flash, flicker or light).
 local function applyBrightness(plume: Plume, dt: number, now: number)
 	local f = 0
 	if plume.flash > 0 then
@@ -527,10 +639,22 @@ local function applyBrightness(plume: Plume, dt: number, now: number)
 		wobble = EffectsMath.flicker(now, plume.seed, FLICKER_BRIGHTNESS)
 		plume.glow.Width0 = plume.baseGlowWidth * EffectsMath.flicker(now, plume.seed + 2.1, FLICKER_WIDTH)
 	end
-	if plume.lightOn then
-		plume.light.Brightness = (plume.baseLight + FLASH_LIGHT * f) * wobble
+	local light = plume.light
+	if plume.lightOn and light then
+		light.Brightness = (plume.baseLight + FLASH_LIGHT * f) * wobble
 	end
 	plume.core.Brightness = plume.baseCore * (1 + FLASH_CORE * f) * wobble
+end
+
+-- CHANGED (Night review): promotes a plume to full (its extra parts are made on this frame's apply) or demotes it
+-- to core + glow; either way every property is rewritten on this frame's apply.
+local function setFull(plume: Plume, full: boolean)
+	plume.full = full
+	plume.version = -1
+	if not full then
+		disableExtras(plume)
+		plume.glow.Width0 = plume.baseGlowWidth -- no flicker left over
+	end
 end
 
 --============================================================================
@@ -559,13 +683,17 @@ function Plumes.update(
 	local now = os.clock()
 
 	-- Switch off (or drop, when the block is gone) plumes that are not burning this frame.
+	-- CHANGED (Night review): plumes drawn in full keep their slot first (while this frame's budget lasts).
 	local plumes = state.plumes
 	for blockId, plume in plumes do
-		if plume.exhaust.Parent == nil or plume.emitter.Parent == nil then
+		if plume.exhaust.Parent == nil or plume.core.Parent == nil then
 			destroyPlume(plume)
 			plumes[blockId] = nil
 		elseif burning[blockId] == nil or burning[blockId] <= MIN_THROTTLE then
 			switchOff(plume, modelScale, events)
+		elseif plume.full and fullUsed < settings.full then
+			fullUsed += 1
+			plume.fullStamp = frameStamp
 		end
 	end
 
@@ -584,6 +712,16 @@ function Plumes.update(
 			end
 		end
 		if plume then
+			-- CHANGED (Night review): full or cheap this frame (a new claim while slots are left)
+			local wantFull = plume.fullStamp == frameStamp
+			if not wantFull and fullUsed < settings.full then
+				fullUsed += 1
+				plume.fullStamp = frameStamp
+				wantFull = true
+			end
+			if wantFull ~= plume.full then
+				setFull(plume, wantFull)
+			end
 			-- CHANGED (Effects v2): the flame eases to the throttle (a fresh model shows it at once)
 			local target = math.clamp(throttle, 0, 1)
 			if plume.throttle <= 0 then
@@ -594,24 +732,35 @@ function Plumes.update(
 			end
 			local changed, ignited = apply(plume, math.max(plume.shown, MIN_THROTTLE * 2), p, modelScale)
 			if ignited and not state.fresh then
-				plume.flash = FLASH_TIME
-				plume.emitter:Emit(math.max(math.round(FLASH_PARTICLES * settings.rateScale), 1))
+				-- CHANGED (Night review): the flash and its particle burst only on full plumes
+				local emitter = plume.emitter
+				if wantFull and emitter then
+					plume.flash = FLASH_TIME
+					emitter:Emit(math.max(math.round(FLASH_PARTICLES * settings.rateScale), 1))
+				end
 				if events then
 					table.insert(events, event(plume, "Ignite", modelScale))
 				end
 			end
 			-- CHANGED (Effects v2): one of the frame's PointLights, while the budget lasts (High only)
-			local wantLight = lightsUsed < settings.lights
+			-- CHANGED (Night review): full plumes only; the light is created the first time it is wanted
+			local wantLight = wantFull and lightsUsed < settings.lights
 			if wantLight then
 				lightsUsed += 1
 			end
 			if wantLight ~= plume.lightOn then
 				plume.lightOn = wantLight
-				plume.light.Enabled = wantLight
+				local light = plume.light
+				if wantLight then
+					ensureLight(plume).Enabled = true
+				elseif light then
+					light.Enabled = false
+				end
 				changed = true
 			end
 			-- a steady burn without a flash (and without flicker) writes nothing
-			if changed or plume.flash > 0 or settings.flicker then
+			-- CHANGED (Night review): a cheap plume never flickers or flashes
+			if wantFull and (changed or plume.flash > 0 or settings.flicker) then
 				applyBrightness(plume, dt, now)
 			end
 		end
@@ -653,8 +802,11 @@ function Plumes.configure(newSettings: Settings)
 end
 
 -- CHANGED (Effects v2): call once per frame before the updates (resets the PointLight budget).
+-- CHANGED (Night review): ... and the full-plume budget.
 function Plumes.beginFrame()
 	lightsUsed = 0
+	fullUsed = 0 -- CHANGED (Night review): the frame's full-plume slots
+	frameStamp += 1
 end
 
 return table.freeze(Plumes)

@@ -8,16 +8,23 @@
 	  * 1..3  -> "Low", 4..6 -> "Medium", 7..10 -> "High"
 	  * Automatic -> "Medium" on phones / tablets (touch without a keyboard), "High" otherwise
 	A phone never goes above "Medium", whatever its slider says (thermals and battery).
+	CHANGED (Night review): consoles (GuiService:IsTenFootInterface()) are capped at "Medium" too: a TV at couch
+	distance gains little from High's extras (PointLights, embers, full-size site copy) and console GPUs are the
+	weakest after phones. Phones on Automatic stay "Medium" (not "Low"): Medium already drops every PointLight, the
+	site's plots / decor and most particles, and Roblox's own Automatic lowers the engine's level under load; a
+	player who wants less picks a level of 1..3 (Low).
 
 	API:
 		Quality.tier(): Tier                      "Low" | "Medium" | "High"
 		Quality.scale(): number                   detail multiplier for counts / rates (LOW_SCALE .. 1)
 		Quality.pick<T>(low: T, medium: T, high: T): T
 		Quality.isMobile(): boolean
+		Quality.isConsole(): boolean               CHANGED (Night review)
 		Quality.onChanged(fn: (tier: Tier) -> ()): RBXScriptConnection
 	The tier is re-read every POLL_S seconds (the graphics slider has no change event).
 ]]
 
+local GuiService = game:GetService("GuiService") -- CHANGED (Night review)
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 
@@ -46,9 +53,15 @@ function Quality.isMobile(): boolean
 	return UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 end
 
+-- CHANGED (Night review): consoles (and other ten-foot interfaces).
+function Quality.isConsole(): boolean
+	return GuiService:IsTenFootInterface()
+end
+
 local function compute(): Tier
 	local level = userGameSettings.SavedQualityLevel.Value
 	local mobile = Quality.isMobile()
+	local capped = mobile or Quality.isConsole() -- CHANGED (Night review): consoles never above Medium either
 	local tier: Tier
 	if level == 0 then
 		tier = if mobile then "Medium" else "High"
@@ -59,7 +72,7 @@ local function compute(): Tier
 	else
 		tier = "High"
 	end
-	if mobile and tier == "High" then
+	if capped and tier == "High" then
 		return "Medium"
 	end
 	return tier

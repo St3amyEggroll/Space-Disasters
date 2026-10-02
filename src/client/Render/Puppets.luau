@@ -35,6 +35,11 @@
 	when the rigs differ (R6 character -> R15 puppet, or the stand-in); joints without a match stay neutral.
 	Aboard / seated puppets keep their fixed pose; a puppet that switches between the two resets its joints.
 
+	CHANGED (Night review): ground puppets follow Render/Quality: at most GROUND_MAX_BY_TIER of them (Low 4 /
+	Medium 8 / High GameConfig.GROUND_PUPPET_MAX), and on Low every puppet is the blocky stand-in (no
+	CreateHumanoidModelFromDescription: no accessory / layered-clothing meshes to load and draw); full-appearance
+	puppets are dropped when the tier falls to Low and come back through the usual stand-in retry above it.
+
 	CHANGED (Phase 6): EVA puppets. Astronauts on EVA in another pocket are ground puppets at their true position,
 	including in an astronaut's own solo pocket: an INERTIAL pocket's frame is its free-falling reference
 	(Shared/Sim/PocketFrames) at our UT; SURFACE_ALIGNED solo pockets read their attributes like the base.
@@ -55,6 +60,7 @@ local StateBuffer = require(ReplicatedStorage.Shared.Net.StateBuffer) -- CHANGED
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d) -- CHANGED (Ground puppets)
 local PuppetMath = require(script.Parent.PuppetMath) -- CHANGED (Ground puppets)
+local Quality = require(script.Parent.Quality) -- CHANGED (Night review)
 local RenderContext = require(script.Parent.RenderContext) -- CHANGED (Ground puppets)
 
 --============================================================================
@@ -74,6 +80,9 @@ local STAND_IN_FACE = "rbxasset://textures/face.png"
 -- CHANGED (Ground puppets)
 local GROUND_DISTANCE = GameConfig.GROUND_PUPPET_DISTANCE -- m from the camera (true distance)
 local GROUND_MAX = GameConfig.GROUND_PUPPET_MAX -- nearest on-foot puppets drawn at once
+-- CHANGED (Night review): ... per Quality tier (High = GROUND_MAX)
+local GROUND_MAX_BY_TIER: { [string]: number } = { Low = 4, Medium = 8, High = GROUND_MAX }
+local STAND_IN_TIER = "Low" -- CHANGED (Night review): every puppet is the blocky stand-in on this tier
 local INTERP_DELAY = GameConfig.INTERP_DELAY -- s; a flight pocket's sampled craft state is led by this to now
 local SLOT_CAPTURE_RADIUS = 1800 -- same as PocketService / PocketController
 local REPAIR_S = 2 -- s between re-pairings while some puppet joints have no match (the character may still load)
@@ -319,6 +328,18 @@ end
 -- Builds the player's puppet in the background (CreateHumanoidModelFromDescription yields).
 local function requestPuppet(player: Player)
 	local existing = puppets[player]
+	-- CHANGED (Night review): on Low only the blocky stand-in is built (at once, no appearance fetch)
+	if Quality.tier() == STAND_IN_TIER then
+		if existing == nil and not building[player] then
+			local puppet = preparePuppet(standIn(player))
+			if puppet then
+				puppet.standIn = true
+				puppet.model.Name = `Puppet_{player.UserId}`
+				puppets[player] = puppet
+			end
+		end
+		return
+	end
 	if building[player] or (existing and not existing.standIn) then
 		return
 	end
@@ -348,6 +369,11 @@ local function requestPuppet(player: Player)
 		end
 		puppet.model.Name = `Puppet_{player.UserId}`
 		if player.Parent == nil then
+			puppet.model:Destroy()
+			return
+		end
+		-- CHANGED (Night review): the tier fell to Low while this was built: keep (or make) the stand-in instead
+		if not puppet.standIn and Quality.tier() == STAND_IN_TIER then
 			puppet.model:Destroy()
 			return
 		end
@@ -725,10 +751,12 @@ local function drawGround(ctx: RenderContext.RenderContext, parent: Instance)
 		table.sort(sorted, closerFirst)
 	end
 	local drawn = 0
+	local groundMax = GROUND_MAX_BY_TIER[Quality.tier()] or GROUND_MAX -- CHANGED (Night review)
 	for _, candidate in sorted do
 		local other = candidate.player
 		if
-			drawn >= GROUND_MAX or LineOfSight.blocked(ctx.frame.refBodyId, ctx.cameraAbs, candidate.truePos, ctx.ut)
+			drawn >= groundMax -- CHANGED (Night review): per tier
+			or LineOfSight.blocked(ctx.frame.refBodyId, ctx.cameraAbs, candidate.truePos, ctx.ut)
 		then
 			hide(other)
 			continue
@@ -763,6 +791,18 @@ function Puppets.init(parent: Instance)
 		destroyPuppet(player)
 		building[player] = nil
 		failedAt[player] = nil
+	end)
+	-- CHANGED (Night review): dropping to Low swaps full-appearance puppets for stand-ins (rebuilt on next use)
+	Quality.onChanged(function(tier: Quality.Tier)
+		if tier ~= STAND_IN_TIER then
+			return
+		end
+		for player, puppet in puppets do
+			if not puppet.standIn then
+				puppet.model:Destroy()
+				puppets[player] = nil
+			end
+		end
 	end)
 end
 
