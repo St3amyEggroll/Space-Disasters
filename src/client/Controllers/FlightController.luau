@@ -938,9 +938,11 @@ local function reportEffects()
 		design = craft.physics.design,
 		state = craft.state,
 		burning = burning,
-		-- CHANGED (Phase 6): exactly where PocketController posed it this frame (a secondary craft is drawn at the
-		-- pocket's render UT, not at the simulation's); nil = from the state through the pocket frame
-		craftCFrame = PocketController.craftCFrame(id :: number),
+		-- CHANGED (Phase 6): a secondary craft of a merged bubble exactly where PocketController posed it (at the
+		-- pocket's render UT, not at the simulation's); the primary as before, from the state through the pocket frame
+		craftCFrame = if PocketController.primaryCraftId() == id
+			then nil
+			else PocketController.craftCFrame(id :: number),
 	})
 end
 

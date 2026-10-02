@@ -86,6 +86,7 @@ local frameMode = "SURFACE_ALIGNED"
 local primaryProvider: PrimaryProvider? = nil
 local pocketChanged = Instance.new("BindableEvent")
 local primaryCraftCFrame: CFrame? = nil -- workspace CFrame of the posed primary craft's reference frame
+local primaryCraftId: number? = nil -- CHANGED (Phase 6): the primary craft posed this frame
 -- CHANGED (Phase 10): velocity of the pocket's reference point relative to frame.refBodyId (universe axes); the
 -- primary craft's velocity in a flight pocket, zero otherwise (planets do not rotate)
 local frameVelocity = Vec3d.zero()
@@ -552,6 +553,7 @@ function PocketController.update()
 	local mode = folder:GetAttribute("FrameMode")
 	frameMode = if type(mode) == "string" then mode else "SURFACE_ALIGNED"
 	primaryCraftCFrame = nil
+	primaryCraftId = nil -- CHANGED (Phase 6)
 	Vec3d.set(frameVelocity, 0, 0, 0) -- CHANGED (Phase 10)
 	local primaryId: number? = nil
 	local primaryState: PrimaryState? = nil
@@ -586,6 +588,7 @@ function PocketController.update()
 				primaryCraftCFrame = target
 				posedCFrames[primary] = target
 				primaryId, primaryState = primary, state
+				primaryCraftId = primary -- CHANGED (Phase 6)
 			end
 		end
 		if primaryState == nil then
@@ -620,6 +623,11 @@ end
 -- craft reference frame: root block centre, craft axes), or nil.
 function PocketController.craftCFrame(craftId: number): CFrame?
 	return posedCFrames[craftId]
+end
+
+-- CHANGED (Phase 6): the id of the craft the current pocket's frame follows (nil outside craft pockets).
+function PocketController.primaryCraftId(): number?
+	return primaryCraftId
 end
 
 function PocketController.frame(): Frames.Frame

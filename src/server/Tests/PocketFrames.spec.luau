@@ -127,6 +127,40 @@ return function(t: TestKit.Context)
 		t.expectNear((m:PointToWorldSpace(before) - SLOT).Magnitude, 0, WS_TOLERANCE)
 	end)
 
+	t.test("transfers between a craft's horizon frame and solo frames keep the true position", function()
+		local pos, vel = orbit()
+		local ut = 321
+		-- a craft pocket (HORIZON_ALIGNED on the craft, D31) and an astronaut 380 m from the craft
+		local craftFrame = Frames.new(
+			Bodies.HOMEWORLD,
+			pos,
+			Universe.pocketRotation(Bodies.HOMEWORLD, pos, ut),
+			Vector3.new(4000, 4000, 0)
+		)
+		local astronaut = Vec3d.add(pos, Vec3d.new(120, -300, 200))
+		local before = Frames.pointToWorkspace(craftFrame, astronaut)
+		-- he splits off into a solo pocket in another slot
+		local ref = PocketFrames.solo("INERTIAL", Bodies.HOMEWORLD, astronaut, vel, ut)
+		local refPos = PocketFrames.referenceAt(ref, ut)
+		local solo = Frames.new(ref.bodyId, refPos, PocketFrames.rotationAt(ref, refPos, ut), SLOT)
+		local m = Frames.relativeTransform(craftFrame, solo)
+		local after = m:PointToWorldSpace(before)
+		t.expectNear((after - Frames.pointToWorkspace(solo, astronaut)).Magnitude, 0, WS_TOLERANCE, "same point")
+		t.expectNear((after - SLOT).Magnitude, 0, WS_TOLERANCE, "at his new pocket's origin")
+		-- the same astronaut seen from a SURFACE_ALIGNED pocket on the Mun (body offset in doubles)
+		local munCentre = Universe.bodyPosition(Bodies.MOON, ut)
+		local onMun = Vec3d.new(15000, 30, 40)
+		local surface = PocketFrames.solo("SURFACE_ALIGNED", Bodies.MOON, onMun, Vec3d.zero(), ut)
+		local surfaceFrame = Frames.new(surface.bodyId, surface.pos, surface.rot, SLOT)
+		local munAstronaut = Vec3d.sub(Vec3d.add(onMun, munCentre), Universe.bodyPosition(Bodies.HOMEWORLD, ut))
+		local wsEarth = Frames.pointToWorkspace(craftFrame, munAstronaut)
+		local cross =
+			Frames.relativeTransform(craftFrame, surfaceFrame, Universe.bodyOffset(Bodies.HOMEWORLD, Bodies.MOON, ut))
+		local wsMun = Frames.pointToWorkspace(surfaceFrame, onMun)
+		-- far from the slot the float workspace is coarse; compare in doubles-derived metres with a looser bound
+		t.expectNear((cross:PointToWorldSpace(wsEarth) - wsMun).Magnitude, 0, 0.5, "across bodies")
+	end)
+
 	t.test("the reference's SOI: Earth orbit stays, near the Mun it is the Mun", function()
 		local pos, vel = orbit()
 		local ref = PocketFrames.solo("INERTIAL", Bodies.HOMEWORLD, pos, vel, 0)

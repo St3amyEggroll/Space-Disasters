@@ -100,6 +100,7 @@ local TURN_RATE = 6 -- rad/s the astronaut turns toward where he flies
 local WALK_TO_FLOAT_MAX_SPEED = 20 -- m/s: a hop's speed is capped when he starts floating
 local PLATE_SIZE = Vector3.new(24, 1, 24) -- studs, the invisible ground plate under a walking astronaut
 local UNSTEADY_S = 0.5 -- s the pocket must move before a walking astronaut starts floating
+local UNDERGROUND_RESCUE = 1.5 -- studs: a walking astronaut whose feet sink this far below the ground is lifted out
 local NEAREST_REFRESH_S = 0.25 -- s between searches for the nearest craft
 local NEAREST_MAX_DISTANCE = 5000 -- m
 local THRUST_SEND_S = 0.1 -- s between EvaInput "Thrust" messages (the last change is always sent)
@@ -316,6 +317,13 @@ end
 -- Modes
 --============================================================================
 
+-- How well the pocket's up matches the ground's up under a body-relative point (cosine).
+local function groundAlignment(frame: Frames.Frame, bodyId: number, pos: Vec3d): number
+	local _, up = SurfaceHeight.height(bodyId, pos)
+	local pocketUp = frame.refRot.UpVector
+	return pocketUp.X * up.x + pocketUp.Y * up.y + pocketUp.Z * up.z
+end
+
 local function ensureHopForce(root: BasePart): VectorForce
 	local force = hopForce
 	if force and force.Parent ~= nil and hopAttachment and hopAttachment.Parent == root then
@@ -387,13 +395,28 @@ local function startEva(humanoid: Humanoid, root: BasePart)
 		end
 	end
 	local pos = Frames.pointFromWorkspace(frame, root.Position)
-	local vel = leftCraftVel or Vec3d.add(frameVel, Frames.vectorFromWorkspace(frame, root.AssemblyLinearVelocity))
-	state = Eva.new(frame.refBodyId, pos, vel, ut)
+	local vel = leftCraftVel
+	if vel == nil then
+		-- no craft to take the velocity from: the character's own (it may have been falling with Roblox gravity)
+		local rel = Frames.vectorFromWorkspace(frame, root.AssemblyLinearVelocity)
+		local speed = Vec3d.length(rel)
+		if speed > WALK_TO_FLOAT_MAX_SPEED then
+			rel = Vec3d.scale(rel, WALK_TO_FLOAT_MAX_SPEED / speed)
+		end
+		vel = Vec3d.add(frameVel, rel)
+	end
+	local s = Eva.new(frame.refBodyId, pos, vel :: Vec3d, ut)
+	state = s
 	local look = root.CFrame.LookVector
 	yaw = math.atan2(-look.X, -look.Z)
 	nearest = nil
 	nearestTimer = math.huge
 	enterFloat(humanoid)
+	-- next to a landed craft (a pocket that stands still on the ground) he steps out and drops to the ground walking
+	local stationary = Eva.stationaryPocket(Vec3d.length(frameVel), groundAlignment(frame, s.bodyId, s.pos))
+	if stationary and Eva.shouldWalk(true, true, Eva.groundHeight(s.bodyId, s.pos), 0) then
+		enterWalk(humanoid, root, frame, frameVel)
+	end
 	if lightOn then
 		sendLight()
 	end
@@ -428,13 +451,6 @@ local function cameraAxes(frame: Frames.Frame): (Vec3d, Vec3d, Vec3d)
 	return Frames.vectorFromWorkspace(frame, cf.LookVector),
 		Frames.vectorFromWorkspace(frame, cf.RightVector),
 		Frames.vectorFromWorkspace(frame, cf.UpVector)
-end
-
--- The ground's up (universe) under a body-relative point, and how well the pocket's up matches it.
-local function groundAlignment(frame: Frames.Frame, bodyId: number, pos: Vec3d): number
-	local _, up = SurfaceHeight.height(bodyId, pos)
-	local pocketUp = frame.refRot.UpVector
-	return pocketUp.X * up.x + pocketUp.Y * up.y + pocketUp.Z * up.z
 end
 
 local function stepFloat(dt: number, root: BasePart, humanoid: Humanoid, folder: Instance, now: number)
@@ -539,6 +555,15 @@ local function stepWalk(dt: number, root: BasePart, humanoid: Humanoid)
 		across = upWS:Cross(Vector3.xAxis)
 	end
 	plate.CFrame = CFrame.fromMatrix(ground - upWS * (PLATE_SIZE.Y / 2), across.Unit, upWS)
+	-- never under the ground (the plate would be above him): back onto it, without the fall
+	if h < Eva.ROOT_HEIGHT - UNDERGROUND_RESCUE then
+		root.CFrame = root.CFrame + upWS * (Eva.ROOT_HEIGHT - h)
+		local v = root.AssemblyLinearVelocity
+		local down = v:Dot(upWS)
+		if down < 0 then
+			root.AssemblyLinearVelocity = v - upWS * down
+		end
+	end
 
 	-- jetpack hop
 	local force = ensureHopForce(root)

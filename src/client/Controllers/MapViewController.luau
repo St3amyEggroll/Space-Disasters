@@ -521,7 +521,8 @@ local function resolveOwnCraft(): (number?, State?)
 	local pockets = Workspace:FindFirstChild("Pockets")
 	local pocket = if pockets then pockets:FindFirstChild(`Pocket_{PocketController.pocketId()}`) else nil
 	local primary = if pocket then pocket:GetAttribute("PrimaryId") else nil
-	if type(primary) == "number" then
+	-- CHANGED (Phase 6): an astronaut's solo pocket has a player as its primary, not a craft
+	if type(primary) == "number" and (pocket :: Instance):GetAttribute("PrimaryKind") ~= "Astronaut" then
 		return primary, RemoteCraftRenderer.sampleState(primary, UniverseTime.now() - INTERP_DELAY)
 	end
 	return nil, nil
