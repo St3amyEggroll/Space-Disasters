@@ -74,6 +74,7 @@ local FlightModel = require(ReplicatedStorage.Shared.Sim.FlightModel)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 local Kepler = require(ReplicatedStorage.Shared.Sim.Kepler) -- CHANGED (Phase 5)
 local Rails = require(ReplicatedStorage.Shared.Sim.Rails) -- CHANGED (Phase 5)
+local SimInterp = require(ReplicatedStorage.Shared.Sim.SimInterp) -- CHANGED (Rocket shudder)
 local MassProps = require(ReplicatedStorage.Shared.Craft.MassProps)
 local Parts = require(ReplicatedStorage.Shared.Config.Parts)
 local Protocol = require(ReplicatedStorage.Shared.Net.Protocol)
@@ -107,6 +108,8 @@ local MAX_STEPS_PER_FRAME = GameConfig.SIM_MAX_STEPS_PER_FRAME
 local SEND_INTERVAL = 1 / GameConfig.PILOT_STATE_RATE
 local THROTTLE_RATE = GameConfig.THROTTLE_RATE
 local UT_RESYNC_THRESHOLD = 0.25 -- s; the local sim's UT snaps to UniverseTime beyond this drift
+-- CHANGED (Rocket shudder): the render state blends the last two steps only when they are one step apart in UT
+local INTERP_MAX_GAP = STEP * 1.5
 local STAGE_STATS_INTERVAL = 0.5 -- s
 local ACTION_PRIORITY = Enum.ContextActionPriority.High.Value + 10
 -- CHANGED (Phase 2a feedback): camera "up" is gravity up low down and the solar plane's normal in space
@@ -164,6 +167,16 @@ local hud: FlightHUD.FlightHUD
 local craftId: number? = nil -- craft this client simulates
 local sim: Craft? = nil
 local accumulator = 0
+--[[
+	CHANGED (Rocket shudder): render-time interpolation (Shared/Sim/SimInterp). `stepStart` is the state before the
+	latest fixed step and `stepStartOf` the craft.state table it was taken from (a replaced state - override, rails,
+	a new flight - is never blended with it); `renderState` is what PocketController draws this frame (the provider
+	fills it in place, and the Effects report points at the same table, so both see this frame's values).
+]]
+local stepStart = SimInterp.newState()
+local stepStartOf: State? = nil
+local renderState = SimInterp.newState()
+local lastSteps = 0 -- fixed steps run in the latest frame (F3)
 local sendTimer = 0
 local throttle = 1
 local sasOn = false
@@ -510,6 +523,9 @@ local function stepSimulation(dt: number)
 	local steps = 0
 	while accumulator >= STEP and steps < MAX_STEPS_PER_FRAME do
 		applyControls(craft, STEP, piloting)
+		-- CHANGED (Rocket shudder): the state before this step, for render-time interpolation
+		SimInterp.copyInto(stepStart, craft.state)
+		stepStartOf = craft.state
 		FlightModel.step(craft)
 		reportDestroyed(craft)
 		if sim == nil then
@@ -521,6 +537,7 @@ local function stepSimulation(dt: number)
 	if steps >= MAX_STEPS_PER_FRAME then
 		accumulator = 0 -- drop the backlog instead of spiralling
 	end
+	lastSteps = steps -- CHANGED (Rocket shudder): F3
 	-- keep simulation time locked to Universal Time
 	local now = UniverseTime.now()
 	if math.abs(craft.state.ut - now) > UT_RESYNC_THRESHOLD then
@@ -545,6 +562,23 @@ local function stepSimulation(dt: number)
 			Protocol.encodePilotState(craftId :: number, craft.state, FlightModel.totalFuel(craft))
 		)
 	end
+end
+
+--[[
+	CHANGED (Rocket shudder): the craft's state at this render frame: between the state before the latest step and
+	the current one at the accumulator's fraction (SimInterp), so the pocket frame, the world, the effects and the
+	camera advance by the frame's dt every frame instead of in 60 Hz steps (0 / 2 steps per frame at 60 FPS, repeats
+	at 144 Hz). On rails, after an override or a new flight (craft.state replaced since the snapshot), across an SOI
+	change or a UT resync it is the current state itself. Filled in place: callers must not keep a reference past the
+	frame unless they want it to follow (the Effects report does, on purpose).
+]]
+local function renderStateOf(craft: Craft): State
+	local cur = craft.state
+	if rails ~= nil or stepStartOf ~= cur then
+		return SimInterp.copyInto(renderState, cur)
+	end
+	local out = SimInterp.blendInto(renderState, stepStart, cur, SimInterp.alpha(accumulator, STEP), INTERP_MAX_GAP)
+	return out
 end
 
 --============================================================================
@@ -963,17 +997,19 @@ local function reportEffects()
 			burning[engine.blockId] = FlightModel.engineThrottle(craft, engine)
 		end
 	end
+	local primary = PocketController.primaryCraftId() == id
 	Effects.reportCraft(id :: number, {
 		source = "Local",
 		model = model,
 		design = craft.physics.design,
-		state = craft.state,
+		-- CHANGED (Rocket shudder): the primary's state is the interpolated render state the pocket frame follows
+		-- (the same table PocketController reads this frame, filled in place, so Effects.step sees this frame's
+		-- values whichever runs first); it was the last step's state while the frame was drawn from it too
+		state = if primary then renderStateOf(craft) else craft.state,
 		burning = burning,
 		-- CHANGED (Phase 6): a secondary craft of a merged bubble exactly where PocketController posed it (at the
 		-- pocket's render UT, not at the simulation's); the primary as before, from the state through the pocket frame
-		craftCFrame = if PocketController.primaryCraftId() == id
-			then nil
-			else PocketController.craftCFrame(id :: number),
+		craftCFrame = if primary then nil else PocketController.craftCFrame(id :: number),
 	})
 end
 
@@ -1266,7 +1302,7 @@ function FlightController.Init()
 	end)
 	PocketController.registerPrimaryProvider(function(id: number): PocketController.PrimaryState?
 		if sim and id == craftId then
-			return (sim :: Craft).state
+			return renderStateOf(sim :: Craft) -- CHANGED (Rocket shudder): interpolated between steps
 		end
 		return nil
 	end)
@@ -1277,14 +1313,16 @@ function FlightController.Init()
 		end
 		local s = craft.state
 		return string.format(
-			"Flight: craft %d  alt %.0f m  v %.1f m/s  fuel %.0f kg  stage %d/%d  %s",
+			"Flight: craft %d  alt %.0f m  v %.1f m/s  fuel %.0f kg  stage %d/%d  %s  steps %d  a %.2f",
 			craftId or 0,
 			Vec3d.length(s.pos) - Bodies.get(s.bodyId).Radius,
 			Vec3d.length(s.vel),
 			FlightModel.totalFuel(craft),
 			craft.stageIndex - 1,
 			#craft.stages,
-			if rails then "ON RAILS" else string.format("idle %.1f s", idleTime) -- CHANGED (Phase 5)
+			if rails then "ON RAILS" else string.format("idle %.1f s", idleTime), -- CHANGED (Phase 5)
+			lastSteps, -- CHANGED (Rocket shudder): fixed steps in the latest frame and the render fraction
+			SimInterp.alpha(accumulator, STEP)
 		)
 	end)
 end
