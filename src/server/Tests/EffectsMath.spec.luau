@@ -1,6 +1,7 @@
 --!strict
 -- Tests for Render/EffectsMath (Phase 10): plume shaping by air pressure, smoke-trail fading, dust, re-entry heat
--- calibration on half-size Earth, the vapour cone, drift-aimed particle emission and the small geometry helpers.
+-- calibration on the 60 km Earth (CHANGED (Physics feel): was half-size Earth), the vapour cone, drift-aimed particle
+-- emission and the small geometry helpers.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TestKit = require(script.Parent.TestKit)
@@ -12,7 +13,9 @@ local EffectsMath = require(game:GetService("StarterPlayer").StarterPlayerScript
 -- Tunables
 --============================================================================
 local EPSILON = 1e-9
-local ORBIT_SPEED = 450 -- m/s, a re-entry from a 15 km orbit on half-size Earth
+-- CHANGED (Physics feel): a pod re-entering from low orbit on the 60 km Earth, measured with the flight model:
+-- ~710 m/s at 7 km, ~700 at 6 km, ~670 at 5 km (was 450 m/s on half-size Earth)
+local ORBIT_SPEED = 700 -- m/s
 --============================================================================
 
 local HOMEWORLD = Bodies.HOMEWORLD
@@ -66,7 +69,7 @@ return function(t: TestKit.Context)
 	t.test("trail: full low down, gone high up, fading smoothly", function()
 		t.expectNear(EffectsMath.trailStrength(1), 1, EPSILON)
 		t.expectNear(EffectsMath.trailStrength(pressure(500)), 1, EPSILON)
-		t.expectNear(EffectsMath.trailStrength(pressure(6000)), 0, EPSILON)
+		t.expectNear(EffectsMath.trailStrength(pressure(6500)), 0, EPSILON) -- CHANGED (Physics feel): 1.1 km scale height
 		t.expectNear(EffectsMath.trailStrength(0), 0, EPSILON)
 		local previous = 1
 		for altitude = 0, 7000, 250 do
@@ -105,20 +108,23 @@ return function(t: TestKit.Context)
 
 	t.test("heat: visible on a re-entry from orbit, not on a normal ascent", function()
 		-- re-entry at orbital speed through the middle of the air
-		t.expectTrue(EffectsMath.heatFactor(density(5000), ORBIT_SPEED) > 0.4, "re-entry at 5 km should glow")
-		t.expectTrue(EffectsMath.heatFactor(density(4000), ORBIT_SPEED) > 0.7, "re-entry at 4 km should glow hard")
-		t.expectTrue(EffectsMath.heatFactor(density(6800), ORBIT_SPEED) < 0.25, "barely any glow at the air's top")
-		-- a typical ascent: 150 m/s at 1 km, 250 m/s at 2 km, 330 m/s at 3 km, 400 m/s at 4.5 km
-		t.expectNear(EffectsMath.heatFactor(density(1000), 150), 0, EPSILON)
-		t.expectNear(EffectsMath.heatFactor(density(2000), 250), 0, EPSILON)
-		t.expectNear(EffectsMath.heatFactor(density(3000), 330), 0, EPSILON)
-		t.expectTrue(EffectsMath.heatFactor(density(4500), 400) < 0.15, "only a faint glow on a fast ascent")
+		-- CHANGED (Physics feel): altitudes and speeds for the 60 km Earth and the new ascent speeds
+		t.expectTrue(EffectsMath.heatFactor(density(6000), ORBIT_SPEED) > 0.4, "re-entry at 6 km should glow")
+		t.expectTrue(EffectsMath.heatFactor(density(5000), ORBIT_SPEED) > 0.7, "re-entry at 5 km should glow hard")
+		t.expectTrue(EffectsMath.heatFactor(density(7800), ORBIT_SPEED) < 0.25, "barely any glow at the air's top")
+		-- the sanity rocket's gravity turn to orbit (measured): 220 m/s at 1 km, 340 at 2 km, 450 at 3 km, 490 at 4 km
+		t.expectNear(EffectsMath.heatFactor(density(1000), 220), 0, EPSILON)
+		t.expectNear(EffectsMath.heatFactor(density(2000), 340), 0, EPSILON)
+		t.expectNear(EffectsMath.heatFactor(density(3000), 450), 0, EPSILON)
+		t.expectNear(EffectsMath.heatFactor(density(4000), 490), 0, EPSILON)
+		-- the most aggressive two-stage gravity turn measured: 620 m/s at 5 km
+		t.expectTrue(EffectsMath.heatFactor(density(5000), 620) < 0.15, "only a faint glow on a fast ascent")
 		-- vacuum and slow flight never glow
 		t.expectNear(EffectsMath.heatFactor(0, 2000), 0, EPSILON)
 		t.expectNear(EffectsMath.heatFactor(density(0), 300), 0, EPSILON)
 		-- monotonic in speed and density
-		t.expectTrue(EffectsMath.heatFactor(density(4000), 470) >= EffectsMath.heatFactor(density(4000), 430))
-		t.expectTrue(EffectsMath.heatFactor(density(3500), 450) >= EffectsMath.heatFactor(density(5000), 450))
+		t.expectTrue(EffectsMath.heatFactor(density(6000), 690) > EffectsMath.heatFactor(density(6000), 640))
+		t.expectTrue(EffectsMath.heatFactor(density(6000), 700) > EffectsMath.heatFactor(density(7000), 700))
 		t.expectTrue(EffectsMath.heatFactor(10, 5000) <= 1 + EPSILON, "capped at 1")
 	end)
 

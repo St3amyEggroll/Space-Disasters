@@ -74,7 +74,9 @@ local ACK_TIMEOUT_S = GameConfig.POCKET_TRANSFER_ACK_TIMEOUT
 local CREW_BOUNDS_MARGIN = 4 -- studs around a craft's bounding box that count as "aboard"
 local CREW_STAND_RAY = 8 -- CHANGED (Phase 3): studs below the root a standing crew member's craft must be
 local POSITION_TOLERANCE = 50 -- m: |dpos - vel*dt| allowed between pilot states
-local MAX_ACCEL = 250 -- m/s^2 of velocity change allowed between pilot states (generous)
+-- CHANGED (Physics feel): was 250. With engines x1.5 a Solid Booster pushes 292.5 kN against its 600 kg dry mass
+-- (~490 m/s^2), so a cluster of boosters near burnout could legitimately exceed 250 and collect strikes.
+local MAX_ACCEL = 500 -- m/s^2 of velocity change allowed between pilot states (above any part's thrust / dry mass)
 local VELOCITY_SLACK = 2 -- m/s
 local STRIKE_LIMIT = 3
 local STRIKE_WINDOW_S = 5

@@ -72,7 +72,8 @@ local CAMERA_SWAY_DEG = Vector2.new(0.35, 0.45) -- slow "handheld" pitch / yaw s
 local CAMERA_SWAY_PERIODS = Vector2.new(13, 17) -- s
 
 -- The view of the universe (MenuSceneMath.solveView)
-local VIEW_ALTITUDE = 10000 -- m above Earth's sea level (air ends at 7 km: black sky, scaled mode)
+-- CHANGED (Physics feel): the 60 km Earth's air ends at 8 km (was 7 km), still below this view
+local VIEW_ALTITUDE = 10000 -- m above Earth's sea level (air ends at 8 km: black sky, scaled mode)
 local LIMB_NY = -0.28 -- Earth's horizon this far below the screen centre (normalised, -1 = bottom edge)
 local SUN_NX, SUN_NY = 0.78, 0.72 -- where Sol sits on screen (normalised; top right: glare, and Earth's day side)
 local SUN_DRIFT = Vector2.new(0.05, 0.06) -- slow sway of that point

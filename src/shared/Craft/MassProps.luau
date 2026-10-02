@@ -10,11 +10,14 @@
 
 	Design coordinates are in blocks; every output is in studs (= meters): positions and sizes are scaled by
 	CraftDesign.GRID (CHANGED Phase 1 rework). Contact hull points arrive with the flight model in Phase 2.
+	CHANGED (Physics feel): the aerodynamic outputs (area, finArea) are at the parts' visual size: stud areas
+	times GameConfig.AERO_METERS_PER_STUD^2 (see GameConfig). Positions, the CoP and inertia stay in studs.
 	Pure module: no services.
 ]]
 
 local CraftDesign = require(script.Parent.CraftDesign)
 local CraftGraph = require(script.Parent.CraftGraph)
+local GameConfig = require(script.Parent.Parent.Config.GameConfig)
 local Parts = require(script.Parent.Parent.Config.Parts)
 
 type Design = CraftDesign.Design
@@ -26,6 +29,8 @@ type Graph = CraftGraph.Graph
 local GRID = CraftDesign.GRID
 local MAX_BURN_EVENTS = 512 -- safety cap on flameout events per stage
 local EPSILON_FUEL = 1e-9 -- kg
+-- CHANGED (Physics feel): m^2 of aerodynamic area per stud^2 of part face (parts at their visual size)
+local AERO_AREA_SCALE = GameConfig.AERO_METERS_PER_STUD * GameConfig.AERO_METERS_PER_STUD
 --============================================================================
 
 export type Props = {
@@ -34,9 +39,9 @@ export type Props = {
 	fuelMass: number,
 	com: Vector3, -- design-local
 	inertia: Vector3, -- kg*m^2 about the CoM, design axes (diagonal)
-	area: Vector3, -- projected area seen along X, Y, Z (m^2)
+	area: Vector3, -- projected aerodynamic area seen along X, Y, Z (m^2, visual size: AERO_AREA_SCALE applied)
 	leadDragFactor: { [string]: number }, -- "+X", "-X", "+Y", "-Y", "+Z", "-Z"
-	finArea: number,
+	finArea: number, -- m^2, visual size (AERO_AREA_SCALE applied, like FlightModel's fins)
 	cop: Vector3, -- area-weighted centre of pressure, design-local
 	partCount: number,
 }
@@ -122,7 +127,7 @@ function MassProps.compute(design: Design, fuel: FuelState?, onlyIds: { [number]
 		copSum += center * (faceArea * def.DragFactor)
 		copWeight += faceArea * def.DragFactor
 		if def.Fin then
-			finArea += def.Fin.Area
+			finArea += def.Fin.Area * AERO_AREA_SCALE -- CHANGED (Physics feel): visual-size aero area
 		end
 
 		local extents: { [string]: number } = {
@@ -167,7 +172,8 @@ function MassProps.compute(design: Design, fuel: FuelState?, onlyIds: { [number]
 		fuelMass = fuelMass,
 		com = com,
 		inertia = Vector3.new(ix, iy, iz),
-		area = Vector3.new(unionArea(rectsX), unionArea(rectsY), unionArea(rectsZ)) * (GRID * GRID),
+		-- CHANGED (Physics feel): grid cells -> stud^2 -> visual-size m^2
+		area = Vector3.new(unionArea(rectsX), unionArea(rectsY), unionArea(rectsZ)) * (GRID * GRID * AERO_AREA_SCALE),
 		leadDragFactor = leadDragFactor,
 		finArea = finArea,
 		cop = if copWeight > 0 then copSum / copWeight else com,

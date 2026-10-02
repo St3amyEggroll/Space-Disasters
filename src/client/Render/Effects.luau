@@ -86,7 +86,8 @@ local TRAIL_COLOR = ColorSequence.new(Color3.fromRGB(245, 242, 236), Color3.from
 local MAX_DUST = 4
 local DUST_EMITTERS = 6 -- point emitters in a ring (each aimed outward)
 local DUST_RATE_MAX = 90 -- puffs/s for the whole ring at full strength and quality
-local DUST_REFERENCE_THRUST = 200000 -- N; thrust fraction 1 (about one Solid Booster)
+-- CHANGED (Physics feel): x1.5 with every engine's thrust (was 200000), so launch dust looks the same per engine
+local DUST_REFERENCE_THRUST = 300000 -- N; thrust fraction 1 (about one Solid Booster)
 local DUST_OUT_SPEED = 38 -- m/s outward at full strength
 local DUST_RISE_SPEED = 5 -- m/s upward
 local DUST_RANDOM_SPEED = 9
