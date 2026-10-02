@@ -60,13 +60,13 @@ local function compute(): Tier
 		tier = "High"
 	end
 	if mobile and tier == "High" then
-		tier = "Medium"
+		return "Medium"
 	end
 	return tier
 end
 
 local function refresh()
-	local tier = compute()
+	local tier: Tier = compute()
 	if tier ~= current then
 		current = tier
 		changed:Fire(tier)
