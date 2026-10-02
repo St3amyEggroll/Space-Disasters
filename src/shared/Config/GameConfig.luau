@@ -166,6 +166,9 @@ local GameConfig = {
 	SAVE_SLOTS = 10,
 	PAD_DESPAWN_GRACE_S = 60,
 	DEFAULT_BOARDING = "Public", -- "Private" | "Friends" | "Public"
+	-- CHANGED (Boarding): boarding a craft that flies in another pocket from the base (Shared/Craft/Boarding)
+	BOARD_MAX_SPEED = 5, -- m/s relative to the ground; faster crafts cannot be boarded from the base
+	BOARD_RANGE = 25, -- m beyond the craft's bounding radius within which a player on foot may board it
 	HOME_BASE_MAX_PARTS = 1500,
 
 	--========================================================================

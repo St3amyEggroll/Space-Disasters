@@ -9,6 +9,8 @@
 	Pilots, deaths and respawn arrive with flight in Phase 2.
 	CHANGED (Phase 2a feedback): Roll Out puts the owner straight into the craft's pilot seat, and every successful
 	sit is announced (onSeated) so FlightService can start the flight when a pilot sits down.
+	CHANGED (Boarding): canBoard and sitIn are exported for FlightService's cross-pocket boarding (BoardCraft): a
+	player on foot in the base pocket boards a craft that already moved into its flight pocket.
 ]]
 
 local Players = game:GetService("Players")
@@ -227,6 +229,11 @@ function CrewService.Init()
 	notifyRemote = Remotes.event("Notify")
 	CraftService.onRolledOut(onRolledOut)
 end
+
+-- CHANGED (Boarding): the boarding permission check and the seat entry of SitPrompt, for FlightService's
+-- cross-pocket boarding (BoardCraft). canBoard may yield (friend check); sitIn does not check permission.
+CrewService.canBoard = canBoard
+CrewService.sitIn = sitIn
 
 -- CHANGED (Phase 2a feedback): called (in its own thread) whenever a player sits down in a craft seat.
 function CrewService.onSeated(listener: (player: Player, seat: Seat) -> ())

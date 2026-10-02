@@ -26,6 +26,10 @@
 	  * seedState(): the former pilot's last local state, so its pocket frame continues smoothly when the server
 	    takes the craft over.
 
+	CHANGED (Boarding): copies of slow crafts flying in another pocket get client-side seat prompts while the local
+	player is on foot in the base (Render/BoardPrompts, rules in Shared/Craft/Boarding), so crafts can be boarded
+	after their pilot sat down.
+
 	CHANGED (Phase 10): effects. Every copy drawn this frame is reported to Render/Effects (source "Stream": plumes,
 	smoke trail, dust, re-entry heat from the interpolated state), and so is the real model of this pocket's primary
 	craft when this client does not fly it (passengers: their own rocket now has flames and smoke too). CraftStaged
@@ -52,6 +56,8 @@ local DebugOverlay = require(script.Parent.DebugOverlay)
 local Effects = require(script.Parent.Parent.Render.Effects) -- CHANGED (Phase 10)
 local FlightModel = require(ReplicatedStorage.Shared.Sim.FlightModel) -- CHANGED (Phase 10): flag bits
 local Plumes = require(script.Parent.Parent.Render.Plumes)
+local Boarding = require(ReplicatedStorage.Shared.Craft.Boarding) -- CHANGED (Boarding)
+local BoardPrompts = require(script.Parent.Parent.Render.BoardPrompts) -- CHANGED (Boarding)
 local Gear = require(script.Parent.Parent.Render.Gear)
 local Puppets = require(script.Parent.Parent.Render.Puppets)
 local RenderContext = require(script.Parent.Parent.Render.RenderContext)
@@ -91,6 +97,7 @@ type Entry = {
 	prelaunch: boolean, -- rolled out, standing on its pad in the base pocket
 	radius: number, -- m, farthest block corner from the reference point
 	lod: Lod,
+	boarding: BoardPrompts.Candidate, -- CHANGED (Boarding): reused every frame the copy may be boarded
 }
 
 local RemoteCraftRenderer = {}
@@ -98,6 +105,7 @@ local RemoteCraftRenderer = {}
 local entries: { [number]: Entry } = {}
 local folder: Folder
 local copies: { [number]: Puppets.CopyInfo } = {} -- CHANGED (Phase 3): copies drawn this frame (for puppets)
+local boardCandidates: { [number]: BoardPrompts.Candidate } = {} -- CHANGED (Boarding): copies that may be boarded
 local frameStats = { copies = 0, markers = 0, frozen = 0 }
 -- CHANGED (Phase 5): crafts on rails, sampled analytically instead of from the state buffer (RailsController
 -- fills this from CraftRails / CraftOffRails / CraftSpawned and mirrors SOI changes).
@@ -410,6 +418,7 @@ function RemoteCraftRenderer.render(ctx: RenderContext.RenderContext)
 	local cameraAbs = ctx.cameraAbs
 	local refBodyId = ctx.frame.refBodyId
 	table.clear(copies)
+	table.clear(boardCandidates) -- CHANGED (Boarding)
 	frameStats.copies, frameStats.markers, frameStats.frozen = 0, 0, 0
 	for id, entry in entries do
 		-- CHANGED (Phase 3): a craft on its pad belongs to the base pocket (its real model is shown there)
@@ -460,6 +469,22 @@ function RemoteCraftRenderer.render(ctx: RenderContext.RenderContext)
 			poseCopy(entry, s, target, ctx.dt)
 			copies[id] = { root = entry.root :: BasePart, distance = distance, radius = entry.radius }
 			frameStats.copies += 1
+			-- CHANGED (Boarding): a slow craft in another pocket, seen from the base, may be boarded from its copy
+			if
+				Boarding.offersPrompts(
+					ctx.pocketId,
+					entry.pocketId,
+					entry.prelaunch,
+					entry.isDebris,
+					Vec3d.length(s.vel)
+				)
+			then
+				local candidate = entry.boarding
+				candidate.model = entry.model
+				candidate.root = entry.root
+				candidate.radius = entry.radius
+				boardCandidates[id] = candidate
+			end
 		else
 			hideModel(entry)
 			local blocked = entry.isDebris
@@ -477,6 +502,7 @@ function RemoteCraftRenderer.render(ctx: RenderContext.RenderContext)
 	end
 	-- CHANGED (Phase 3): crews of crafts in other pockets, inside the copies just posed
 	Puppets.update(ctx.pocketId, renderUT, copies, RemoteCraftRenderer.sampleState)
+	BoardPrompts.update(boardCandidates) -- CHANGED (Boarding): after the copies are posed (and hidden ones dropped)
 end
 
 --============================================================================
@@ -511,11 +537,14 @@ local function onSpawned(craftId: unknown, designBuffer: unknown, stateBuffer: u
 		CraftMarkers.remove(craftId) -- CHANGED (Phase 3): rebuilt with the new label
 	end
 	local prelaunch = data.prelaunch == true
+	local ownerUserId = if type(data.ownerUserId) == "number" then data.ownerUserId else 0
+	local pocketId = if type(data.pocketId) == "number" then data.pocketId else 0
+	local radius = craftRadius(design)
 	local entry: Entry = {
 		id = craftId,
 		design = design,
-		ownerUserId = if type(data.ownerUserId) == "number" then data.ownerUserId else 0,
-		pocketId = if type(data.pocketId) == "number" then data.pocketId else 0,
+		ownerUserId = ownerUserId,
+		pocketId = pocketId,
 		active = {},
 		-- CHANGED (Phase 3): a pad craft's state is not part of a flight stream; start a new buffer either way
 		states = if existing and not existing.prelaunch and not prelaunch then existing.states else {},
@@ -527,8 +556,17 @@ local function onSpawned(craftId: unknown, designBuffer: unknown, stateBuffer: u
 		ownerName = if type(data.ownerName) == "string" then data.ownerName else "",
 		isDebris = data.isDebris == true,
 		prelaunch = prelaunch,
-		radius = craftRadius(design),
+		radius = radius,
 		lod = "None" :: Lod,
+		-- CHANGED (Boarding)
+		boarding = {
+			craftId = craftId,
+			pocketId = pocketId,
+			ownerUserId = ownerUserId,
+			radius = radius,
+			model = nil,
+			root = nil,
+		},
 	}
 	if type(data.active) == "table" then
 		for _, id in data.active do
@@ -555,6 +593,7 @@ local function onRemoved(craftId: unknown)
 	end
 	CraftMarkers.remove(craftId) -- CHANGED (Phase 3)
 	railsById[craftId] = nil -- CHANGED (Phase 5)
+	BoardPrompts.clear(craftId) -- CHANGED (Boarding)
 end
 
 local function onStaged(

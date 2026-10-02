@@ -79,6 +79,8 @@ local POD_WINDOW_TRANSPARENCY = 0.2 -- pod windows are dark glass
 
 local SEAT_PROMPT_DISTANCE = 8
 local PROMPT_KEY = Enum.KeyCode.E
+local PILOT_SEAT_ACTION = "Pilot" -- CHANGED (Boarding): named, shared with the client's boarding prompts
+local SEAT_ACTION = "Sit"
 
 -- Fuel tanks and boosters
 local HULL_INSET = 0.15 -- hull cylinders are this much narrower than caps/stripes so the rings stand proud
@@ -457,7 +459,14 @@ local function attachment(parent: Instance, name: string, cf: CFrame): Attachmen
 	return att
 end
 
-local function prompt(parent: Instance, name: string, actionText: string, objectText: string, distance: number)
+-- CHANGED (Boarding): returns the prompt (the client's boarding prompts on cosmetic copies are built the same way)
+local function prompt(
+	parent: Instance,
+	name: string,
+	actionText: string,
+	objectText: string,
+	distance: number
+): ProximityPrompt
 	local pp = Instance.new("ProximityPrompt")
 	pp.Name = name
 	pp.ActionText = actionText
@@ -467,6 +476,7 @@ local function prompt(parent: Instance, name: string, actionText: string, object
 	pp.RequiresLineOfSight = false
 	pp.KeyboardKeyCode = PROMPT_KEY
 	pp.Parent = parent
+	return pp
 end
 
 -- A seat whose occupant faces cf.LookVector. Real: a Disabled Seat with a SitPrompt; Cosmetic: a plain Part.
@@ -491,7 +501,13 @@ local function seat(ctx: Ctx, index: number, size: Vector3, cf: CFrame): BasePar
 	part:SetAttribute("SeatIndex", index)
 	part:SetAttribute("IsPilot", isPilot)
 	if ctx.real then
-		prompt(part, "SitPrompt", if isPilot then "Pilot" else "Sit", ctx.def.DisplayName, SEAT_PROMPT_DISTANCE)
+		prompt(
+			part,
+			"SitPrompt",
+			if isPilot then PILOT_SEAT_ACTION else SEAT_ACTION,
+			ctx.def.DisplayName,
+			SEAT_PROMPT_DISTANCE
+		)
 	end
 	return part
 end
@@ -1035,6 +1051,15 @@ function PartVisuals.build(def: Parts.PartDef, mode: Mode): Model
 	local builder = BUILDERS[def.Id] or buildFallback
 	builder(ctx)
 	return model
+end
+
+--[[
+	CHANGED (Boarding): a seat prompt that looks and behaves exactly like a real seat's SitPrompt ("Pilot" on a pilot
+	seat, "Sit" otherwise, the part's name, same key and range), named `name` and parented to `parent`. The client
+	puts these on the seats of cosmetic copies of crafts in other pockets (Render/BoardPrompts).
+]]
+function PartVisuals.seatPrompt(parent: Instance, name: string, isPilot: boolean, objectText: string): ProximityPrompt
+	return prompt(parent, name, if isPilot then PILOT_SEAT_ACTION else SEAT_ACTION, objectText, SEAT_PROMPT_DISTANCE)
 end
 
 -- Recolours every paintable part (Paint = true) of a built model; nil restores each part's BaseColor.
