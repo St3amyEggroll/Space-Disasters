@@ -102,6 +102,21 @@ return function(t: TestKit.Context)
 		t.expectEqual((s :: State).ut, 1)
 	end)
 
+	-- CHANGED (Deploy fix)
+	t.test("lead carries a delayed sample to the present, capped at maxLead", function()
+		local states = stream(10, 11, 20)
+		local delay = GameConfig.INTERP_DELAY
+		local sampled = StateBuffer.sample(states, 10.9 - delay) :: State
+		local led = StateBuffer.lead(sampled, 10.9, delay)
+		t.expectNear(led.pos.x, 1e6 + 100 * 10.9, 1e-6)
+		t.expectNear(led.ut, 10.9, 1e-9)
+		-- a stale (frozen) state is led by maxLead at most
+		local stale = StateBuffer.lead(at(5), 10.9, delay)
+		t.expectNear(stale.ut, 5 + delay, 1e-9)
+		-- a state already at (or after) the present is unchanged
+		t.expectEqual(StateBuffer.lead(at(11), 10.9, delay).ut, 11)
+	end)
+
 	t.test("an empty buffer has no state", function()
 		local s, mode = StateBuffer.sample({}, 1)
 		t.expectTrue(s == nil and mode == nil)

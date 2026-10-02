@@ -124,4 +124,20 @@ function StateBuffer.sample(states: { State }, ut: number, maxExtrapolate: numbe
 	return StateBuffer.extrapolate(newest, ahead), "Extrapolated"
 end
 
+--[[
+	CHANGED (Deploy fix): carries a sampled state forward to `ut` (the present) with its own velocity, by at most
+	maxLead seconds. Renderers sample other crafts INTERP_DELAY in the past for smoothness; drawn next to our own
+	craft (drawn at the present) every craft would then sit velocity * delay behind where it is (about 50-70 m
+	in orbit), so a stage pushed out in front appeared to jump backwards. Leading by the delay keeps the
+	interpolation's smoothness but removes that shared offset; only the relative acceleration over the delay
+	(centimetres) remains. A frozen (stale) state is led by maxLead at most.
+]]
+function StateBuffer.lead(s: State, ut: number, maxLead: number): State
+	local dt = math.clamp(ut - s.ut, 0, maxLead)
+	if dt <= 0 then
+		return s
+	end
+	return StateBuffer.extrapolate(s, dt)
+end
+
 return table.freeze(StateBuffer)

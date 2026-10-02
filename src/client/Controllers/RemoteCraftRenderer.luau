@@ -423,10 +423,13 @@ function RemoteCraftRenderer.render(ctx: RenderContext.RenderContext)
 		if not inMyPocket and #entry.design.blocks > 0 then
 			local onRails = railsById[id] -- CHANGED (Phase 5): crafts on rails are not streamed; sample the rail
 			if onRails then
-				state = Rails.stateAt(onRails, renderUT)
+				-- CHANGED (Deploy fix): a rail is exact at any time, so sample it now (not INTERP_DELAY ago)
+				state = Rails.stateAt(onRails, ctx.ut)
 			else
 				local sampled, mode = StateBuffer.sample(entry.states, renderUT)
-				state = sampled
+				-- CHANGED (Deploy fix): lead the delayed sample to now, so crafts are drawn where they are
+				-- relative to our own craft instead of velocity * INTERP_DELAY behind (StateBuffer.lead)
+				state = if sampled then StateBuffer.lead(sampled, ctx.ut, INTERP_DELAY) else nil
 				if mode == "Frozen" then
 					frameStats.frozen += 1
 				end
