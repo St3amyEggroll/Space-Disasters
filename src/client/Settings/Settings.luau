@@ -21,6 +21,8 @@
 	                                                     CHANGED (Night review): SettingsSchema.rebind: "same context"
 	                                                     = listening at the same time (MapView / ToggleHUD on EVA),
 	                                                     and false for E on anything that listens on EVA
+	                                                     CHANGED (Night review 2): (false, blockedBy) when the key's
+	                                                     holder cannot take the old key (a refused swap)
 	  Settings.resetKeybinds()                           every action back to its default key
 	  Settings.resetAll()                                every field back to its default
 	  Settings.onChanged(fn(field)) -> RBXScriptConnection
@@ -117,7 +119,7 @@ function Settings.setKeybind(action: string, key: Enum.KeyCode): (boolean, strin
 	-- and MapView; E is refused for anything that listens on EVA). Was: swaps within the action's context only.
 	local ok, swappedWith = SettingsSchema.rebind(binds, action, key.Name)
 	if not ok then
-		return false, nil
+		return false, swappedWith -- CHANGED (Night review 2): the action that blocked the swap, if any
 	end
 	userChanged(KEYBINDS_FIELD)
 	return true, swappedWith

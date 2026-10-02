@@ -67,6 +67,8 @@ local AUDIO_NOTE = "Sounds are coming in a later update."
 local RESERVED_TOAST = "%s is reserved. Press another key (Escape cancels)."
 local UNBINDABLE_TOAST = "%s can't be bound. Press another key (Escape cancels)."
 local SWAPPED_TOAST = "Swapped with %s"
+-- CHANGED (Night review 2): a refused swap (SettingsSchema.rebind): key, its holder, the holder, the key it can't take
+local BLOCKED_TOAST = "%s is %s's key, and %s can't take %s. Press another key (Escape cancels)."
 local KEYS_RESET_TOAST = "Keys reset to defaults"
 local ALL_RESET_TOAST = "Settings reset to defaults"
 local RESET_DIALOG: Kit.ConfirmOptions = {
@@ -178,8 +180,21 @@ local function onCaptureInput(input: InputObject, _gameProcessed: boolean)
 		)
 		return -- keep listening
 	end
-	endCapture()
+	-- CHANGED (Night review 2): a refused swap (the key's holder can't take this action's key, e.g. MapView can't
+	-- take Space, which EvaUp holds on EVA) says why and keeps listening; it used to end the capture with
+	-- "<key> can't be bound" for a key that can be
+	local previousLabel = Keybinds.label(action)
 	local ok, swappedWith = Settings.setKeybind(action, key)
+	if not ok and swappedWith then
+		local holder = SettingsSchema.findAction(swappedWith)
+		local holderLabel = if holder then holder.label else swappedWith
+		Kit.toast(
+			string.format(BLOCKED_TOAST, Keybinds.keyLabel(key), holderLabel, holderLabel, previousLabel),
+			"Warning"
+		)
+		return -- keep listening
+	end
+	endCapture()
 	if not ok then
 		Kit.toast(string.format(UNBINDABLE_TOAST, Keybinds.keyLabel(key)), "Error")
 	elseif swappedWith then

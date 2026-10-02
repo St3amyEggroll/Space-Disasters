@@ -309,6 +309,13 @@ return function(t: TestKit.Context)
 		binds = SettingsSchema.defaultKeybinds()
 		t.expectTrue(not (SettingsSchema.rebind(binds, "Stage", "M")), "MapView may not take EvaUp's Space")
 		t.expectEqual(binds.Stage, "Space", "unchanged")
+		-- CHANGED (Night review 2): a refused swap names the action that blocked it (the Settings screen's toast)
+		local refused, blockedBy = SettingsSchema.rebind(binds, "Stage", "M")
+		t.expectTrue(not refused)
+		t.expectEqual(blockedBy, "MapView", "blocked by MapView")
+		refused, blockedBy = SettingsSchema.rebind(binds, "EvaBrake", "E")
+		t.expectTrue(not refused)
+		t.expectEqual(blockedBy, nil, "a key the action may not use names nobody")
 		-- an EVA action onto MapView's key: swapped across contexts
 		binds = SettingsSchema.defaultKeybinds()
 		ok, swapped = SettingsSchema.rebind(binds, "EvaLight", "M")
@@ -337,8 +344,10 @@ return function(t: TestKit.Context)
 		binds.ToggleSAS = "J"
 		binds.EvaLight = "J" -- fine: ToggleSAS does not listen on EVA
 		local snapshot = table.clone(binds)
-		ok = SettingsSchema.rebind(binds, "EvaLight", "K")
+		local blocker
+		ok, blocker = SettingsSchema.rebind(binds, "EvaLight", "K")
 		t.expectTrue(not ok, "MapView cannot take J: ToggleSAS holds it in flight")
+		t.expectEqual(blocker, "MapView", "CHANGED (Night review 2): the blocked holder")
 		for id, key in snapshot do
 			t.expectEqual(binds[id], key, `unchanged: {id}`)
 		end

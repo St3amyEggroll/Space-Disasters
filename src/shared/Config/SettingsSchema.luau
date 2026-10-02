@@ -57,6 +57,8 @@
 	  SettingsSchema.isKeyAllowedFor(actionId, key) -> boolean   CHANGED (Night review): bindable, not reserved there
 	  SettingsSchema.sharesKeys(a, b) -> boolean              CHANGED (Night review): they listen at the same time
 	  SettingsSchema.rebind(keybinds, actionId, key) -> (ok, swappedWith?)   CHANGED (Night review): with swaps
+	                                                          CHANGED (Night review 2): (false, blockedBy) when a
+	                                                          swap is refused
 	  SettingsSchema.defaultKeybinds() -> { [string]: string } fresh table
 	  SettingsSchema.pilotKeys(keybinds) -> { string }        CHANGED (Phase 11 review): Flight keys + PILOT_SINK_KEYS
 	  SettingsSchema.defaults() -> Values                     fresh table
@@ -553,6 +555,8 @@ end
 	key instead (a swap; one key may be held by a Flight AND an EVA action, which both swap); returns the first of
 	them. False too when such a swap would itself clash (the previous key is not allowed for that action, or a third
 	action listening with it holds it already).
+	CHANGED (Night review 2): a refused swap returns the id of the action that holds `key` and cannot take the
+	previous key (false, blockedBy), so the Settings screen can say why instead of "this key can't be bound".
 ]]
 function SettingsSchema.rebind(keybinds: { [string]: string }, actionId: string, key: string): (boolean, string?)
 	if not SettingsSchema.isKeyAllowedFor(actionId, key) then
@@ -570,7 +574,7 @@ function SettingsSchema.rebind(keybinds: { [string]: string }, actionId: string,
 	end
 	for _, otherId in others do
 		if previous == nil or not SettingsSchema.isKeyAllowedFor(otherId, previous) then
-			return false, nil
+			return false, otherId -- CHANGED (Night review 2): the action blocking the swap
 		end
 		for _, third in ACTIONS do
 			if
@@ -579,7 +583,7 @@ function SettingsSchema.rebind(keybinds: { [string]: string }, actionId: string,
 				and not table.find(others, third.id)
 				and SettingsSchema.sharesKeys(otherId, third.id)
 			then
-				return false, nil
+				return false, otherId -- CHANGED (Night review 2): the action blocking the swap
 			end
 		end
 	end
