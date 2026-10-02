@@ -880,6 +880,8 @@ local function cameraShakeInputs(seatInfo: SeatInfo): (number, number, number)
 	return thrustFraction, nearGround, dynamicPressure
 end
 
+local cameraGroundScratch = Vec3d.zero() -- CHANGED (Phase 8)
+
 local function cameraTarget(): ChaseCamera.Target?
 	local seatInfo = currentSeat()
 	if seatInfo == nil then
@@ -912,6 +914,12 @@ local function cameraTarget(): ChaseCamera.Target?
 		thrustFraction = thrustFraction,
 		nearGround = nearGround,
 		dynamicPressure = dynamicPressure,
+		-- CHANGED (Phase 8): keeps the chase camera out of hills
+		groundHeight = function(point: Vector3): number
+			local h =
+				SurfaceHeight.height(frame.refBodyId, Frames.pointFromWorkspace(frame, point, cameraGroundScratch))
+			return h
+		end,
 	}
 end
 

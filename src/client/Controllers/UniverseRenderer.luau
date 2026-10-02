@@ -4,7 +4,8 @@
 	Once per render frame, after the camera has moved: refresh the pocket frame (PocketController), build the
 	RenderContext and hand it to every render layer in order:
 	  ScaledSpace          sun, planets and moons as scaled proxies (and the surface-mode handover)
-	  Surface              the tile cap under the camera and the cosmetic Space Disasters Inc. copy
+	  Surface              the ground under the camera (CHANGED Phase 8: heightmap terrain, collision near the player,
+	                       props) and the cosmetic Space Disasters Inc. copy
 	  SkyCube              black starry space in front of Roblox's sky above the air (CHANGED Phase 2a playtest 4)
 	  SkyLighting          sun direction, shadow side and planet shadow
 	  RemoteCraftRenderer  other crafts in this pocket (interpolated stream)
@@ -28,6 +29,10 @@
 	the Mun can be framed); the override's layers, SkyLighting included, are drawn at that UT.
 
 	CHANGED (Steamy): the Physics-feel cloud deck was removed ("they look bad").
+
+	CHANGED (Phase 8): Surface gets the dominant body's proxy handover altitude, so the terrain is built in the
+	background before surface mode starts; under the main menu view the pocket's own ground (the base) is prebuilt.
+	F3 shows a "Terrain:" line.
 
 	API:
 	  UniverseRenderer.setMapMode(enabled, cubeHalfSize?)   MapViewController
@@ -207,7 +212,8 @@ local function stepViewOverride(override: Frames.Frame, camera: Camera, dt: numb
 		ScaledSpace.update(viewCtx)
 	end)
 	timed("Surface", function()
-		Surface.update(viewCtx, ScaledSpace.isSurfaceMode())
+		Surface.update(viewCtx, ScaledSpace.isSurfaceMode(), nil, false) -- CHANGED (Phase 8): never prebuilds here
+		Surface.prebuild(ctx) -- CHANGED (Phase 8): the ground the player returns to (the base) is ready after Play
 	end)
 	SkyCube.update(viewCtx, ScaledSpace.isSurfaceMode(), ScaledSpace.proxyMinAltitude(viewCtx.dominantBodyId))
 	timed("SkyLighting", function()
@@ -267,7 +273,8 @@ local function step(dt: number)
 		ScaledSpace.update(ctx)
 	end)
 	timed("Surface", function()
-		Surface.update(ctx, ScaledSpace.isSurfaceMode())
+		-- CHANGED (Phase 8): the handover altitude lets the terrain build before surface mode
+		Surface.update(ctx, ScaledSpace.isSurfaceMode(), ScaledSpace.proxyMinAltitude(ctx.dominantBodyId))
 	end)
 	-- CHANGED (Phase 2a playtest 4): black starry space in front of Roblox's sky
 	SkyCube.update(ctx, ScaledSpace.isSurfaceMode(), ScaledSpace.proxyMinAltitude(ctx.dominantBodyId))
@@ -377,6 +384,7 @@ function UniverseRenderer.Init()
 		return lastSummary
 	end)
 	DebugOverlay.addLine("effects", 24.5, Effects.summary) -- CHANGED (Phase 10): after "map" (24)
+	DebugOverlay.addLine("terrain", 22.5, Surface.summary) -- CHANGED (Phase 8): after "universe" (22)
 end
 
 function UniverseRenderer.Start()

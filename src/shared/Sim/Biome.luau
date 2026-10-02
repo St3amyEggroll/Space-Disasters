@@ -42,6 +42,11 @@
 	Painters: Biome.newPainter(size, cells, buf) allocates once; beginPatch / beginRect aim it at a surface;
 	paintStep does one small unit of work (one grid row or one pixel row) and returns true when the RGBA buffer
 	is complete. No allocation per step.
+
+	CHANGED (Phase 8): relief hooks for the terrain heightmap (Sim/Relief), so the ground's shape follows the colours:
+	  Biome.reliefFields(bodyId, x, y, z)  -> (ee, mountain) on Earth, (mare, highland variation) on Mun
+	  Biome.craterSum(x, y, z, visit)      -> sum of visit(t, radius, scale) over the Mun craters reaching (x, y, z)
+	Colours are unchanged.
 ]]
 
 local Bodies = require(script.Parent.Parent.Config.Bodies)
@@ -885,6 +890,128 @@ local function dentShade(
 	end
 	return clamp01(r), clamp01(g), clamp01(b), 1, kind
 end
+
+--============================================================================
+-- Relief hooks (CHANGED (Phase 8): Sim/Relief shapes the terrain from these exact fields and craters, so hills,
+-- coasts, mountains, maria and craters stand where this module paints them)
+--============================================================================
+
+-- cos of the angle within which a ray crater's relief (bowl, rim, ejecta: CRATER_EXTENT rim radii) reaches
+local rayReliefCos: { number } = {}
+for index, rc in rayCraters do
+	rayReliefCos[index] = math.cos(rc.radius * CRATER_EXTENT)
+end
+
+--[[
+	The two low-frequency numbers the ground shape is built from, at unit direction (x, y, z):
+	  Earth: (ee, mountain) = coast-level elevation (< 0 is ocean, exactly where sample() says "Ocean"), computed
+	         exactly as earthShade does at sample()'s detail level, and the smooth mountain mask (earthShade's
+	         mountain value without its per-pixel jitter and coast detail: rock from about K_ROCK0, snowy peaks from
+	         about K_PEAK0)
+	  Mun:   (mare 0..1, highland variation ~-1..1)
+	  other: (0, 0)
+]]
+function Biome.reliefFields(bodyId: number, x: number, y: number, z: number): (number, number)
+	if bodyId == HOMEWORLD then
+		local e, _, rg, _ = earthFields(x, y, z)
+		-- same detail sum as earthShade at K_DETAIL_OCTAVES (3)
+		local f = K_DETAIL_FREQ
+		local detail = noise3(x * f, y * f, z * f)
+		f *= 2.3
+		detail += 0.5 * noise3(x * f + 31.7, y * f + 12.9, z * f + 4.4)
+		f *= 2.3
+		detail += 0.25 * noise3(x * f + 8.3, y * f + 27.1, z * f + 19.5)
+		local ee = e + K_COAST_DETAIL * detail
+		return ee, rg * smoothstep(K_MOUNT_E0, K_MOUNT_E1, e)
+	elseif bodyId == MOON then
+		local mare, hv = dentFields(x, y, z)
+		return mare, hv
+	end
+	return 0, 0
+end
+
+export type CraterVisitor = (t: number, radius: number, scale: number) -> number
+
+--[[
+	Sum of visit(t, radius, scale) over every Mun crater whose relief reaches unit direction (x, y, z): t = distance /
+	rim radius (< CRATER_EXTENT), radius = rim radius in radians, scale = 1 .. 3 for the cell craters (largest first)
+	and 0 for the young ray craters. Same cells, jitter, sizes and cube-edge handling as the painted craters
+	(dentShade), at every scale.
+]]
+function Biome.craterSum(x: number, y: number, z: number, visit: CraterVisitor): number
+	local sum = 0
+	local scales = #CRATER_FACE_CELLS
+	for axis = 1, 3 do
+		local face, dn, du, dv
+		if axis == 1 then
+			if x >= 0 then
+				face, dn, du, dv = 1, x, z, y
+			else
+				face, dn, du, dv = 2, -x, -z, y
+			end
+		elseif axis == 2 then
+			if y >= 0 then
+				face, dn, du, dv = 3, y, x, z
+			else
+				face, dn, du, dv = 4, -y, x, -z
+			end
+		else
+			if z >= 0 then
+				face, dn, du, dv = 5, z, -x, y
+			else
+				face, dn, du, dv = 6, -z, x, y
+			end
+		end
+		if dn > 0.05 and math.abs(du) < FACE_REACH * dn and math.abs(dv) < FACE_REACH * dn then
+			local fa = math.atan(du / dn) + QUARTER_PI
+			local fb = math.atan(dv / dn) + QUARTER_PI
+			for k = 1, scales do
+				local n = CRATER_FACE_CELLS[k]
+				local ga, gb = fa * n / HALF_PI, fb * n / HALF_PI
+				local ia, ib = math.floor(ga), math.floor(gb)
+				if ia >= -1 and ia <= n and ib >= -1 and ib <= n then
+					local prob = CRATER_PROB[k]
+					local rMin = CRATER_RMIN[k]
+					local rSpan = CRATER_RMAX[k] - rMin
+					local salt = face * 41 + k * 97
+					local reach = CRATER_EXTENT * CRATER_RMAX[k]
+					local fra, frb = ga - ia, gb - ib
+					local a0 = if fra < reach then ia - 1 else ia
+					local a1 = if 1 - fra < reach then ia + 1 else ia
+					local b0 = if frb < reach then ib - 1 else ib
+					local b1 = if 1 - frb < reach then ib + 1 else ib
+					local cellAngle = HALF_PI / n
+					for ci = math.max(a0, 0), math.min(a1, n - 1) do
+						local hi = PERM[(ci + salt) % 256 + 1]
+						for cj = math.max(b0, 0), math.min(b1, n - 1) do
+							local h = PERM[hi + cj % 256 + 1] + 1
+							if RAND_P[h] < prob then
+								local s = RAND_S[h]
+								local rr = rMin + rSpan * s * s
+								local da = ga - (ci + RAND_X[h])
+								local db = gb - (cj + RAND_Y[h])
+								local d2 = da * da + db * db
+								local cutoff = CRATER_EXTENT * rr
+								if d2 < cutoff * cutoff then
+									sum += visit(math.sqrt(d2) / rr, rr * cellAngle, k)
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	for index, rc in rayCraters do
+		local dp = x * rc.x + y * rc.y + z * rc.z
+		if dp > rayReliefCos[index] then
+			sum += visit(math.acos(math.min(dp, 1)) / rc.radius, rc.radius, 0)
+		end
+	end
+	return sum
+end
+
+Biome.CRATER_EXTENT = CRATER_EXTENT -- CHANGED (Phase 8): relief reach in rim radii (Sim/Relief)
 
 --============================================================================
 -- Other bodies: flat body colour

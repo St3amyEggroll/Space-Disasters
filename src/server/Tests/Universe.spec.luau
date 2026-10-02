@@ -8,6 +8,7 @@ local BaseLayout = require(ReplicatedStorage.Shared.Config.BaseLayout)
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local SurfaceHeight = require(ReplicatedStorage.Shared.Sim.SurfaceHeight)
+local Relief = require(ReplicatedStorage.Shared.Sim.Relief) -- CHANGED (Phase 8)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 
@@ -80,11 +81,16 @@ return function(t: TestKit.Context)
 		t.expectNear((rot.UpVector - Vector3.new(1, 0, 0)).Magnitude, 0, 1e-6)
 	end)
 
-	t.test("every point on the sphere lies just below its tile's tangent plane", function()
+	-- CHANGED (Phase 8): the ground is the heightmap now (Terrain.spec covers it): a point at sea level sits the
+	-- terrain's height below the ground (oceans are at sea level, land above it)
+	t.test("every point on the sphere lies at or below the ground", function()
 		for _, dir in { Vec3d.new(0.3, 0.9, -0.2), Vec3d.new(-0.7, -0.1, 0.7), Vec3d.new(0.577, 0.577, 0.577) } do
-			local p = Vec3d.scale(Vec3d.normalize(dir), 60000) -- CHANGED (Physics feel): 60 km Earth
+			local d = Vec3d.normalize(dir)
+			local p = Vec3d.scale(d, 60000) -- CHANGED (Physics feel): 60 km Earth
 			local h = SurfaceHeight.height(Bodies.HOMEWORLD, p)
-			t.expectTrue(h <= 1e-6 and h > -40, "height " .. h)
+			local relief = Relief.height(Bodies.HOMEWORLD, d.x, d.y, d.z)
+			t.expectTrue(h <= 0.01, "height " .. h)
+			t.expectNear(h, -relief, 0.5 + 0.02 * relief)
 		end
 	end)
 	-- CHANGED (Phase 2a feedback): rockets stand on their pad with real physics

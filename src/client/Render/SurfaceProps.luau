@@ -8,6 +8,10 @@
 	(origin at the tile centre, axes = the tile's X / Z), grouped in CHUNK_CELLS x CHUNK_CELLS chunks. A cell
 	holds at most one prop, decided by hashing (body, tile, cell) and the Biome kind under it, so the same props
 	appear on every visit. Props stand ON the tile plane (the physical ground), so they touch it exactly.
+	CHANGED (Phase 8): the ground is now the heightmap terrain: each prop is moved along the radial line from its cell
+	point down (or up) to SurfaceHeight's ground, stands upright (radial up) and sinks a little more on slopes; no
+	trees on ground steeper than MAX_TREE_SLOPE_DEG (rocks still). Radius, part cap and density follow the Quality
+	tier through setDetail (Surface).
 	CHANGED (Physics feel): trees and rocks now grow right up to the launch site, as a speed reference for a
 	climbing rocket: only a square of SITE_CLEAR_HALF_EXTENT (the site's ground plate plus SITE_CLEAR_MARGIN) in the
 	site's tangent plane is kept clear (was an 800 m sphere), so nothing stands on the plate, pads, plots or roads,
@@ -20,6 +24,7 @@
 	API (driven by Surface):
 		SurfaceProps.init(parent)
 		SurfaceProps.update(ctx, surfaceMode)
+		SurfaceProps.setDetail(radius, maxParts, density)   CHANGED (Phase 8): Quality tier
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -42,6 +47,7 @@ type TileId = SurfaceHeight.TileId
 -- Tunables
 --============================================================================
 local PROP_RADIUS = 1000 -- m (= studs), props farther than this from the camera are not drawn -- CHANGED (Physics feel): was 750
+-- CHANGED (Phase 8): PROP_RADIUS and MAX_PROP_PARTS are the defaults; setDetail (Quality tier) overrides them
 local CELL_SIZE = 28 -- m, one prop at most per cell
 local CHUNK_CELLS = 8 -- cells per chunk side (224 m chunks)
 local MAX_PROP_PARTS = 1000 -- hard cap on pooled parts in use -- CHANGED (Physics feel): was 600
@@ -61,6 +67,10 @@ local TINT_AMOUNT = 0.12 -- +/- colour brightness variation of tinted parts
 local TILE_SEARCH_STEPS = 2 -- tiles are found on a (2n + 1)^2 direction grid over the prop disc
 local HASH_SALT = 9173
 local POOL_PREWARM = 120 -- parts created at init
+-- CHANGED (Phase 8): props on the heightmap terrain
+local MAX_TREE_SLOPE_DEG = 32 -- no trees, cacti or bushes on steeper ground
+local MAX_ROCK_SLOPE_DEG = 50 -- no props at all on steeper ground
+local SLOPE_SINK = 1.6 -- studs of extra sink per unit of slope tangent (the low side of the trunk stays buried)
 
 local SITE_LATITUDE = 0 -- rad, the base pocket's surface point (PocketService)
 local SITE_LONGITUDE = 0
@@ -92,7 +102,8 @@ type Prop = {
 	id: number,
 	kind: Biome.PropKind,
 	pos: Vec3d, -- ground point relative to the body centre (doubles)
-	rot: CFrame, -- universe rotation (tile axes, then yaw)
+	rot: CFrame, -- universe rotation (radial up, then yaw) -- CHANGED (Phase 8): was the tile's axes
+	sink: number, -- CHANGED (Phase 8): extra studs sunk into sloped ground
 	scale: number,
 	tint: number, -- brightness factor
 	partCount: number,
@@ -267,6 +278,9 @@ local PROP_SPECS: { [string]: { PartSpec } } = {
 --============================================================================
 
 local CHUNK_SIZE = CELL_SIZE * CHUNK_CELLS
+local COS_TREE_SLOPE = math.cos(math.rad(MAX_TREE_SLOPE_DEG)) -- CHANGED (Phase 8)
+local COS_ROCK_SLOPE = math.cos(math.rad(MAX_ROCK_SLOPE_DEG))
+local ROCKY: { [string]: boolean } = { Rock = true, Boulder = true, CraterRim = true }
 local CELL_AREA_HA = CELL_SIZE * CELL_SIZE / 10000
 local MAX_CELL_CHANCE = Biome.propDensity("Forest") * CELL_AREA_HA -- densest biome: skip the Biome sample above it
 
@@ -311,6 +325,11 @@ local function tileInfo(bodyId: number, tile: TileId): TileInfo
 	}
 end
 
+-- CHANGED (Phase 8): share of Biome's prop density that is placed, draw radius and part cap (Quality tier, setDetail)
+local densityScale = 1
+local propRadius = PROP_RADIUS
+local maxPropParts = MAX_PROP_PARTS
+
 -- Deterministic props of one chunk (cells ci * CHUNK_CELLS .. + CHUNK_CELLS - 1 along X, same for cj along Z).
 local function generateChunk(bodyId: number, info: TileInfo, ci: number, cj: number): { Prop }
 	local props: { Prop } = {}
@@ -322,7 +341,8 @@ local function generateChunk(bodyId: number, info: TileInfo, ci: number, cj: num
 		local cellX = ci * CHUNK_CELLS + a
 		for b = 0, CHUNK_CELLS - 1 do
 			local cellZ = cj * CHUNK_CELLS + b
-			local presence = Biome.hash01(info.key, cellX, cellZ, salt)
+			-- CHANGED (Phase 8): the density scale thins every biome alike (same props stay, deterministic)
+			local presence = Biome.hash01(info.key, cellX, cellZ, salt) / densityScale
 			if presence >= MAX_CELL_CHANCE then
 				continue
 			end
@@ -344,14 +364,28 @@ local function generateChunk(bodyId: number, info: TileInfo, ci: number, cj: num
 			if propKind == nil then
 				continue
 			end
+			-- CHANGED (Phase 8): stand on the heightmap ground, upright, not on steep slopes
+			local ground, normal = SurfaceHeight.groundPoint(bodyId, Vec3d.new(px, py, pz))
+			local glen = Vec3d.length(ground)
+			local upX, upY, upZ = ground.x / glen, ground.y / glen, ground.z / glen
+			local cosSlope = normal.x * upX + normal.y * upY + normal.z * upZ
+			if cosSlope < COS_ROCK_SLOPE or (cosSlope < COS_TREE_SLOPE and not ROCKY[propKind]) then
+				continue
+			end
+			local tanSlope = math.sqrt(math.max(1 - cosSlope * cosSlope, 0)) / math.max(cosSlope, 1e-3)
+			local up = Vector3.new(upX, upY, upZ)
+			local tileX = info.rot.XVector
+			local xAxis = (tileX - up * tileX:Dot(up)).Unit
+			local upright = CFrame.fromMatrix(Vector3.zero, xAxis, up, xAxis:Cross(up))
 			local yaw = Biome.hash01(info.key, cellX, cellZ, salt + 4) * 2 * math.pi
 			local scaleRoll = Biome.hash01(info.key, cellX, cellZ, salt + 5)
 			local tintRoll = Biome.hash01(info.key, cellX, cellZ, salt + 6)
 			table.insert(props, {
 				id = baseKey + a * CHUNK_CELLS + b,
 				kind = propKind :: Biome.PropKind,
-				pos = Vec3d.new(px, py, pz),
-				rot = info.rot * CFrame.Angles(0, yaw, 0),
+				pos = ground,
+				rot = upright * CFrame.Angles(0, yaw, 0),
+				sink = SLOPE_SINK * tanSlope * (SCALE_MIN + (SCALE_MAX - SCALE_MIN) * scaleRoll),
 				scale = SCALE_MIN + (SCALE_MAX - SCALE_MIN) * scaleRoll,
 				tint = 1 + TINT_AMOUNT * (tintRoll * 2 - 1),
 				partCount = #PROP_SPECS[propKind],
@@ -464,7 +498,7 @@ local function assignProp(prop: Prop, shadow: boolean, folder: Folder): Assigned
 		p.Parent = folder
 		parts[i] = p
 		local o = sp.offset
-		offsets[i] = CFrame.new(o.Position * s + Vector3.new(0, -PROP_SINK, 0)) * o.Rotation
+		offsets[i] = CFrame.new(o.Position * s + Vector3.new(0, -PROP_SINK - prop.sink, 0)) * o.Rotation -- CHANGED (Phase 8)
 	end
 	return { prop = prop, parts = parts, offsets = offsets }
 end
@@ -486,7 +520,7 @@ end
 -- Visible set
 --============================================================================
 
--- Tiles whose plane may hold props within PROP_RADIUS of the camera.
+-- Tiles whose plane may hold props within propRadius of the camera.
 local function nearbyTiles(bodyId: number, camera: Vec3d): { TileInfo }
 	local result: { TileInfo } = {}
 	local seen: { [number]: boolean } = {}
@@ -495,7 +529,7 @@ local function nearbyTiles(bodyId: number, camera: Vec3d): { TileInfo }
 	local ref = if math.abs(d.y) < 0.9 then Vec3d.new(0, 1, 0) else Vec3d.new(1, 0, 0)
 	local e1 = Vec3d.normalize(Vec3d.cross(ref, d))
 	local e2 = Vec3d.cross(d, e1)
-	local step = PROP_RADIUS / TILE_SEARCH_STEPS / radius
+	local step = propRadius / TILE_SEARCH_STEPS / radius
 	for ia = -TILE_SEARCH_STEPS, TILE_SEARCH_STEPS do
 		for ib = -TILE_SEARCH_STEPS, TILE_SEARCH_STEPS do
 			local dir = Vec3d.add(d, Vec3d.add(Vec3d.scale(e1, ia * step), Vec3d.scale(e2, ib * step)))
@@ -525,17 +559,17 @@ local function byPendingDist(a: PendingChunk, b: PendingChunk): boolean
 end
 
 -- Rebuilds the visible chunk list and the generation queue around the camera.
-local function collectChunks(bodyId: number, camera: Vec3d)
+-- CHANGED (Phase 8): `h` is the camera's height above the terrain (the tile planes are only the cell grid now).
+local function collectChunks(bodyId: number, camera: Vec3d, h: number)
 	table.clear(visibleChunks)
 	table.clear(pending)
 	stampCounter += 1
+	if math.abs(h) >= propRadius then
+		return
+	end
+	local reach = math.sqrt(propRadius * propRadius - h * h)
 	for _, info in nearbyTiles(bodyId, camera) do
 		local rel = Vec3d.sub(camera, info.centre)
-		local h = Vec3d.dot(rel, info.up)
-		if math.abs(h) >= PROP_RADIUS then
-			continue
-		end
-		local reach = math.sqrt(PROP_RADIUS * PROP_RADIUS - h * h)
 		local cx, cz = Vec3d.dot(rel, info.ax), Vec3d.dot(rel, info.az)
 		local maxChunkX = math.floor(info.ex / 2 / CHUNK_SIZE)
 		local maxChunkZ = math.floor(info.ez / 2 / CHUNK_SIZE)
@@ -549,7 +583,7 @@ local function collectChunks(bodyId: number, camera: Vec3d)
 			for cj = j0, j1 do
 				local dz = math.max(cj * CHUNK_SIZE - cz, 0, cz - (cj + 1) * CHUNK_SIZE)
 				local distSq = dx * dx + dz * dz + h * h
-				if distSq > PROP_RADIUS * PROP_RADIUS then
+				if distSq > propRadius * propRadius then
 					continue
 				end
 				local key = chunkKey(bodyId, info.key, ci, cj)
@@ -584,8 +618,8 @@ end
 -- Chooses the props to draw (nearest chunks first, up to the part cap) and (re)assigns parts.
 local function assignVisible(camera: Vec3d, folder: Folder)
 	local wanted: { [number]: Prop } = {}
-	local budget = MAX_PROP_PARTS
-	local radiusSq = PROP_RADIUS * PROP_RADIUS
+	local budget = maxPropParts
+	local radiusSq = propRadius * propRadius
 	for _, vc in visibleChunks do
 		for _, prop in vc.chunk.props do
 			if prop.partCount > budget then
@@ -736,7 +770,9 @@ function SurfaceProps.update(ctx: RenderContext.RenderContext, surfaceMode: bool
 	end
 	local camera = ctx.cameraDominant
 	-- far above the ground nothing is in reach: keep what is assigned but skip the work
-	if Vec3d.length(camera) - body.Radius > PROP_RADIUS then
+	-- CHANGED (Phase 8): height above the terrain, not sea level (props on mountains)
+	local height = SurfaceHeight.height(bodyId, camera)
+	if height > propRadius then
 		hide()
 		return
 	end
@@ -745,7 +781,7 @@ function SurfaceProps.update(ctx: RenderContext.RenderContext, surfaceMode: bool
 		moveDirty = true
 	end
 	if needsRefresh or Vec3d.distanceSq(camera, lastRefreshPos) > REFRESH_DISTANCE * REFRESH_DISTANCE then
-		collectChunks(bodyId, camera)
+		collectChunks(bodyId, camera, height)
 		trimCache()
 		assignVisible(camera, folder)
 		Vec3d.copyInto(lastRefreshPos, camera)
@@ -756,6 +792,23 @@ function SurfaceProps.update(ctx: RenderContext.RenderContext, surfaceMode: bool
 		needsRefresh = true
 	end
 	placeAll(ctx, bodyId)
+end
+
+--[[
+	CHANGED (Phase 8): detail from the Quality tier (Surface): draw radius (m), part cap and density (share of Biome's
+	props per hectare, 0..1). A new density regenerates the cached chunks.
+]]
+function SurfaceProps.setDetail(radius: number, maxParts: number, density: number)
+	propRadius = radius
+	maxPropParts = maxParts
+	local scale = math.clamp(density, 0.05, 1)
+	if scale ~= densityScale then
+		densityScale = scale
+		releaseAll()
+		table.clear(chunks)
+		chunkCount = 0
+	end
+	needsRefresh = true
 end
 
 -- Test hook / debug.

@@ -22,6 +22,10 @@
 
 	Crash: a hull point that hits the ground faster than its block's CrashTolerance destroys that block. The
 	owner of the simulation reads craft.destroyed after each step and applies/reports it (removeBlocks).
+
+	CHANGED (Phase 8): the ground is SurfaceHeight's heightmap (hills, mountains, craters): each hull point is pushed
+	along the normal of the ground triangle under it, so crafts settle on slopes; the contact and near-surface
+	substep checks measure from that ground, not from sea level (groundClearance).
 ]]
 
 local Bodies = require(script.Parent.Parent.Config.Bodies)
@@ -490,6 +494,21 @@ local function drainFuel(craft: Craft, engine: Engine, amount: number)
 end
 
 --[[
+	CHANGED (Phase 8): how far a hull of radius `reach` around `pos` (altitude above sea level given) is above the
+	ground, conservatively: its height above the heightmap ground under `pos`, less `reach` twice over (the ground may
+	rise toward the hull's far side). Skips the ground lookup when even the highest ground is far below.
+]]
+local function groundClearance(bodyId: number, pos: Vec3d, altitude: number, reach: number): number
+	local _, highest = SurfaceHeight.bounds(bodyId)
+	local rough = altitude - math.max(highest, 0) - 2 * reach
+	if rough > NEAR_SURFACE_DIST + 5 then
+		return rough
+	end
+	local height = SurfaceHeight.height(bodyId, pos)
+	return height - 2 * reach
+end
+
+--[[
 	Computes forces for a candidate state. `comPos`/`comVel` are the CoM's (doubles); returns the net force
 	(universe) and torque (craft axes). `applyContacts` records impacts only on the committed evaluation.
 ]]
@@ -578,11 +597,11 @@ local function computeForces(
 	end
 
 	-- Ground contacts (only when the hull could reach the ground)
+	-- CHANGED (Phase 8): measured from the heightmap ground under the CoM (hills and mountains), with room for the
+	-- ground rising under the far side of the hull (slopes up to 45 degrees)
 	local contact = false
-	if
-		altitude - physics.boundingRadius - Vec3d.length(Vec3d.new(physics.com.X, physics.com.Y, physics.com.Z))
-		< NEAR_SURFACE_DIST + 5
-	then
+	local reach = physics.boundingRadius + Vec3d.length(Vec3d.new(physics.com.X, physics.com.Y, physics.com.Z))
+	if groundClearance(state.bodyId, comPos, altitude, reach) < NEAR_SURFACE_DIST + 5 then
 		local omegaWorld = rot:VectorToWorldSpace(omegaCraft)
 		local kPoint =
 			math.min(CONTACT_SPRING_CAP, craft.mass * (2 * math.pi * CONTACT_FREQUENCY) ^ 2 / CONTACT_POINTS_EXPECTED)
@@ -680,7 +699,8 @@ end
 local function nearSurface(craft: Craft): boolean
 	local state = craft.state
 	local altitude = Vec3d.length(state.pos) - Bodies.get(state.bodyId).Radius
-	return altitude - craft.physics.boundingRadius < NEAR_SURFACE_DIST
+	-- CHANGED (Phase 8): from the heightmap ground, not sea level
+	return groundClearance(state.bodyId, state.pos, altitude, craft.physics.boundingRadius) < NEAR_SURFACE_DIST
 end
 
 local function substep(craft: Craft, dt: number)
