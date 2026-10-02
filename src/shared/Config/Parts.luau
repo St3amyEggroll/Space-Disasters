@@ -10,6 +10,13 @@
 
 	Units: Size in BLOCKS (CHANGED Phase 1 rework: Plane Crazy-style grid, one block = GameConfig.GRID_SIZE studs),
 	masses in kg, thrust in N, torque in N*m, areas in m^2. Stats are unchanged by the block size.
+
+	Scale (CHANGED (Physics feel)): masses are KSP 1.25 m-part masses on 4-stud blocks, so aerodynamics uses each
+	part's visual size: every aero area (the drag areas MassProps derives from Size, Fin.Area below, and the chute
+	CdA when Phase 2b wires it) is multiplied by GameConfig.AERO_METERS_PER_STUD^2 in MassProps / FlightModel. Area
+	numbers here stay at block scale (as if 1 stud = 1 m) and are never pre-scaled. Every engine's thrust is
+	x1.5 the KSP-derived value (same Isp, so fuel flow is x1.5 and burns last 2/3 as long) so rockets look as
+	powerful as they are big.
 	Pure module (no services).
 ]]
 
@@ -36,6 +43,9 @@ export type DecouplerStats = {
 }
 
 export type ChuteStats = {
+	-- CHANGED (Physics feel): block-scale m^2; Phase 2b must multiply by GameConfig.AERO_METERS_PER_STUD^2 like
+	-- every other aero area. Then FullCdA 500 -> 45 m^2 lands the 900 kg pod + chute at ~17.7 m/s, above the pod's
+	-- 12 m/s crash tolerance, so Phase 2b must also raise FullCdA (~4400 here = ~400 m^2 visual lands at ~6 m/s).
 	SemiCdA: number, -- m^2
 	FullCdA: number, -- m^2
 	MaxDeploySpeed: number, -- m/s
@@ -48,7 +58,7 @@ export type LegStats = {
 }
 
 export type FinStats = {
-	Area: number, -- m^2
+	Area: number, -- m^2 at block scale; CHANGED (Physics feel): the flight model scales it by AERO_METERS_PER_STUD^2
 	LiftCoef: number,
 }
 
@@ -212,7 +222,8 @@ define({
 	Category = "Engine",
 	Size = Vector3.new(1, 1, 1),
 	DryMass = 700,
-	Engine = { ThrustVac = 90000, IspVac = 330, IspAsl = 290, GimbalDeg = 3, Throttleable = true },
+	-- CHANGED (Physics feel): ThrustVac x1.5 (was 90000), Isp unchanged
+	Engine = { ThrustVac = 135000, IspVac = 330, IspAsl = 290, GimbalDeg = 3, Throttleable = true },
 	CrashTolerance = 7,
 })
 define({
@@ -221,7 +232,8 @@ define({
 	Category = "Engine",
 	Size = Vector3.new(2, 2, 2),
 	DryMass = 2800,
-	Engine = { ThrustVac = 400000, IspVac = 320, IspAsl = 280, GimbalDeg = 2, Throttleable = true },
+	-- CHANGED (Physics feel): ThrustVac x1.5 (was 400000), Isp unchanged
+	Engine = { ThrustVac = 600000, IspVac = 320, IspAsl = 280, GimbalDeg = 2, Throttleable = true },
 	CrashTolerance = 7,
 })
 define({
@@ -231,7 +243,8 @@ define({
 	Size = Vector3.new(1, 3, 1),
 	DryMass = 600,
 	FuelMass = 3000,
-	Engine = { ThrustVac = 195000, IspVac = 220, IspAsl = 200, GimbalDeg = 0, Throttleable = false },
+	-- CHANGED (Physics feel): ThrustVac x1.5 (was 195000), Isp unchanged: the 3000 kg burn now lasts ~22 s (was ~33 s)
+	Engine = { ThrustVac = 292500, IspVac = 220, IspAsl = 200, GimbalDeg = 0, Throttleable = false },
 	CrashTolerance = 8,
 })
 

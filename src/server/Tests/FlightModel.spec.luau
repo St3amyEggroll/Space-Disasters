@@ -70,7 +70,7 @@ return function(t: TestKit.Context)
 		local altitude = Vec3d.length(craft.state.pos) - HOME.Radius
 		t.expectTrue(altitude > 30, "climbed " .. altitude .. " m in 5 s")
 		local burned = fuel0 - FlightModel.totalFuel(craft)
-		t.expectNear(burned, 5 * 90000 / (330 * 9.80665), 1)
+		t.expectNear(burned, 5 * 135000 / (330 * 9.80665), 1) -- CHANGED (Physics feel): 135 kN engine (x1.5), same Isp
 		t.expectEqual(#craft.destroyed, 0)
 	end)
 

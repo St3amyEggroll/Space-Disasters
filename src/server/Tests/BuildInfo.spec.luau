@@ -69,7 +69,7 @@ return function(t: TestKit.Context)
 	t.test("part lines: engine thrust and Isp, tank fuel, size last", function()
 		local engine = BuildInfo.partLines(Parts.get("engine_s"), "Metric", G0)
 		t.expectEqual(engine[1], "Mass 0.70 t")
-		t.expectTrue(contains(engine, "Thrust 90 kN (vac)"), "thrust")
+		t.expectTrue(contains(engine, "Thrust 135 kN (vac)"), "thrust") -- CHANGED (Physics feel): engines x1.5
 		t.expectTrue(contains(engine, "Isp 290 s ASL / 330 s vac"), "isp")
 		t.expectEqual(engine[#engine], "1 x 1 x 1 blocks")
 

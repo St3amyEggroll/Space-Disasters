@@ -15,7 +15,8 @@
 
 	Per step: gravity (SOI body only, patched conics), thrust (constant fuel flow, Isp by pressure, gimbal
 	torque), drag (projected area, nose factor, applied at the centre of pressure), fin lift (flat plate),
-	ground contacts (penalty springs on hull points against SurfaceHeight, Coulomb friction), control torque and
+	(CHANGED (Physics feel): drag and lift areas at the parts' visual size, GameConfig.AERO_METERS_PER_STUD), ground
+	contacts (penalty springs on hull points against SurfaceHeight, Coulomb friction), control torque and
 	SAS. Translation: velocity Verlet with a velocity predictor for the velocity-dependent forces. Rotation:
 	semi-implicit Euler on the diagonal inertia, re-orthonormalised every step.
 
@@ -49,6 +50,9 @@ local SUBSTEPS_NEAR = GameConfig.SIM_SUBSTEPS_NEAR_SURFACE
 local NEAR_SURFACE_DIST = GameConfig.SIM_NEAR_SURFACE_DIST
 local ROTATION_ASSIST = GameConfig.ROTATION_ASSIST
 local CD_BASE = GameConfig.CD_BASE
+-- CHANGED (Physics feel): fin lift areas at the parts' visual size, the same factor MassProps applies to drag areas
+-- (so finned rockets keep their lift-to-drag balance). Phase 2b chutes must scale their CdA by this too.
+local AERO_AREA_SCALE = GameConfig.AERO_METERS_PER_STUD * GameConfig.AERO_METERS_PER_STUD
 local MAX_ANGULAR_SPEED = GameConfig.MAX_ANGULAR_SPEED
 local SAS_KP = GameConfig.SAS_KP
 local SAS_KD = GameConfig.SAS_KD
@@ -261,7 +265,7 @@ function FlightModel.buildPhysics(design: Design, fuel: { [number]: number }): P
 				blockId = block.id,
 				pos = center,
 				normal = rot.RightVector, -- the fin blade is thin along its local X
-				area = finStats.Area,
+				area = finStats.Area * AERO_AREA_SCALE, -- CHANGED (Physics feel): visual-size lift area
 				liftCoef = finStats.LiftCoef,
 			})
 		end

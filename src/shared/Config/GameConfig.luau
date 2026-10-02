@@ -7,6 +7,12 @@
 	  * This module must stay pure (no services, no Instances) so it can be required anywhere,
 	    including the offline Lune test runner.
 	  * Units follow the spec: meters (= studs), kilograms, seconds, newtons, radians unless a name says otherwise.
+
+	Scale (CHANGED (Physics feel)): distances are true metres, 1 stud = 1 m, for positions, gravity, orbits, the
+	planets (Bodies: 60 km Earth) and the ground. Parts are 4-stud blocks (GRID_SIZE) but keep KSP 1.25 m masses
+	and thrusts (Parts), so their faces are ~10x the area a part of that mass would have. Aerodynamics therefore
+	sees every part at its VISUAL size: a 4-stud block reads as ~1.2 m next to a character, so every aerodynamic
+	area (body drag, fin lift, and the Phase 2b parachute CdA) is multiplied by AERO_METERS_PER_STUD^2.
 ]]
 
 local GameConfig = {
@@ -27,6 +33,11 @@ local GameConfig = {
 	--========================================================================
 	ROTATION_ASSIST = 2.0, -- multiplier on control torque so small crafts feel responsive
 	CD_BASE = 0.8, -- base drag coefficient applied to projected bounding-box area
+	-- CHANGED (Physics feel): aerodynamic areas are computed as if parts were their visual size (~0.3 m per stud next
+	-- to a character, so a 4-stud block face is 1.2 m wide), not 1 m per stud. Every aero area (MassProps drag
+	-- areas, fin lift areas, and the Phase 2b chute CdA, which must use it too) is multiplied by this squared (0.09).
+	-- Without it drag per kg was ~11x too strong and rockets stalled near 100 m/s in the lower air.
+	AERO_METERS_PER_STUD = 0.3,
 	ATMOSPHERE_FADE_BAND = 1000, -- m below atmosphere top over which density fades to zero
 	SIM_RATE = 60, -- fixed steps per second
 	SIM_SUBSTEPS_FLIGHT = 2, -- 120 Hz in flight
@@ -128,9 +139,10 @@ local GameConfig = {
 	RAILS_POS_TOLERANCE = 50, -- m between a proposed rail and the server's last valid state
 	RAILS_VEL_TOLERANCE = 5, -- m/s, same
 	DEBRIS_CHECK_INTERVAL = 1, -- s between suborbital-debris despawn checks
-	MAP_SCALE = 0.002, -- studs per metre when the map opens (Earth: 60 studs in radius)
-	MAP_SCALE_MIN = 0.0001, -- fully zoomed out: the whole Earth-Mun system fits on screen
-	MAP_SCALE_MAX = 0.03, -- fully zoomed in (keeps Earth's ball under the 2048-stud part limit)
+	-- CHANGED (Physics feel): the three map scales are halved for the 60 km Earth so the map frames it as before
+	MAP_SCALE = 0.001, -- studs per metre when the map opens (Earth: 60 studs in radius)
+	MAP_SCALE_MIN = 0.00005, -- fully zoomed out: the whole Earth-Mun system fits on screen
+	MAP_SCALE_MAX = 0.015, -- fully zoomed in (Earth's ball 1800 studs, its 68 km air shell 2040: under the part limit)
 	MAP_ZOOM_STEP = 1.2, -- scale factor per mouse-wheel notch (logarithmic zoom)
 	MAP_CAMERA_DISTANCE = 160, -- studs; the map camera never moves farther, zoom changes the scale instead
 	MAP_EXTENT = 650, -- studs around the focus where map objects are drawn (inside the map's star cube)

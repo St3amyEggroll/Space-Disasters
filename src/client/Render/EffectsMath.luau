@@ -53,8 +53,9 @@ local SOLID_PARTICLE_SIZE_MULT = 1.3
 local LIGHT_BRIGHTNESS_MAX = 3
 local VACUUM_LIGHT_MULT = 0.7
 -- Smoke trail
-local TRAIL_PRESSURE_FULL = 0.3 -- full trail at or below this altitude's pressure ratio (~1.2 km on Earth)
-local TRAIL_PRESSURE_NONE = 0.004 -- no trail above this altitude (~5.5 km on Earth)
+-- CHANGED (Physics feel): altitudes in these comments are for the 60 km Earth (1.1 km scale height)
+local TRAIL_PRESSURE_FULL = 0.3 -- full trail at or below this altitude's pressure ratio (~1.3 km on Earth)
+local TRAIL_PRESSURE_NONE = 0.004 -- no trail above this altitude (~6.1 km on Earth)
 local TRAIL_MAX_LENGTH = 900 -- studs of trail behind a fast craft
 local TRAIL_LIFETIME_MIN = 1.2 -- s
 local TRAIL_LIFETIME_MAX = 5 -- s (slow crafts: the smoke column lingers this long)
@@ -65,10 +66,14 @@ local DUST_MAX_HEIGHT = 40 -- m above the ground (exhaust height) where the dust
 local DUST_THRUST_CAP = 1.5 -- thrust fraction above which the dust stops growing
 local DUST_HEIGHT_POWER = 1.5 -- stronger the closer the nozzle is to the ground
 -- Re-entry heating
-local HEAT_SPEED_MIN = 380 -- m/s; nothing below this (a normal ascent stays under it in thick air)
-local HEAT_SPEED_FULL = 460 -- m/s; full speed gate (low orbit on half-size Earth is ~470 m/s)
-local HEAT_FLUX_MIN = 1.5e5 -- rho * v^3 where the glow starts (~6.2 km at 450 m/s)
-local HEAT_FLUX_FULL = 3e6 -- rho * v^3 of full glow (~3.7 km at 450 m/s)
+-- CHANGED (Physics feel): recalibrated for the 60 km Earth (low orbit ~710 m/s; re-entries measured with the flight
+-- model pass 7 km at ~710-740 m/s, 5 km at ~670-700) and the faster ascents of the new aero scale / engines x1.5
+-- (gravity turns measured at 450 m/s at 3 km, up to ~620 m/s at 5 km for the most aggressive two-stage rocket).
+-- Was 380 / 460 m/s and 1.5e5 / 3e6 on the half-size Earth.
+local HEAT_SPEED_MIN = 600 -- m/s; nothing below this (a normal ascent stays under it in thick air)
+local HEAT_SPEED_FULL = 700 -- m/s; full speed gate (low orbit on the 60 km Earth is ~710 m/s)
+local HEAT_FLUX_MIN = 3e5 -- rho * v^3 where the glow starts (~8 km, the air's top, at 700 m/s)
+local HEAT_FLUX_FULL = 5e6 -- rho * v^3 of full glow (~4.9 km at 700 m/s)
 -- Transonic vapour cone
 local SPEED_OF_SOUND = 340 -- m/s (no temperature model: one value everywhere)
 local VAPOR_MACH_START = 0.93

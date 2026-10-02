@@ -126,15 +126,17 @@ return function(t: TestKit.Context)
 		t.expectTrue(not Rails.eligible(craft), "inside the atmosphere")
 	end)
 
+	-- CHANGED (Physics feel): speeds for the 60 km Earth (periapsis ~4 km, inside the 8 km air; the second orbit
+	-- is just above circular at 20 km)
 	t.test("rails end where the orbit enters the atmosphere", function()
-		local s = state(Bodies.HOMEWORLD, Vec3d.new(HOME.Radius + 30000, 0, 0), Vec3d.new(-150, 0, 330), 50)
+		local s = state(Bodies.HOMEWORLD, Vec3d.new(HOME.Radius + 30000, 0, 0), Vec3d.new(-100, 0, 580), 50)
 		local rails = Rails.fromState(s, Vector3.zero, true)
 		t.expectTrue(rails.exitUT < math.huge, "dips into the air")
 		local atExit = Rails.stateAt(rails, rails.exitUT)
 		local altitude = Vec3d.length(atExit.pos) - HOME.Radius
 		t.expectNear(altitude, Rails.minAltitude(Bodies.HOMEWORLD), 3)
 		local circular = Rails.fromState(
-			state(Bodies.HOMEWORLD, Vec3d.new(HOME.Radius + 20000, 0, 0), Vec3d.new(0, 0, 450), 0),
+			state(Bodies.HOMEWORLD, Vec3d.new(HOME.Radius + 20000, 0, 0), Vec3d.new(0, 0, 680), 0),
 			Vector3.zero,
 			true
 		)
@@ -169,7 +171,8 @@ return function(t: TestKit.Context)
 
 	t.test("SOI exit from Mun back to Earth", function()
 		local r = MOON.Radius + 15000
-		local s = state(Bodies.MOON, Vec3d.new(r, 0, 0), Vec3d.new(0, 0, 130), 1000) -- above Mun's escape speed
+		-- CHANGED (Physics feel): full-size Mun: escape speed at 15 km altitude is ~156 m/s
+		local s = state(Bodies.MOON, Vec3d.new(r, 0, 0), Vec3d.new(0, 0, 220), 1000) -- above Mun's escape speed
 		local rails = Rails.fromState(s, Vector3.zero, true)
 		local left = Rails.advance(rails, 1000, 1000 + 5000)
 		t.expectTrue(left ~= nil, "escaped")

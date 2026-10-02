@@ -8,17 +8,17 @@ local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
 local Parts = require(ReplicatedStorage.Shared.Config.Parts)
 
 return function(t: TestKit.Context)
-	-- CHANGED (Phase 2a feedback): bodies halved (DECISIONS D27)
+	-- CHANGED (Physics feel): back to the spec's full-size bodies (the D27 halving is undone)
 	t.test("body constants match the spec", function()
 		local home = Bodies.get(Bodies.HOMEWORLD)
 		local moon = Bodies.get(Bodies.MOON)
-		t.expectRelNear(home.Mu, 8.829e9, 1e-9)
-		t.expectRelNear(moon.Mu, 9.1125e7, 1e-9)
-		t.expectNear(moon.SoiRadius, 35300, 200)
+		t.expectRelNear(home.Mu, 3.5316e10, 1e-9)
+		t.expectRelNear(moon.Mu, 3.645e8, 1e-9)
+		t.expectNear(moon.SoiRadius, 72200, 200)
 		local orbit = moon.Orbit
 		t.expectTrue(orbit ~= nil, "moon has an orbit")
 		if orbit then
-			t.expectNear(orbit.Period, 6900, 20)
+			t.expectNear(orbit.Period, 10090, 20)
 		end
 		t.expectTrue(Bodies.get(Bodies.SUN).VisualOnly)
 		t.expectEqual(#Bodies.physicalBodies(), 2)
@@ -28,9 +28,9 @@ return function(t: TestKit.Context)
 		local home = Bodies.get(Bodies.HOMEWORLD)
 		local r = home.Radius + 10000
 		local v = math.sqrt(home.Mu / r)
-		t.expectNear(v, 470, 5)
+		t.expectNear(v, 710, 5)
 		local period = 2 * math.pi * math.sqrt(r ^ 3 / home.Mu)
-		t.expectNear(period / 60, 8.9, 0.5)
+		t.expectNear(period / 60, 10.3, 0.5)
 	end)
 
 	t.test("every part fits the grid and has stats", function()
@@ -46,7 +46,8 @@ return function(t: TestKit.Context)
 		end)
 	end)
 
-	t.test("Section 6.2 sanity example: ~4.15 t, TWR ~1.9, ~2,100 m/s", function()
+	-- CHANGED (Physics feel): engines x1.5 (same Isp), so TWR ~2.9 (was ~1.9); delta-v is unchanged
+	t.test("Section 6.2 sanity example: ~4.15 t, TWR ~2.9, ~2,100 m/s", function()
 		local ids = { "pod_mk1", "chute_s", "decoupler_s", "tank_s_long", "engine_s" }
 		local wet = 0
 		local fuel = 0
@@ -63,7 +64,7 @@ return function(t: TestKit.Context)
 			local g0 = GameConfig.G0
 			local thrustAsl = Parts.thrustAt(engine, 1, g0)
 			local twr = thrustAsl / (wet * Bodies.get(Bodies.HOMEWORLD).SurfaceGravity)
-			t.expectNear(twr, 1.9, 0.1)
+			t.expectNear(twr, 2.9, 0.1)
 			-- the decoupler stays with the lower stage, so the whole stack burns the tank
 			local dv = engine.IspVac * g0 * math.log(wet / (wet - fuel))
 			t.expectNear(dv, 2100, 105)

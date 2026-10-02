@@ -6,6 +6,10 @@
 	Universe frame: origin at Homeworld's center, +Y = Homeworld north pole axis, the Moon orbits in the XZ plane.
 	Planets do not rotate in v1.
 
+	Scale (CHANGED (Physics feel)): KSP-like sizes divided by 10 (Earth 60 km, Mun 15 km at 450 km), so low Earth
+	orbit is ~710 m/s at 10 km. Distances are true metres (1 stud = 1 m) for gravity, orbits and the ground tiles;
+	only aerodynamic areas use the parts' visual size (GameConfig.AERO_METERS_PER_STUD).
+
 	Pure module (no services) so it can be required by the offline test runner.
 ]]
 
@@ -14,16 +18,18 @@ local GameConfig = require(script.Parent.GameConfig)
 --============================================================================
 -- Tunables
 --============================================================================
--- CHANGED (Phase 2a feedback): Earth and Mun halved in size at Steamy's request (D27)
-local HOMEWORLD_RADIUS = 30000 -- m
+-- CHANGED (Physics feel): Earth and Mun are back to the spec's full size (60 km / 15 km, Mun orbit 450 km). D27 had
+-- halved them; with drag now sized to how parts look and engines x1.5 (GameConfig.AERO_METERS_PER_STUD, Parts),
+-- rockets are fast enough that the half-size planet felt cramped, so Steamy chose the 60 km planet again.
+local HOMEWORLD_RADIUS = 60000 -- m
 local HOMEWORLD_SURFACE_G = 9.81 -- m/s^2
-local HOMEWORLD_ATMO_TOP = 7000 -- m
+local HOMEWORLD_ATMO_TOP = 8000 -- m (CHANGED (Physics feel): 7000 on the half-size planet)
 local HOMEWORLD_ATMO_RHO0 = 1.225 -- kg/m^3
-local HOMEWORLD_ATMO_SCALE_HEIGHT = 1000 -- m
+local HOMEWORLD_ATMO_SCALE_HEIGHT = 1100 -- m (CHANGED (Physics feel): 1000 on the half-size planet)
 
-local MOON_RADIUS = 7500 -- m
+local MOON_RADIUS = 15000 -- m (CHANGED (Physics feel): 7500 on the half-size planet)
 local MOON_SURFACE_G = 1.62 -- m/s^2
-local MOON_ORBIT_RADIUS = 220000 -- m, circular and equatorial
+local MOON_ORBIT_RADIUS = 450000 -- m, circular and equatorial (CHANGED (Physics feel): 220000 on the half-size planet)
 local MOON_ORBIT_PHASE_AT_UT0 = 0 -- rad, angle from +X toward +Z at UT 0
 
 local SUN_ANGULAR_RADIUS_DEG = 0.27
@@ -81,8 +87,8 @@ local function soiRadius(orbitRadius: number, childMu: number, parentMu: number)
 	return orbitRadius * (childMu / parentMu) ^ 0.4
 end
 
-local homeworldMu = HOMEWORLD_SURFACE_G * HOMEWORLD_RADIUS * HOMEWORLD_RADIUS -- 8.829e9
-local moonMu = MOON_SURFACE_G * MOON_RADIUS * MOON_RADIUS -- 9.11e7
+local homeworldMu = HOMEWORLD_SURFACE_G * HOMEWORLD_RADIUS * HOMEWORLD_RADIUS -- 3.5316e10
+local moonMu = MOON_SURFACE_G * MOON_RADIUS * MOON_RADIUS -- 3.645e8
 
 local Bodies = {}
 
@@ -142,9 +148,9 @@ local list: { Body } = {
 		Radius = MOON_RADIUS,
 		SurfaceGravity = MOON_SURFACE_G,
 		Mu = moonMu,
-		SoiRadius = soiRadius(MOON_ORBIT_RADIUS, moonMu, homeworldMu), -- ~35,300 m
+		SoiRadius = soiRadius(MOON_ORBIT_RADIUS, moonMu, homeworldMu), -- ~72,200 m
 		Atmosphere = nil,
-		Orbit = circularOrbit(homeworldMu, 1, MOON_ORBIT_RADIUS, MOON_ORBIT_PHASE_AT_UT0), -- period ~6,900 s
+		Orbit = circularOrbit(homeworldMu, 1, MOON_ORBIT_RADIUS, MOON_ORBIT_PHASE_AT_UT0), -- period ~10,090 s
 		AngularRadiusDeg = nil,
 		DayLengthS = nil,
 		Color = Color3.fromRGB(150, 146, 140),

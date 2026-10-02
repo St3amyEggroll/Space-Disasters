@@ -264,7 +264,9 @@ return function(t: TestKit.Context)
 
 	t.test("conic points lie on the orbit", function()
 		local r0 = Vec3d.new(HOME.Radius + 20000, 500, 0)
-		local v0 = Vec3d.new(80, 40, 560)
+		-- CHANGED (Physics feel): x1.4 for the 60 km Earth, so this stays an eccentric ellipse whose period
+		-- (~1,900 s) is longer than the partial arc below
+		local v0 = Vec3d.new(112, 56, 790)
 		local el = Kepler.elements(MU, r0, v0)
 		local points = Kepler.conicPoints(MU, r0, v0, 0, el.period, 64)
 		t.expectEqual(#points, 65)
