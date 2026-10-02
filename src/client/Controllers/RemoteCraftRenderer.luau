@@ -476,7 +476,8 @@ function RemoteCraftRenderer.render(ctx: RenderContext.RenderContext)
 		end
 	end
 	-- CHANGED (Phase 3): crews of crafts in other pockets, inside the copies just posed
-	Puppets.update(ctx.pocketId, renderUT, copies, RemoteCraftRenderer.sampleState)
+	-- CHANGED (Ground puppets): the whole context, so players on foot in other pockets are drawn too
+	Puppets.update(ctx, renderUT, copies, RemoteCraftRenderer.sampleState)
 end
 
 --============================================================================
