@@ -625,6 +625,15 @@ Steamy asked for "an effects phase, to update effects of rockets and everything"
   - The map predicts impacts on the heightmap (opt-in `Rails.predict` terrain).
 - **Still open:** objects more than about 1 km away over scaled ground can still be hidden by it, mostly on High. The proper fix is to draw remote crafts, puppets and effects scaled like the ground under them (`TerrainMesh.scaleAt`).
 
+### D47. EVA shake (2026-10-02)
+- **Bug (Steamy):** "my character is starting to shake during eva".
+- **Cause:** the floating astronaut was placed at RenderStep Camera + 11, after the stock camera (Camera priority). Each frame the camera framed the HumanoidRootPart where the previous physics step had left it (last placement + velocity × physics step, plus contact pushes from limbs touching a hull or terrain wedges), and only then was the root placed and drawn. The camera was off by (relative speed × (the frame's UT step − the physics step)), which grows with speed (jetpack, a craft burning away), plus a jolt per contact.
+- **Fix:**
+  - `EvaController` runs at Camera − 1, before the camera, and refreshes the pocket frame first. `PocketController.update` now computes the frame once per render frame (marked stale at `RenderPriority.First`, on pocket changes and transfers), so `UniverseRenderer` reuses the same frame.
+  - While floating, physics never moves the root: PreSimulation zeroes its velocity, PostSimulation restores the drawn CFrame and the velocity relative to the pocket. That velocity still replicates, so `BubbleService` and `Eva.plausibleMove` read the same position and velocity as before. A transfer in between (pocket or frame epoch changed) cancels the restore.
+  - `Eva.turnToward` keeps the facing in [−π, π); `workspace.Gravity` is only written when it really changes.
+- **Walking is unchanged:** Roblox physics moves him and the camera follows the root as usual.
+
 ## Phase 0 spike results
 
 Steamy ran all ten spikes in Studio on 2026-09-30. The raw `[SPIKE ...]` output is summarized here.

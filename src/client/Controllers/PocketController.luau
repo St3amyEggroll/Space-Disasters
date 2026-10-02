@@ -32,10 +32,17 @@
 	    frame runs at the present, StateBuffer.lead). craftCFrame(id) gives any posed craft's frame (the pilot of a
 	    secondary craft's chase camera and effects use it), and RemoteCraftRenderer learns which crafts are real in
 	    this pocket every frame (no cosmetic copy for them).
+
+	CHANGED (EVA shake): update() computes the frame ONCE per render frame: the first call in a frame does the work,
+	later calls in the same frame return at once (a RenderStep at RenderPriority.First marks every new frame stale,
+	and so do pocket changes and transfers). EvaController calls it BEFORE the camera (it places the floating
+	astronaut there, so the stock camera follows where he is drawn this frame), UniverseRenderer after the camera as
+	before; both see the same frame. Without an EVA nothing changes: UniverseRenderer computes it.
 ]]
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService") -- CHANGED (EVA shake): the per-frame stale mark
 local Workspace = game:GetService("Workspace")
 
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
@@ -61,6 +68,9 @@ local INTERP_DELAY = GameConfig.INTERP_DELAY
 local CHARACTER_CHECK_S = 0.5
 local SLOT_CAPTURE_RADIUS = 1800 -- same as PocketService
 local POSE_MOVE_MODE = Enum.BulkMoveMode.FireCFrameChanged
+-- CHANGED (EVA shake): marks the frame stale at the start of every render frame (before anything reads it)
+local NEW_FRAME_STEP_NAME = "PocketFrameNewFrame"
+local NEW_FRAME_PRIORITY = Enum.RenderPriority.First.Value
 --============================================================================
 
 -- What the pilot's simulation reports for its own craft (a subset of FlightModel.CraftState).
@@ -90,6 +100,8 @@ local primaryCraftId: number? = nil -- CHANGED (Phase 6): the primary craft pose
 -- CHANGED (Phase 10): velocity of the pocket's reference point relative to frame.refBodyId (universe axes); the
 -- primary craft's velocity in a flight pocket, zero otherwise (planets do not rotate)
 local frameVelocity = Vec3d.zero()
+-- CHANGED (EVA shake): the frame was already computed in this render frame (update() is then free)
+local frameFresh = false
 
 -- Pose cache for the real model of the current pocket's primary craft (D31).
 type PoseCache = {
@@ -290,6 +302,7 @@ local function setPocket(id: number)
 		return
 	end
 	pocketId = id
+	frameFresh = false -- CHANGED (EVA shake): another pocket: recompute even within this render frame
 	refreshPocketVisibility()
 	refreshCharacters()
 	pocketChanged:Fire(id)
@@ -344,6 +357,7 @@ local function onTransfer(
 	if type(epoch) == "number" then
 		frame.frameEpoch = epoch
 	end
+	frameFresh = false -- CHANGED (EVA shake): a rebase in place changes the reference too: recompute
 	setPocket(dest :: number)
 	Remotes.event("PocketTransferAck"):FireServer(transferId)
 end
@@ -566,7 +580,14 @@ local function poseCrafts(folder: Instance, primaryId: number?, primaryState: Pr
 end
 
 -- Recomputes the current pocket frame; call once per render frame before drawing.
+-- CHANGED (EVA shake): only the first call in a render frame (or after a pocket change / transfer) does the work;
+-- later calls in the same frame keep that frame, so whoever calls first (EvaController before the camera,
+-- UniverseRenderer after it) and everyone after it draw with the same frame and the same render UT.
 function PocketController.update()
+	if frameFresh then
+		return
+	end
+	frameFresh = true
 	local now = UniverseTime.now()
 	renderUT = now
 	table.clear(posedCFrames) -- CHANGED (Phase 6)
@@ -711,6 +732,10 @@ function PocketController.Init()
 end
 
 function PocketController.Start()
+	-- CHANGED (EVA shake): every render frame starts with a stale frame (update() header)
+	RunService:BindToRenderStep(NEW_FRAME_STEP_NAME, NEW_FRAME_PRIORITY, function()
+		frameFresh = false
+	end)
 	Remotes.event("PocketTransfer").OnClientEvent:Connect(onTransfer)
 	player:GetAttributeChangedSignal("PocketId"):Connect(function()
 		local id = player:GetAttribute("PocketId")

@@ -255,6 +255,8 @@ local function step(dt: number)
 		return
 	end
 	refreshDrawDistance(dt)
+	-- CHANGED (EVA shake): computed once per render frame; on EVA EvaController already did it before the camera, so
+	-- this reuses that frame (the astronaut, the crafts and the world are drawn with one frame and one render UT)
 	PocketController.update()
 
 	local frame = PocketController.frame()

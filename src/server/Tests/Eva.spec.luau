@@ -197,6 +197,32 @@ return function(t: TestKit.Context)
 		t.expectNear(time, 2 / GameConfig.EVA_THRUST_ACCEL, FRAME * 1.5)
 	end)
 
+	-- CHANGED (EVA shake): the facing turns the short way and stays bounded however often he turns
+	t.test("turnToward: the short way, at most maxStep, always within [-pi, pi)", function()
+		local pi = math.pi
+		t.expectNear(Eva.turnToward(0, 1, 0.1), 0.1, 1e-12, "limited to maxStep")
+		t.expectNear(Eva.turnToward(0, -1, 0.1), -0.1, 1e-12, "both directions")
+		t.expectNear(Eva.turnToward(0, 0.05, 0.1), 0.05, 1e-12, "reaches the target exactly when close")
+		-- from just below +pi to just above -pi the short way crosses pi (0.2 rad), not back through 0
+		local crossed = Eva.turnToward(pi - 0.1, -pi + 0.1, 1)
+		t.expectNear(crossed, -pi + 0.1, 1e-9, "crosses the seam")
+		t.expectNear(Eva.turnToward(0, 2 * pi + 0.3, 1), 0.3, 1e-9, "a wanted angle a full turn away is the same")
+		t.expectNear(Eva.turnToward(0.2, 1, -1), 0.2, 1e-12, "a negative step does not turn")
+		t.expectNear(Eva.turnToward(0.2, 0 / 0, 1), 0.2, 1e-12, "NaN wanted keeps the yaw")
+		t.expectNear(Eva.turnToward(7, 7, 0), 7 - 2 * pi, 1e-9, "an old unwrapped yaw is wrapped")
+		-- flying in circles for an hour at TURN_RATE-like steps: the yaw never grows
+		local yaw = 0
+		local largest = 0
+		for frame = 1, 60 * 3600 do
+			yaw = Eva.turnToward(yaw, yaw + 1, 6 / 60)
+			largest = math.max(largest, math.abs(yaw))
+			if frame % 1000 == 0 then
+				t.expectTrue(yaw >= -pi and yaw < pi, "wrapped")
+			end
+		end
+		t.expectTrue(largest <= pi, "bounded after an hour of turning")
+	end)
+
 	t.test("fuel: EVA_PROPELLANT_S seconds of full thrust, refills aboard", function()
 		local full = GameConfig.EVA_PROPELLANT_S
 		local fuel, fraction = Eva.burn(full, GameConfig.EVA_THRUST_ACCEL, 1)
