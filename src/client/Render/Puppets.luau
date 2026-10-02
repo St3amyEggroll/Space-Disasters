@@ -20,17 +20,37 @@
 	anchored root and every other part is massless, unanchored and joined by its rig joints; nothing collides, is
 	queried or touched; the Humanoid's state machine is off and its name/health display hidden. Seated puppets get a
 	fixed sitting pose (hip and knee Motor6D.Transform); no animation in v1.
+
+	CHANGED (Ground puppets): players ON FOOT in another pocket (walking around the base while you fly, or out of a
+	landed craft in another flight pocket) were never drawn ("while flying I can't see others on the ground").
+	Every other player who is not seated and not aboard a craft is now a "ground puppet" at their true position:
+	their HumanoidRootPart (their pocket's workspace) -> universe through THEIR pocket's frame -> this pocket through
+	ours (Render/PuppetMath, doubles first, I1). Their pocket is found from the root's position by slot, exactly as
+	PocketController decides to hide them. The source frame is the pocket folder's attributes (base / surface
+	pockets: RefX/RefY/RefZ/RefRot/RefBodyId, the frame the launch-site copy in Surface is placed with) or, for a
+	flight pocket, its primary craft's streamed state led to now with the local horizon axes, as the copy of that
+	craft is drawn. Only within GROUND_PUPPET_DISTANCE of the camera, not behind a planet (LineOfSight), at most
+	GROUND_PUPPET_MAX nearest. They are animated: each frame the hidden real character's Motor6D.Transform values
+	(other players' animations still play on this client) are copied onto the puppet's matching joints, retargeted
+	when the rigs differ (R6 character -> R15 puppet, or the stand-in); joints without a match stay neutral.
+	Aboard / seated puppets keep their fixed pose; a puppet that switches between the two resets its joints.
 ]]
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
+local Bodies = require(ReplicatedStorage.Shared.Config.Bodies) -- CHANGED (Ground puppets)
 local CraftDesign = require(ReplicatedStorage.Shared.Craft.CraftDesign)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
+local LineOfSight = require(ReplicatedStorage.Shared.Sim.LineOfSight) -- CHANGED (Ground puppets)
 local Protocol = require(ReplicatedStorage.Shared.Net.Protocol)
+local StateBuffer = require(ReplicatedStorage.Shared.Net.StateBuffer) -- CHANGED (Ground puppets)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
+local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d) -- CHANGED (Ground puppets)
+local PuppetMath = require(script.Parent.PuppetMath) -- CHANGED (Ground puppets)
+local RenderContext = require(script.Parent.RenderContext) -- CHANGED (Ground puppets)
 
 --============================================================================
 -- Tunables
@@ -46,10 +66,20 @@ local STAND_IN_SKIN = Color3.fromRGB(234, 184, 146)
 local STAND_IN_SHIRT = Color3.fromRGB(70, 110, 190)
 local STAND_IN_PANTS = Color3.fromRGB(45, 50, 65)
 local STAND_IN_FACE = "rbxasset://textures/face.png"
+-- CHANGED (Ground puppets)
+local GROUND_DISTANCE = GameConfig.GROUND_PUPPET_DISTANCE -- m from the camera (true distance)
+local GROUND_MAX = GameConfig.GROUND_PUPPET_MAX -- nearest on-foot puppets drawn at once
+local INTERP_DELAY = GameConfig.INTERP_DELAY -- s; a flight pocket's sampled craft state is led by this to now
+local SLOT_CAPTURE_RADIUS = 1800 -- same as PocketService / PocketController
+local REPAIR_S = 2 -- s between re-pairings while some puppet joints have no match (the character may still load)
+local VIEW_PRUNE_FRAMES = 600 -- updates a pocket's cached frame may go unused before it is dropped
 --============================================================================
 
 export type CopyInfo = { root: BasePart, distance: number, radius: number }
 export type Sampler = (craftId: number, ut: number) -> Protocol.State?
+
+-- CHANGED (Ground puppets): what posed a puppet last; its joints are reset when this changes
+type Mode = "None" | "Aboard" | "Ground"
 
 type Puppet = {
 	model: Model,
@@ -57,6 +87,36 @@ type Puppet = {
 	hips: { Motor6D },
 	knees: { Motor6D },
 	standIn: boolean, -- the blocky fallback (the real appearance is retried every RETRY_BUILD_S)
+	-- CHANGED (Ground puppets): animation copied from the real character
+	joints: { Motor6D }, -- every rig joint of the puppet
+	roles: { string }, -- PuppetMath.jointRole of each joint
+	mode: Mode,
+	pairedWith: Model?, -- the character the pairs below were built for (nil = pair again)
+	pairedAt: number, -- os.clock() of the last pairing
+	pairPuppet: { Motor6D }, -- puppet joint i is driven by real joint i ...
+	pairReal: { Motor6D },
+	pairQ: { CFrame }, -- ... retargeted with these (PuppetMath.retargetFor)
+	pairQInverse: { CFrame },
+	pairDirect: { boolean },
+}
+
+-- CHANGED (Ground puppets): another pocket's frame, refreshed at most once per update
+type PocketView = {
+	frame: Frames.Frame,
+	stamp: number, -- frameStamp of the last refresh
+	ok: boolean, -- the frame is known this update
+	rotation: CFrame, -- that pocket's workspace axes -> ours
+	bodyOffset: Vec3d.Vec3d?, -- abs(its reference body) - abs(ours), nil for the same body
+}
+
+-- CHANGED (Ground puppets): an on-foot player within range this update (pooled, reused every update)
+type Candidate = {
+	player: Player,
+	character: Model,
+	root: BasePart,
+	view: PocketView,
+	truePos: Vec3d.Vec3d, -- relative to our frame's reference body (doubles)
+	distanceSq: number,
 }
 
 local Puppets = {}
@@ -66,15 +126,26 @@ local puppets: { [Player]: Puppet } = {}
 local building: { [Player]: boolean } = {}
 local failedAt: { [Player]: number } = {}
 local shownCount = 0
+-- CHANGED (Ground puppets)
+local frameStamp = 0
+local views: { [number]: PocketView } = {}
+local slotOrigins: { Vector3 } = {}
+local slotIds: { number } = {}
+local slotStamp = -1
+local candidates: { Candidate } = {}
+local candidateCount = 0
+local sorted: { Candidate } = {}
+local scratchRef = Vec3d.zero()
 
 --============================================================================
 -- Building
 --============================================================================
 
-local function collectMotors(model: Model, names: { string }): { Motor6D }
+local function collectMotors(model: Model, names: { string }?): { Motor6D }
 	local result = {}
 	for _, descendant in model:GetDescendants() do
-		if descendant:IsA("Motor6D") and table.find(names, descendant.Name) then
+		-- CHANGED (Ground puppets): no names = every joint
+		if descendant:IsA("Motor6D") and (names == nil or table.find(names, descendant.Name)) then
 			table.insert(result, descendant)
 		end
 	end
@@ -113,12 +184,28 @@ local function preparePuppet(model: Model): Puppet?
 		humanoid.EvaluateStateMachine = false
 	end
 	model.PrimaryPart = root
+	-- CHANGED (Ground puppets): every joint and its role, for the animation copy
+	local joints = collectMotors(model)
+	local roles: { string } = {}
+	for index, joint in joints do
+		roles[index] = PuppetMath.jointRole(joint.Name)
+	end
 	return {
 		model = model,
 		root = root,
 		hips = collectMotors(model, HIP_NAMES),
 		knees = collectMotors(model, KNEE_NAMES),
 		standIn = false,
+		joints = joints,
+		roles = roles,
+		mode = "None" :: Mode,
+		pairedWith = nil,
+		pairedAt = 0,
+		pairPuppet = {},
+		pairReal = {},
+		pairQ = {},
+		pairQInverse = {},
+		pairDirect = {},
 	}
 end
 
@@ -264,6 +351,16 @@ local function requestPuppet(player: Player)
 	end)
 end
 
+-- CHANGED (Ground puppets): moved out of update (shared by aboard and ground puppets). The player's puppet, asking
+-- for it (or for the real appearance in place of the stand-in) when needed; nil while the first one is built.
+local function ensurePuppet(player: Player): Puppet?
+	local puppet = puppets[player]
+	if puppet == nil or puppet.standIn then
+		requestPuppet(player)
+	end
+	return puppet
+end
+
 --============================================================================
 -- Pose relative to the craft
 --============================================================================
@@ -359,6 +456,108 @@ local function aboardPose(
 end
 
 --============================================================================
+-- CHANGED (Ground puppets): other pockets' frames
+--============================================================================
+
+-- Slot origins of the flight pockets, read at most once per update (for PuppetMath.slotPocket).
+local function refreshSlots()
+	if slotStamp == frameStamp then
+		return
+	end
+	slotStamp = frameStamp
+	table.clear(slotOrigins)
+	table.clear(slotIds)
+	local pockets = Workspace:FindFirstChild("Pockets")
+	if pockets == nil then
+		return
+	end
+	for _, pocket in pockets:GetChildren() do
+		local id = pocket:GetAttribute("PocketId")
+		local origin = pocket:GetAttribute("SlotOrigin")
+		if type(id) == "number" and id ~= 0 and typeof(origin) == "Vector3" then
+			table.insert(slotOrigins, origin)
+			table.insert(slotIds, id)
+		end
+	end
+end
+
+--[[
+	Sets `frame`'s reference to where the pocket's own clients have it now: a flight pocket follows its primary
+	craft (the sampled stream led to `ut`, horizon axes, as PocketController and the copy of that craft); the base and
+	other fixed pockets read their attributes. False if unknown.
+]]
+local function setPocketReference(
+	frame: Frames.Frame,
+	pocket: Instance,
+	ut: number,
+	renderUT: number,
+	sample: Sampler
+): boolean
+	if pocket:GetAttribute("FrameMode") == "HORIZON_ALIGNED" then
+		local primary = pocket:GetAttribute("PrimaryId")
+		local sampled = if type(primary) == "number" then sample(primary, renderUT) else nil
+		if sampled == nil then
+			return false
+		end
+		local s = StateBuffer.lead(sampled, ut, INTERP_DELAY)
+		Frames.setReference(frame, s.bodyId, s.pos, Universe.pocketRotation(s.bodyId, s.pos, ut))
+		return true
+	end
+	local x, y, z = pocket:GetAttribute("RefX"), pocket:GetAttribute("RefY"), pocket:GetAttribute("RefZ")
+	local rot = pocket:GetAttribute("RefRot")
+	local body = pocket:GetAttribute("RefBodyId")
+	if
+		type(x) ~= "number"
+		or type(y) ~= "number"
+		or type(z) ~= "number"
+		or typeof(rot) ~= "CFrame"
+		or type(body) ~= "number"
+	then
+		return false
+	end
+	Frames.setReference(frame, body, Vec3d.set(scratchRef, x, y, z), rot)
+	return true
+end
+
+-- Another pocket's frame seen from ours this update, or nil when it is unknown.
+local function pocketView(id: number, ctx: RenderContext.RenderContext, renderUT: number, sample: Sampler): PocketView?
+	local view = views[id]
+	if view and view.stamp == frameStamp then
+		return if view.ok then view else nil
+	end
+	if view == nil then
+		local created: PocketView = {
+			frame = Frames.new(Bodies.HOMEWORLD, Vec3d.zero(), CFrame.identity, Vector3.zero),
+			stamp = 0,
+			ok = false,
+			rotation = CFrame.identity,
+			bodyOffset = nil,
+		}
+		views[id] = created
+		view = created
+	end
+	local v = view :: PocketView
+	v.stamp = frameStamp
+	v.ok = false
+	local pocket = pocketFolder(id)
+	local slot = if pocket then pocket:GetAttribute("SlotOrigin") else nil
+	if pocket == nil or typeof(slot) ~= "Vector3" then
+		return nil
+	end
+	v.frame.slotOrigin = slot
+	if not setPocketReference(v.frame, pocket, ctx.ut, renderUT, sample) then
+		return nil
+	end
+	local mine = ctx.frame
+	v.rotation = PuppetMath.rotationBetween(v.frame, mine)
+	v.bodyOffset = if v.frame.refBodyId ~= mine.refBodyId
+		then Universe.bodyOffset(v.frame.refBodyId, mine.refBodyId, ctx.ut)
+		else nil
+	v.ok = true
+	return v
+end
+
+--============================================================================
 -- Per frame
 --============================================================================
 
@@ -380,6 +579,163 @@ local function hide(player: Player)
 	end
 end
 
+-- CHANGED (Ground puppets)
+local function show(puppet: Puppet, parent: Instance)
+	if puppet.model.Parent ~= parent then
+		puppet.model.Parent = parent
+	end
+	shownCount += 1
+end
+
+-- CHANGED (Ground puppets): a change between aboard (fixed pose) and ground (copied animation) starts from neutral.
+local function setMode(puppet: Puppet, mode: Mode)
+	if puppet.mode == mode then
+		return
+	end
+	puppet.mode = mode
+	puppet.pairedWith = nil
+	for _, joint in puppet.joints do
+		joint.Transform = CFrame.identity
+	end
+end
+
+-- CHANGED (Ground puppets): pairs each puppet joint with the real character's joint of the same role.
+local function pairJoints(puppet: Puppet, character: Model)
+	table.clear(puppet.pairPuppet)
+	table.clear(puppet.pairReal)
+	table.clear(puppet.pairQ)
+	table.clear(puppet.pairQInverse)
+	table.clear(puppet.pairDirect)
+	local real: { [string]: Motor6D } = {}
+	for _, descendant in character:GetDescendants() do
+		if descendant:IsA("Motor6D") then
+			local role = PuppetMath.jointRole(descendant.Name)
+			if not real[role] then
+				real[role] = descendant
+			end
+		end
+	end
+	for index, joint in puppet.joints do
+		joint.Transform = CFrame.identity -- neutral unless a match drives it
+		local match = real[puppet.roles[index]]
+		if match then
+			local q, qInverse, direct = PuppetMath.retargetFor(joint.C0, match.C0)
+			table.insert(puppet.pairPuppet, joint)
+			table.insert(puppet.pairReal, match)
+			table.insert(puppet.pairQ, q)
+			table.insert(puppet.pairQInverse, qInverse)
+			table.insert(puppet.pairDirect, direct)
+		end
+	end
+	puppet.pairedWith = character
+	puppet.pairedAt = os.clock()
+end
+
+-- CHANGED (Ground puppets): copies the hidden real character's current joint transforms onto the puppet.
+local function animate(puppet: Puppet, character: Model)
+	if
+		puppet.pairedWith ~= character
+		or (#puppet.pairPuppet < #puppet.joints and os.clock() - puppet.pairedAt > REPAIR_S)
+	then
+		pairJoints(puppet, character)
+	end
+	local pairReal, pairQ, pairQInverse, pairDirect =
+		puppet.pairReal, puppet.pairQ, puppet.pairQInverse, puppet.pairDirect
+	for index, joint in puppet.pairPuppet do
+		local real = pairReal[index]
+		if real.Parent == nil then
+			puppet.pairedWith = nil -- a joint went away (respawn, rig rebuilt): pair again next frame
+			break
+		end
+		joint.Transform = PuppetMath.retarget(real.Transform, pairQ[index], pairQInverse[index], pairDirect[index])
+	end
+end
+
+-- CHANGED (Ground puppets): records an on-foot player in another pocket if within GROUND_DISTANCE of the camera.
+local function addGroundCandidate(
+	other: Player,
+	character: Model,
+	root: BasePart,
+	ctx: RenderContext.RenderContext,
+	renderUT: number,
+	sample: Sampler
+): boolean
+	refreshSlots()
+	local position = root.Position
+	local pocketId = PuppetMath.slotPocket(position, SLOT_CAPTURE_RADIUS, slotOrigins, slotIds)
+	if pocketId == nil or pocketId == ctx.pocketId then
+		return false -- between slots, or in our pocket (where the real character is shown)
+	end
+	local view = pocketView(pocketId, ctx, renderUT, sample)
+	if view == nil then
+		return false
+	end
+	local candidate = candidates[candidateCount + 1]
+	if candidate == nil then
+		candidate = {
+			player = other,
+			character = character,
+			root = root,
+			view = view,
+			truePos = Vec3d.zero(),
+			distanceSq = 0,
+		}
+		candidates[candidateCount + 1] = candidate
+	end
+	local c = candidate :: Candidate
+	PuppetMath.trueInto(view.frame, view.bodyOffset, position, c.truePos)
+	local distanceSq = Vec3d.distanceSq(c.truePos, ctx.cameraAbs)
+	if distanceSq > GROUND_DISTANCE * GROUND_DISTANCE then
+		return false
+	end
+	c.player, c.character, c.root, c.view, c.distanceSq = other, character, root, view, distanceSq
+	candidateCount += 1
+	return true
+end
+
+local function closerFirst(a: Candidate, b: Candidate): boolean
+	return a.distanceSq < b.distanceSq
+end
+
+-- CHANGED (Ground puppets): the GROUND_MAX nearest visible candidates, posed at their true position and animated.
+local function drawGround(ctx: RenderContext.RenderContext, parent: Instance)
+	table.clear(sorted)
+	for index = 1, candidateCount do
+		sorted[index] = candidates[index]
+	end
+	if candidateCount > 1 then
+		table.sort(sorted, closerFirst)
+	end
+	local drawn = 0
+	for _, candidate in sorted do
+		local other = candidate.player
+		if
+			drawn >= GROUND_MAX or LineOfSight.blocked(ctx.frame.refBodyId, ctx.cameraAbs, candidate.truePos, ctx.ut)
+		then
+			hide(other)
+			continue
+		end
+		local puppet = ensurePuppet(other)
+		if puppet == nil then
+			continue
+		end
+		setMode(puppet, "Ground")
+		puppet.root.CFrame =
+			PuppetMath.cframeIn(ctx.frame, candidate.truePos, candidate.view.rotation, candidate.root.CFrame)
+		animate(puppet, candidate.character)
+		show(puppet, parent)
+		drawn += 1
+	end
+	table.clear(sorted)
+	if frameStamp % VIEW_PRUNE_FRAMES == 0 then
+		for id, view in views do
+			if frameStamp - view.stamp > VIEW_PRUNE_FRAMES then
+				views[id] = nil
+			end
+		end
+	end
+end
+
 function Puppets.init(parent: Instance)
 	local created = Instance.new("Folder")
 	created.Name = "Puppets"
@@ -394,15 +750,25 @@ end
 
 --[[
 	Called once per render frame by RemoteCraftRenderer after the copies are posed.
-	myPocketId: the local pocket; copies: craft id -> the copy drawn this frame (true-scale, posed root).
+	ctx: this frame's render context (CHANGED (Ground puppets): was the pocket id; the frame and camera are needed for
+	players on foot in other pockets); renderUT: the UT copies are sampled at; copies: craft id -> the copy drawn
+	this frame (true-scale, posed root).
 ]]
-function Puppets.update(myPocketId: number, renderUT: number, copies: { [number]: CopyInfo }, sample: Sampler)
+function Puppets.update(
+	ctx: RenderContext.RenderContext,
+	renderUT: number,
+	copies: { [number]: CopyInfo },
+	sample: Sampler
+)
 	local parent = folder
 	if parent == nil then
 		return
 	end
+	local myPocketId = ctx.pocketId
 	local localPlayer = Players.LocalPlayer
 	shownCount = 0
+	frameStamp += 1 -- CHANGED (Ground puppets)
+	candidateCount = 0
 	for _, other in Players:GetPlayers() do
 		if other == localPlayer then
 			continue
@@ -412,7 +778,8 @@ function Puppets.update(myPocketId: number, renderUT: number, copies: { [number]
 		local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
 		local otherPocket = other:GetAttribute("PocketId")
 		if
-			humanoid == nil
+			character == nil
+			or humanoid == nil
 			or humanoid.Health <= 0
 			or root == nil
 			or not root:IsA("BasePart")
@@ -423,25 +790,28 @@ function Puppets.update(myPocketId: number, renderUT: number, copies: { [number]
 			continue
 		end
 		local craftId, rel, seated = aboardPose(other, root, humanoid, sample, renderUT, copies)
-		local copy = if craftId then copies[craftId] else nil
+		if craftId == nil then
+			-- CHANGED (Ground puppets): on foot (not seated, not aboard): drawn at the true position, if near
+			if humanoid.SeatPart ~= nil or not addGroundCandidate(other, character, root, ctx, renderUT, sample) then
+				hide(other)
+			end
+			continue
+		end
+		local copy = copies[craftId]
 		if copy == nil or rel == nil or copy.distance > PUPPET_DISTANCE then
 			hide(other)
 			continue
 		end
-		local puppet = puppets[other]
-		if puppet == nil or puppet.standIn then
-			requestPuppet(other)
-		end
+		local puppet = ensurePuppet(other)
 		if puppet == nil then
 			continue
 		end
+		setMode(puppet, "Aboard") -- CHANGED (Ground puppets)
 		puppet.root.CFrame = copy.root.CFrame * rel
 		setSeated(puppet, seated)
-		if puppet.model.Parent ~= parent then
-			puppet.model.Parent = parent
-		end
-		shownCount += 1
+		show(puppet, parent)
 	end
+	drawGround(ctx, parent) -- CHANGED (Ground puppets)
 end
 
 -- Puppets drawn in the last update (debug overlay).

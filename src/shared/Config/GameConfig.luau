@@ -109,6 +109,9 @@ local GameConfig = {
 	COPY_MAX_DISTANCE = 30000, -- m; cosmetic copies farther than this become markers (Phase 4 adds scaled copies)
 	PUPPET_ABOARD_RADIUS = 40, -- m beyond a craft's own radius where a standing character still counts as aboard
 	SNAPSHOT_COOLDOWN_S = 5, -- s between two join snapshots for the same player
+	-- CHANGED (Ground puppets): players on foot in other pockets (the base, a landing site), drawn where they are
+	GROUND_PUPPET_DISTANCE = 1500, -- m from the camera; on-foot players farther away are not drawn
+	GROUND_PUPPET_MAX = 12, -- nearest on-foot puppets drawn at once
 
 	--========================================================================
 	-- Orbits and debris
