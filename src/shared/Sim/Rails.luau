@@ -25,6 +25,9 @@
 	and re-expresses the state in the new body's frame at that UT (a new epoch).
 
 	predict(...) chains conic patches through SOI changes for the map view.
+	CHANGED (Night review): predict's `terrain` option ends a patch where the trajectory meets the heightmap ground
+	(SurfaceHeight) instead of sea level (the map's impact point was on the sea-level sphere: below the hills,
+	above Mun craters). Off by default: only the map view asks for it.
 ]]
 
 local Atmosphere = require(script.Parent.Atmosphere)
@@ -32,6 +35,7 @@ local Bodies = require(script.Parent.Parent.Config.Bodies)
 local FlightModel = require(script.Parent.FlightModel)
 local GameConfig = require(script.Parent.Parent.Config.GameConfig)
 local Kepler = require(script.Parent.Kepler)
+local SurfaceHeight = require(script.Parent.SurfaceHeight) -- CHANGED (Night review): terrain impacts (predict)
 local Universe = require(script.Parent.Universe)
 local Vec3d = require(script.Parent.Parent.Math.Vec3d)
 
@@ -51,6 +55,11 @@ local TRANSITION_GUARD_S = 1 -- s after an SOI change before the boundary just c
 local PREDICT_ORBITS = 2 -- elliptic patches are searched this many periods ahead for events
 local PREDICT_HORIZON = 40000 -- s; open orbits (and long periods) are searched this far ahead
 local CLEAR_FLAGS = bit32.bor(FlightModel.FLAG_BURNING, FlightModel.FLAG_CONTACT)
+-- CHANGED (Night review): terrain impacts (predict's `terrain` option)
+local TERRAIN_MAX_STEPS = 1500 -- samples of the height above the ground per patch at most (map: every 0.5 s)
+local TERRAIN_MIN_STEP = 0.02 -- s
+local TERRAIN_TOLERANCE = 0.01 -- s, bisection of the impact time
+local TERRAIN_RATE_FACTOR = 3 -- the height above sloped ground changes up to this x the speed
 --============================================================================
 
 export type Rails = {
@@ -87,6 +96,7 @@ export type PredictOptions = {
 	maxPatches: number?,
 	orbits: number?,
 	horizon: number?,
+	terrain: boolean?, -- CHANGED (Night review): impacts on the heightmap ground, not the sea-level sphere
 }
 
 local Rails = {}
@@ -357,8 +367,70 @@ end
 --============================================================================
 
 --[[
+	CHANGED (Night review): time (s after the state r, v) at which a coasting craft first meets the heightmap ground
+	of `bodyId` within `limit` s, or nil. The search runs from where it first comes below the highest ground to where
+	it climbs back above it, in steps of the height above the ground over a bound of its rate (at most
+	TERRAIN_MAX_STEPS samples: a very grazing pass may skip a narrow peak).
+]]
+local function terrainImpact(bodyId: number, mu: number, r: Vec3d, v: Vec3d, periapsis: number, limit: number): number?
+	local radius = Bodies.get(bodyId).Radius
+	local minHeight, maxHeight = SurfaceHeight.bounds(bodyId)
+	local high = radius + math.max(maxHeight, 0)
+	local low = radius + math.min(minHeight, 0)
+	if periapsis >= high then
+		return nil
+	end
+	local startR = Vec3d.length(r)
+	local t0 = 0
+	if startR > high then
+		local entry = Kepler.findRadiusCrossing(mu, r, v, high, 0, limit, low)
+		if entry == nil then
+			return nil
+		end
+		t0 = entry
+	end
+	-- it climbs back above the highest ground here (or never within the limit)
+	local t1 = Kepler.findRadiusCrossing(mu, r, v, high, t0 + TERRAIN_MIN_STEP, limit, low) or limit
+	local speedSq = Vec3d.lengthSq(v) + 2 * mu * (1 / low - 1 / math.max(startR, low))
+	local rate = math.sqrt(math.max(speedSq, 0)) * TERRAIN_RATE_FACTOR
+	local p, pv = Vec3d.zero(), Vec3d.zero()
+	local function gap(t: number): number
+		Kepler.propagate(mu, r, v, t, p, pv)
+		return (SurfaceHeight.height(bodyId, p))
+	end
+	local minStep = math.max(TERRAIN_MIN_STEP, (t1 - t0) / TERRAIN_MAX_STEPS)
+	local t, g = t0, gap(t0)
+	if g <= 0 then
+		return t0
+	end
+	while t < t1 do
+		local step = math.clamp(if rate > 0 then g / rate else minStep, minStep, math.max(t1 - t, 0))
+		if step <= 0 then
+			break
+		end
+		local tNext = t + step
+		local gNext = gap(tNext)
+		if gNext <= 0 then
+			local lo, hi = t, tNext
+			while hi - lo > TERRAIN_TOLERANCE do
+				local mid = 0.5 * (lo + hi)
+				if gap(mid) > 0 then
+					lo = mid
+				else
+					hi = mid
+				end
+			end
+			return hi
+		end
+		t, g = tNext, gNext
+	end
+	return nil
+end
+
+--[[
 	Conic patches from a state: each ends at an impact, an SOI exit, an SOI entry, or never. Elliptic patches are
 	searched PREDICT_ORBITS periods ahead (capped by the horizon), open ones up to the horizon.
+	CHANGED (Night review): with options.terrain the impact is on the heightmap ground (terrainImpact).
 ]]
 function Rails.predict(bodyId: number, pos: Vec3d, vel: Vec3d, ut: number, options: PredictOptions?): { Patch }
 	local opts: PredictOptions = options or {}
@@ -380,7 +452,14 @@ function Rails.predict(bodyId: number, pos: Vec3d, vel: Vec3d, ut: number, optio
 		local reason: PatchEnd = "None"
 		local nextBody: number? = nil
 
-		if Vec3d.length(r) <= body.Radius then
+		if opts.terrain and SurfaceHeight.latticeSize(currentBody) > 0 then
+			-- CHANGED (Night review): the heightmap ground (map view)
+			local limit = if el.kind == "Elliptic" then math.min(window, el.period) else window
+			local t = terrainImpact(currentBody, mu, r, v, el.periapsis, limit)
+			if t then
+				endT, reason = t, "Impact"
+			end
+		elseif Vec3d.length(r) <= body.Radius then
 			endT, reason = 0, "Impact"
 		elseif el.periapsis < body.Radius then
 			local limit = if el.kind == "Elliptic" then math.min(window, el.period) else window

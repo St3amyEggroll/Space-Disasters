@@ -8,6 +8,12 @@
 	stream the world past the craft). Nothing is built while the character is seated or more than ACTIVE_HEIGHT above
 	the ground. Crafts never touch these parts: craft contact is SurfaceHeight-based (FlightModel).
 
+	CHANGED (Night review): incremental. Every cell crossing used to release and re-create all the wedges (80 / 124
+	/ 208 WedgeParts per 23 m on Low / Medium / High); now the wedges are kept per lattice cell
+	(TerrainMath.collisionCells / cellTriangles) and only the cells entering or leaving the radius change (offline:
+	about 48 / 58 WedgeParts per crossing at 50 / 70 m). Their CFrames stay relative to one anchor, which is only
+	reset (a full rebuild) after the character has moved ANCHOR_RESET from it, or on a body / face / radius change.
+
 	API (driven by Surface):
 		TerrainCollision.init(parent)
 		TerrainCollision.update(ctx)
@@ -36,6 +42,7 @@ local ACTIVE_HEIGHT = 300 -- m above the ground; higher than this, no collision 
 local THICKNESS = 4 -- studs, wedge thickness below the triangle
 local POOL_PREWARM = 40
 local BULK_MOVE_MODE = Enum.BulkMoveMode.FireCFrameChanged
+local ANCHOR_RESET = 1000 -- m: CHANGED (Night review) the wedges are rebuilt about a new anchor this far from it
 --============================================================================
 
 type Wedge = { part: WedgePart, cf: CFrame } -- cf relative to the anchor (body axes)
@@ -44,14 +51,17 @@ local TerrainCollision = {}
 
 local folder: Folder? = nil
 local pool: { WedgePart } = {}
-local wedges: { Wedge } = {}
+local wedges: { Wedge } = {} -- every wedge in use (rebuilt from cellWedges when the cells change)
+local cellWedges: { [number]: { Wedge } } = {} -- CHANGED (Night review): by TerrainMath.cellKey
 local anchor: Vec3d = Vec3d.zero() -- body-relative point the wedge CFrames are relative to
+local anchored = false -- CHANGED (Night review): `anchor` is set (cells exist relative to it)
 local cellBody: number? = nil
 local cellFace = 0
 local cellI = -1
 local cellJ = -1
 local cellRadius = 0
-local triangles: { TerrainMath.Triangle } = {}
+local wantedCells: { number } = {} -- CHANGED (Night review): scratch for TerrainMath.collisionCells
+local wantedSet: { [number]: boolean } = {}
 local parts: { BasePart } = {}
 local cframes: { CFrame } = {}
 local placedDirty = true
@@ -86,6 +96,8 @@ local function releaseAll()
 		table.insert(pool, w.part)
 	end
 	table.clear(wedges)
+	table.clear(cellWedges) -- CHANGED (Night review)
+	anchored = false
 	table.clear(parts)
 	table.clear(cframes)
 	cellBody = nil
@@ -114,17 +126,13 @@ local function localRootPosition(): Vector3?
 	return nil
 end
 
--- Rebuilds the wedges for the cells around body-relative `pos`.
-local function rebuild(config: TerrainMath.Config, pos: Vec3d, radius: number, parent: Folder)
-	releaseAll()
-	TerrainMath.collisionTriangles(config, pos, radius, triangles)
-	local first = triangles[1]
-	if first == nil then
-		return
-	end
-	Vec3d.set(anchor, first[1], first[2], first[3])
+-- CHANGED (Night review): the wedges of one lattice cell's two triangles (CFrames relative to the anchor).
+local function buildCell(config: TerrainMath.Config, key: number, parent: Folder): { Wedge }
+	local result: { Wedge } = {}
+	local face, i, j = TerrainMath.cellOf(key)
+	local first, second = TerrainMath.cellTriangles(config, face, i, j)
 	local ax, ay, az = anchor.x, anchor.y, anchor.z
-	for _, t in triangles do
+	for _, t in { first, second } do
 		local a = Vector3.new(t[1] - ax, t[2] - ay, t[3] - az)
 		local b = Vector3.new(t[4] - ax, t[5] - ay, t[6] - az)
 		local c = Vector3.new(t[7] - ax, t[8] - ay, t[9] - az)
@@ -134,16 +142,62 @@ local function rebuild(config: TerrainMath.Config, pos: Vec3d, radius: number, p
 			local w0 = acquire()
 			w0.Size = size0
 			w0.Parent = parent
-			table.insert(wedges, { part = w0, cf = cf0 })
+			table.insert(result, { part = w0, cf = cf0 })
 			local w1 = acquire()
 			w1.Size = size1
 			w1.Parent = parent
-			table.insert(wedges, { part = w1, cf = cf1 })
+			table.insert(result, { part = w1, cf = cf1 })
 		end
 	end
-	for index, w in wedges do
-		parts[index] = w.part
-		cframes[index] = CFrame.identity
+	return result
+end
+
+--[[
+	Brings the wedges up to date for the cells around body-relative `pos`.
+	CHANGED (Night review): only cells entering / leaving the radius change (was: everything rebuilt); a full rebuild
+	about a new anchor when `full` or once the anchor is ANCHOR_RESET away.
+]]
+local function rebuild(config: TerrainMath.Config, pos: Vec3d, radius: number, parent: Folder, full: boolean)
+	if full or not anchored or Vec3d.distance(pos, anchor) > ANCHOR_RESET then
+		releaseAll()
+		local ground = SurfaceHeight.groundPoint(config.bodyId, pos)
+		Vec3d.copyInto(anchor, ground)
+		anchored = true
+	end
+	TerrainMath.collisionCells(config, pos, radius, wantedCells)
+	table.clear(wantedSet)
+	for _, key in wantedCells do
+		wantedSet[key] = true
+	end
+	local changed = false
+	for key, list in cellWedges do
+		if not wantedSet[key] then
+			for _, w in list do
+				w.part.Parent = nil
+				table.insert(pool, w.part)
+			end
+			cellWedges[key] = nil
+			changed = true
+		end
+	end
+	for _, key in wantedCells do
+		if cellWedges[key] == nil then
+			cellWedges[key] = buildCell(config, key, parent)
+			changed = true
+		end
+	end
+	if not changed then
+		return
+	end
+	table.clear(wedges)
+	table.clear(parts)
+	table.clear(cframes)
+	for _, list in cellWedges do
+		for _, w in list do
+			table.insert(wedges, w)
+			table.insert(parts, w.part)
+			table.insert(cframes, CFrame.identity)
+		end
 	end
 	placedDirty = true
 end
@@ -186,7 +240,9 @@ function TerrainCollision.update(ctx: RenderContext.RenderContext)
 	local face, fi, fj = SurfaceHeight.latticeCoords(bodyId, pos)
 	local i, j = math.floor(fi), math.floor(fj)
 	if cellBody ~= bodyId or face ~= cellFace or i ~= cellI or j ~= cellJ or radius ~= cellRadius then
-		rebuild(config, pos, radius, parent)
+		-- CHANGED (Night review): incremental within a face at the same radius
+		local full = cellBody ~= bodyId or face ~= cellFace or radius ~= cellRadius
+		rebuild(config, pos, radius, parent, full)
 		cellBody, cellFace, cellI, cellJ, cellRadius = bodyId, face, i, j, radius
 	end
 	if #wedges == 0 then

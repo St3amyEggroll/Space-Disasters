@@ -27,9 +27,15 @@
 	    are drawn within the tier's smaller moving radius / part cap (setDetail's moving*), until the frame has been
 	    still for MOVING_HOLD_S.
 
+	CHANGED (Night review): terrain review: a prop disc reaching past the true-scale terrain stood props on scaled
+	ground (drawn nearer than it is, so the props floated in front of it). A ground filter (setGroundFilter; Surface:
+	TerrainMesh.isTrueScaleAt) now drops every chunk not wholly over true-scale ground, re-checked whenever the
+	terrain changes (update's version).
+
 	API (driven by Surface):
 		SurfaceProps.init(parent)
-		SurfaceProps.update(ctx, surfaceMode)
+		SurfaceProps.update(ctx, surfaceMode, version?)     CHANGED (Night review): version of the filter's ground
+		SurfaceProps.setGroundFilter(filter?)               CHANGED (Night review)
 		SurfaceProps.setDetail(radius, maxParts, density, shadowRadius?, movingRadius?, movingMaxParts?)
 		                                                    CHANGED (Phase 8): Quality tier
 		                                                    CHANGED (Night review): + shadows, moving-pocket detail
@@ -451,6 +457,9 @@ local assigned: { [number]: Assigned } = {}
 local currentBodyId: number? = nil
 local lastRefreshPos: Vec3d = Vec3d.new(math.huge, 0, 0)
 local needsRefresh = true
+-- CHANGED (Night review): which chunks stand on true-scale ground (setGroundFilter), and the ground's version
+local groundFilter: ((pos: Vec3d, margin: number) -> boolean)? = nil
+local groundVersion: number? = nil
 
 local moveParts: { BasePart } = {}
 local moveCFrames: { CFrame } = {}
@@ -606,6 +615,31 @@ local function collectChunks(bodyId: number, camera: Vec3d, h: number)
 				local distSq = dx * dx + dz * dz + h * h
 				if distSq > propRadius * propRadius then
 					continue
+				end
+				-- CHANGED (Night review): only chunks over true-scale ground (a scaled terrain band is drawn nearer
+				-- than it is: props there would float in front of it)
+				local filter = groundFilter
+				if filter then
+					-- the chunk's centre and four corners (on its tile plane: the filter looks at lattice cells)
+					local inside = true
+					for corner = 0, 4 do
+						local a = if corner == 0 then 0.5 else (corner - 1) % 2
+						local b = if corner == 0 then 0.5 else (corner - 1) // 2
+						local point = Vec3d.add(
+							info.centre,
+							Vec3d.add(
+								Vec3d.scale(info.ax, (ci + a) * CHUNK_SIZE),
+								Vec3d.scale(info.az, (cj + b) * CHUNK_SIZE)
+							)
+						)
+						if not filter(point, 0) then
+							inside = false
+							break
+						end
+					end
+					if not inside then
+						continue
+					end
 				end
 				local key = chunkKey(bodyId, info.key, ci, cj)
 				local chunk = chunks[key]
@@ -786,11 +820,16 @@ function SurfaceProps.init(parent: Folder)
 	end
 end
 
-function SurfaceProps.update(ctx: RenderContext.RenderContext, surfaceMode: boolean)
+-- CHANGED (Night review): `version` changes whenever the ground the filter (setGroundFilter) checks changes.
+function SurfaceProps.update(ctx: RenderContext.RenderContext, surfaceMode: boolean, version: number?)
 	local folder = propsFolder
 	local parent = root
 	if folder == nil or parent == nil then
 		return
+	end
+	if version ~= groundVersion then
+		groundVersion = version
+		needsRefresh = true
 	end
 	local bodyId = ctx.dominantBodyId
 	local body = Bodies.find(bodyId)
@@ -871,6 +910,15 @@ function SurfaceProps.setDetail(
 		table.clear(chunks)
 		chunkCount = 0
 	end
+	needsRefresh = true
+end
+
+--[[
+	CHANGED (Night review): `filter(pos, margin)`: whether the ground within `margin` m of body-relative `pos` is drawn
+	at true scale (Surface: TerrainMesh.isTrueScaleAt). Chunks failing it get no props; nil draws them all.
+]]
+function SurfaceProps.setGroundFilter(filter: ((pos: Vec3d, margin: number) -> boolean)?)
+	groundFilter = filter
 	needsRefresh = true
 end
 

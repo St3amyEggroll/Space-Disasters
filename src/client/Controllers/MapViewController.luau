@@ -691,7 +691,8 @@ local function refreshTracked(ut: number)
 		return
 	end
 	local s = state :: State
-	patches = Rails.predict(s.bodyId, s.pos, s.vel, ut, { maxPatches = MAX_PATCHES })
+	-- CHANGED (Night review): terrain: the impact on the heightmap ground, not the sea-level sphere
+	patches = Rails.predict(s.bodyId, s.pos, s.vel, ut, { maxPatches = MAX_PATCHES, terrain = true })
 	local nextApsis = 1
 	for index, line in patchLines do
 		local patch = patches[index]

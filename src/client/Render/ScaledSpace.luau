@@ -6,7 +6,8 @@
 	engine's draw distance. The Sun is a Neon ball with a BillboardGui glow.
 
 	  ScaledSpace.init(parent)             creates every part under `parent` (yields once for CreateMeshPartAsync)
-	  ScaledSpace.update(ctx)              once per frame, after the camera moved
+	  ScaledSpace.update(ctx, forceScaled?) once per frame, after the camera moved (CHANGED (Night review):
+	                                       forceScaled: no surface handover, the main menu view)
 	  ScaledSpace.isSurfaceMode()          true while the dominant body's proxy is hidden (the Surface layer draws)
 	  ScaledSpace.proxyMinAltitude(id)     current proxy -> surface handover altitude for that body (m)
 
@@ -760,7 +761,9 @@ function ScaledSpace.init(parent: Folder)
 	end
 end
 
-function ScaledSpace.update(ctx: RenderContext.RenderContext)
+-- CHANGED (Night review): `forceScaled` keeps the dominant body a proxy whatever the altitude (the main menu's
+-- view: at quality 1 the 10 km viewpoint is below the handover altitude, and the menu has no surface to draw).
+function ScaledSpace.update(ctx: RenderContext.RenderContext, forceScaled: boolean?)
 	local ws = workspaceRef
 	if not initialised or ws == nil then
 		return
@@ -772,7 +775,10 @@ function ScaledSpace.update(ctx: RenderContext.RenderContext)
 	local dominantVisual = visualById[dominantId]
 
 	-- 1. proxy <-> surface handover for the dominant body
-	if dominantVisual and dominantVisual.kind ~= "Sun" then
+	if forceScaled then
+		surfaceBodyId = nil -- the handover is decided afresh once the override ends
+		surfaceMode = false
+	elseif dominantVisual and dominantVisual.kind ~= "Sun" then
 		local minAlt = proxyMinAlt(dominantVisual.radius, limits)
 		if surfaceBodyId ~= dominantId then
 			surfaceBodyId = dominantId

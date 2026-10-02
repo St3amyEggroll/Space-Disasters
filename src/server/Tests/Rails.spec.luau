@@ -8,6 +8,7 @@ local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
 local FlightModel = require(ReplicatedStorage.Shared.Sim.FlightModel)
 local Kepler = require(ReplicatedStorage.Shared.Sim.Kepler)
 local Rails = require(ReplicatedStorage.Shared.Sim.Rails)
+local SurfaceHeight = require(ReplicatedStorage.Shared.Sim.SurfaceHeight) -- CHANGED (Night review)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 
@@ -208,5 +209,71 @@ return function(t: TestKit.Context)
 		if transfer[2].endReason == "Exit" then
 			t.expectEqual(transfer[3].bodyId, Bodies.HOMEWORLD)
 		end
+	end)
+
+	-- CHANGED (Night review): the map's impact point is on the heightmap ground (predict's terrain option)
+	t.test("prediction: with terrain, the impact is on the heightmap ground (hills earlier, craters later)", function()
+		local function findSpot(bodyId: number, wanted: (number) -> boolean): Vec3d?
+			local radius = Bodies.get(bodyId).Radius
+			for i = 0, 1999 do
+				local golden = math.pi * (3 - math.sqrt(5))
+				local y = 1 - (i + 0.5) * 2 / 2000
+				local r = math.sqrt(1 - y * y)
+				local d = Vec3d.new(r * math.cos(golden * i), y, r * math.sin(golden * i))
+				local ground = SurfaceHeight.groundPoint(bodyId, d)
+				if wanted(Vec3d.length(ground) - radius) then
+					return d
+				end
+			end
+			return nil
+		end
+		local cases: { { bodyId: number, spot: Vec3d?, earlier: boolean } } = {
+			{
+				bodyId = Bodies.HOMEWORLD,
+				spot = findSpot(Bodies.HOMEWORLD, function(h: number): boolean
+					return h > 300
+				end),
+				earlier = true,
+			},
+			{
+				bodyId = Bodies.MOON,
+				spot = findSpot(Bodies.MOON, function(h: number): boolean
+					return h < -100
+				end),
+				earlier = false,
+			},
+		}
+		for _, case in cases do
+			local d = case.spot
+			t.expectTrue(d ~= nil, "found a spot")
+			if d == nil then
+				continue
+			end
+			local body = Bodies.get(case.bodyId)
+			-- dropped from 3 km with a little sideways speed
+			local ref = if math.abs(d.y) < 0.9 then Vec3d.new(0, 1, 0) else Vec3d.new(1, 0, 0)
+			local side = Vec3d.normalize(Vec3d.cross(ref, d))
+			local pos = Vec3d.scale(d, body.Radius + 3000)
+			local vel = Vec3d.scale(side, 20)
+			local sea = Rails.predict(case.bodyId, pos, vel, 0)
+			local ground = Rails.predict(case.bodyId, pos, vel, 0, { terrain = true })
+			t.expectEqual(sea[1].endReason, "Impact")
+			t.expectEqual(ground[1].endReason, "Impact")
+			if case.earlier then
+				t.expectTrue(ground[1].endUT < sea[1].endUT, "hits the hill before sea level")
+			else
+				t.expectTrue(ground[1].endUT > sea[1].endUT, "falls into the crater below sea level")
+			end
+			local at = Kepler.propagate(body.Mu, pos, vel, ground[1].endUT)
+			-- within the 0.01 s bisection at ~250 m/s
+			local height = SurfaceHeight.height(case.bodyId, at)
+			t.expectTrue(height <= 0 and height > -3, `on the ground at the impact: {height}`)
+		end
+		-- far above the highest ground: no change
+		local r = HOME.Radius + 10000
+		local circle = Rails.predict(Bodies.HOMEWORLD, Vec3d.new(r, 0, 0), Vec3d.new(0, 0, math.sqrt(HOME.Mu / r)), 0, {
+			terrain = true,
+		})
+		t.expectEqual(circle[1].endReason, "None")
 	end)
 end
