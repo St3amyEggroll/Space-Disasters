@@ -82,6 +82,10 @@ return function(t: TestKit.Context)
 		-- 5 m of feet above the tile plane, at rest
 		local ground = Vec3d.scale(tileUp, body.Radius / Vec3d.dot(tileUp, tileUp))
 		local start = Vec3d.addScaled(ground, tileUp, 5 + Eva.ROOT_HEIGHT)
+		-- CHANGED (Phase 8 merge): the ground has relief now, so lift / lower the start onto the real terrain
+		for _ = 1, 4 do
+			start = Vec3d.addScaled(start, tileUp, 5 - Eva.groundHeight(Bodies.MOON, start))
+		end
 		local feet0 = Eva.groundHeight(Bodies.MOON, start)
 		t.expectNear(feet0, 5, 0.05, "starts 5 m up")
 		local astronaut = Eva.new(Bodies.MOON, start, Vec3d.zero(), 0)
@@ -101,9 +105,26 @@ return function(t: TestKit.Context)
 
 	t.test("sliding on the ground slows down and stops", function()
 		local body = Bodies.get(Bodies.MOON)
+		-- CHANGED (Phase 8 merge): the ground has relief now: slide on a flat spot (on a downhill slope a 5 m/s
+		-- astronaut in Mun gravity is airborne most of the time, which is right but not what this test is about)
 		local up = Vec3d.new(1, 0, 0)
+		for i = 0, 400 do
+			local a, b = i * 0.37, i * 0.21
+			local candidate =
+				Vec3d.normalize(Vec3d.new(math.cos(a) * math.cos(b), math.sin(b), math.sin(a) * math.cos(b)))
+			local _, normal = SurfaceHeight.height(Bodies.MOON, Vec3d.scale(candidate, body.Radius))
+			if Vec3d.dot(Vec3d.normalize(normal), candidate) > 0.99999 then
+				up = candidate
+				break
+			end
+		end
 		local start = Vec3d.scale(up, body.Radius + Eva.ROOT_HEIGHT)
-		local astronaut = Eva.new(Bodies.MOON, start, Vec3d.new(0, 0, 5), 0)
+		for _ = 1, 4 do
+			start = Vec3d.addScaled(start, up, -Eva.groundHeight(Bodies.MOON, start))
+		end
+		local side =
+			Vec3d.normalize(Vec3d.cross(up, if math.abs(up.y) < 0.9 then Vec3d.new(0, 1, 0) else Vec3d.new(1, 0, 0)))
+		local astronaut = Eva.new(Bodies.MOON, start, Vec3d.scale(side, 5), 0)
 		fly(astronaut, 3)
 		t.expectTrue(Vec3d.length(astronaut.vel) < 0.05, "stopped by friction")
 		t.expectNear(Eva.groundHeight(Bodies.MOON, astronaut.pos), 0, 0.01)
