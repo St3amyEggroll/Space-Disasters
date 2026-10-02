@@ -750,20 +750,28 @@ local function onCraftRemoving(record: CraftRecord)
 		repoint(p, oldFrame :: Frames.Frame, best.id, nil, nil, ut)
 		return
 	end
-	-- else an astronaut on EVA in it
-	for _, player in PocketService.playersIn(p.id) do
+	-- else whoever is still in it (astronauts on EVA, riders whose seat just went with the craft) gets a solo pocket
+	-- there. The reference is where the craft was: the server's copy of a flying model never turns (D31), so a
+	-- character that was seated a moment ago still has a meaningless position on the server.
+	local players = PocketService.playersIn(p.id)
+	if #players == 0 or state == nil then
+		if #players == 0 then
+			PocketService.releaseFlightPocket(p.id)
+		end
+		return
+	end
+	local primary = players[1]
+	for _, player in players do
 		local astronaut = astronautOf(player, ut)
-		if astronaut and astronaut.pocket == p then
-			local a = astronaut :: Astronaut
-			local mode: PocketFrames.Mode = PocketFrames.desiredMode(INERTIAL, a.feet, Vec3d.length(a.vel))
-			repoint(p, oldFrame :: Frames.Frame, nil, player.UserId, soloReferenceFor(a, mode, ut), ut)
-			return
+		if astronaut and astronaut.pocket == p and astronaut.settled then
+			primary = player -- prefer someone already floating there
+			break
 		end
 	end
-	-- else nobody (or only the crew that goes down with it): release it
-	if #PocketService.playersIn(p.id) == 0 then
-		PocketService.releaseFlightPocket(p.id)
-	end
+	local s = state :: FlightModel.CraftState
+	local feet = Eva.groundHeight(s.bodyId, s.pos)
+	local mode: PocketFrames.Mode = PocketFrames.desiredMode(INERTIAL, feet, Vec3d.length(s.vel))
+	repoint(p, oldFrame :: Frames.Frame, nil, primary.UserId, PocketFrames.solo(mode, s.bodyId, s.pos, s.vel, ut), ut)
 end
 
 --============================================================================
