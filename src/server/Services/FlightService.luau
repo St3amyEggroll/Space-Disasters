@@ -428,6 +428,8 @@ function FlightService.startFlight(player: Player, record: CraftRecord)
 end
 
 -- Can this craft still go back to Prelaunch? Only before ignition and with every block intact.
+-- CHANGED (Phase 6): and only while it is still at the launch site (within BASE_BUBBLE): a craft moved away without
+-- igniting (the /orbit debug command) is in flight, and leaving its seat starts an EVA there.
 local function canReturnToPad(record: CraftRecord): boolean
 	local sim = record.sim
 	return sim ~= nil
@@ -437,6 +439,7 @@ local function canReturnToPad(record: CraftRecord): boolean
 		and sim.stageIndex == 1
 		and sim.state.bodyId == Bodies.HOMEWORLD
 		and #sim.physics.design.blocks == #record.design.blocks
+		and Vec3d.distance(sim.state.pos, PocketService.baseFrame().refPos) < GameConfig.BASE_BUBBLE
 end
 
 -- CHANGED (Phase 2a feedback): the pilot stood up before ignition. Moves the craft (where it stands now, even if
