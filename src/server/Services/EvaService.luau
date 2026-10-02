@@ -10,6 +10,8 @@
 	    rate-limited (a token bucket: INPUT_RATE per second, INPUT_BURST at once); everything else is dropped.
 	  * RESCUE: an astronaut whose pocket no longer exists, or whose character is outside his pocket's slot, for
 	    RESCUE_S is sent back to his plot (never stuck in a pocket, never falling forever).
+	  * EvaBoard (client -> server): boarding a seat of a craft in his own pocket, sent with the seat's SitPrompt (see
+	    Remotes). Rate-limited and checked like the prompt (reach where clients draw the seat, permission, free seat).
 	"On EVA" = alive, not seated, in a pocket other than the base (BubbleService.isEva).
 	Leaving the game needs nothing here: the character goes, and the empty solo pocket is released (PocketService).
 ]]
@@ -18,8 +20,12 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
+local Boarding = require(ReplicatedStorage.Shared.Craft.Boarding)
+local CraftBuilder = require(ReplicatedStorage.Shared.Craft.CraftBuilder)
 local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
 local BubbleService = require(script.Parent.BubbleService)
+local CraftService = require(script.Parent.CraftService)
+local CrewService = require(script.Parent.CrewService)
 local FlightService = require(script.Parent.FlightService)
 local PocketService = require(script.Parent.PocketService)
 
@@ -28,6 +34,7 @@ local PocketService = require(script.Parent.PocketService)
 --============================================================================
 local CHECK_INTERVAL = 0.25 -- s between jetpack / rescue checks
 local RESCUE_S = 5 -- s an astronaut may be lost (no pocket, or outside its slot) before he is sent home
+local BOARD_COOLDOWN_S = 1 -- s between two EvaBoard requests of one player
 local INPUT_RATE = 10 -- EvaInput messages per second, sustained
 local INPUT_BURST = 20 -- ... and at once
 local JETPACK_NAME = "EvaJetpack"
@@ -52,6 +59,7 @@ local EvaService = {}
 
 local lostSince: { [Player]: number } = {}
 local tokens: { [Player]: { amount: number, time: number } } = {}
+local lastBoard: { [Player]: number } = {}
 local accumulator = 0
 
 --============================================================================
@@ -240,6 +248,62 @@ local function allow(player: Player): boolean
 	return true
 end
 
+-- The Seat of a block of a craft model (every seat part has exactly one seat), or nil.
+local function seatOfBlock(model: Model, blockId: number): Seat?
+	local block = CraftBuilder.findBlockModel(model, blockId)
+	if block == nil then
+		return nil
+	end
+	for _, descendant in block:GetDescendants() do
+		if descendant:IsA("Seat") then
+			return descendant
+		end
+	end
+	return nil
+end
+
+--[[
+	EvaBoard: the astronaut triggered a seat's SitPrompt (see Remotes). Everything is checked again here: on EVA, the
+	craft's real model is in his own pocket, the seat is free, within reach of where the clients draw it
+	(BubbleService.seatInReach), and the owner's boarding permission (CrewService.canBoard, may yield). Then the
+	SitPrompt's own seat entry (CrewService.sitIn) seats him; FlightService takes it from there (a pilot seat hands
+	a server-flown craft to him).
+]]
+local function onEvaBoard(player: Player, craftIdArg: unknown, blockIdArg: unknown)
+	local now = os.clock()
+	if not Boarding.cooldownOver(lastBoard[player], now, BOARD_COOLDOWN_S) then
+		return
+	end
+	lastBoard[player] = now
+	local craftId, blockId = Boarding.validId(craftIdArg), Boarding.validId(blockIdArg)
+	if craftId == nil or blockId == nil or not BubbleService.isEva(player) then
+		return
+	end
+	local record = CraftService.get(craftId)
+	local model = if record then record.model else nil
+	local pocketId = player:GetAttribute("PocketId")
+	if record == nil or model == nil or record.pocketId == nil or record.pocketId ~= pocketId then
+		return
+	end
+	local seat = seatOfBlock(model :: Model, blockId)
+	if seat == nil or seat.Occupant ~= nil then
+		return -- taken (perhaps by this very player, through the prompt itself)
+	end
+	local s = seat :: Seat
+	if not BubbleService.seatInReach(player, s) then
+		Remotes.event("Notify"):FireClient(player, "Get closer to the seat", "Error")
+		return
+	end
+	if not CrewService.canBoard(player, s) then
+		Remotes.event("Notify"):FireClient(player, "The owner hasn't allowed you to board this craft", "Error")
+		return
+	end
+	if s.Parent == nil or s.Occupant ~= nil or not BubbleService.isEva(player) then
+		return -- things changed during the permission check
+	end
+	CrewService.sitIn(player, s)
+end
+
 local function onEvaInput(player: Player, kind: unknown, on: unknown)
 	if (kind ~= "Thrust" and kind ~= "Light") or type(on) ~= "boolean" then
 		return
@@ -312,9 +376,11 @@ function EvaService.Init() end
 
 function EvaService.Start()
 	Remotes.event("EvaInput").OnServerEvent:Connect(onEvaInput)
+	Remotes.event("EvaBoard").OnServerEvent:Connect(onEvaBoard)
 	Players.PlayerRemoving:Connect(function(player: Player)
 		lostSince[player] = nil
 		tokens[player] = nil
+		lastBoard[player] = nil
 	end)
 	RunService.Heartbeat:Connect(function(dt: number)
 		accumulator += dt

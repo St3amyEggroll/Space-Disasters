@@ -39,7 +39,8 @@
 	and relative speed, ground height, board hint from the seat ProximityPrompts, "Return to plot" with a
 	confirmation -> EndFlight), the jetpack flame / light for everyone (Render/EvaVisuals, EvaInput to the server).
 	Boarding: the real SitPrompts of every craft in the pocket (uncrewed ones too: BubbleService gives uncrewed crafts
-	near an astronaut a real model), checked by the server.
+	near an astronaut a real model), checked by the server; a triggered SitPrompt also sends EvaBoard, so boarding
+	does not depend on how the engine checks a prompt on a model that only the clients turn.
 
 	Input is ignored while UIState blocks it (menus, dialogs) and while the map view is open. For touch buttons later:
 	  EvaController.performAction(id) -> boolean   "EvaLight", "ToggleHUD", "ReturnToPlot"
@@ -692,6 +693,18 @@ end
 -- Actions
 --============================================================================
 
+-- Asks the server to seat the astronaut in the seat a SitPrompt belongs to (a craft in his pocket).
+local function boardSeatOf(prompt: ProximityPrompt)
+	local seat = prompt.Parent
+	local block = if seat then seat.Parent else nil
+	local craft = if seat then craftModelOf(seat) else nil
+	local blockId = if block then block:GetAttribute("BlockId") else nil
+	local craftId = if craft then craft:GetAttribute("CraftId") else nil
+	if type(blockId) == "number" and type(craftId) == "number" then
+		remotes.EvaBoard:FireServer(craftId, blockId)
+	end
+end
+
 local function returnToPlot()
 	if mode == "Off" or Kit.isConfirmOpen() then
 		return
@@ -754,6 +767,7 @@ end
 function EvaController.Init()
 	remotes.EvaInput = Remotes.event("EvaInput")
 	remotes.EndFlight = Remotes.event("EndFlight")
+	remotes.EvaBoard = Remotes.event("EvaBoard")
 	hud = EvaHUD.create({ onReturn = returnToPlot })
 	plate = Instance.new("Part")
 	plate.Name = "EvaGroundPlate"
@@ -796,6 +810,13 @@ function EvaController.Start()
 	ProximityPromptService.PromptHidden:Connect(function(prompt: ProximityPrompt)
 		if prompt == shownPrompt then
 			shownPrompt = nil
+		end
+	end)
+	-- boarding from EVA: the SitPrompt's own server trigger, plus EvaBoard (see Remotes: whichever comes second
+	-- finds the seat taken)
+	ProximityPromptService.PromptTriggered:Connect(function(prompt: ProximityPrompt)
+		if prompt.Name == SIT_PROMPT and mode ~= "Off" then
+			boardSeatOf(prompt)
 		end
 	end)
 	UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
