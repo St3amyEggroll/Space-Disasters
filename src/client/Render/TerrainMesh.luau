@@ -194,6 +194,7 @@ local PLATES_PER_FRAME = 40 -- new plates created per frame at most (nearest fir
 local OCEAN_REFLECTANCE = 0.08
 local KIND_MATERIALS: { [string]: Enum.Material } = {
 	Ocean = Enum.Material.SmoothPlastic,
+	Lake = Enum.Material.SmoothPlastic, -- CHANGED (Planet detail)
 	Beach = Enum.Material.Sand,
 	Grass = Enum.Material.Grass,
 	Forest = Enum.Material.Grass,
@@ -1400,7 +1401,7 @@ local function newPlate(config: Config, node: Node, folder: Folder): Plate
 	local r, g, b, kind = Biome.sample(config.bodyId, dir.x, dir.y, dir.z)
 	part.Color = Color3.new(r, g, b)
 	part.Material = KIND_MATERIALS[kind] or FALLBACK_MATERIAL
-	part.Reflectance = if kind == "Ocean" then OCEAN_REFLECTANCE else 0
+	part.Reflectance = if kind == "Ocean" or kind == "Lake" then OCEAN_REFLECTANCE else 0 -- CHANGED (Planet detail)
 	part.Parent = folder
 	return {
 		part = part,

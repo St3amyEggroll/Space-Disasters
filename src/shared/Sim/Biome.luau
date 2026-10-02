@@ -40,8 +40,8 @@
 	  body = M * local). Rect (s, t): centre + (s - 1/2) * ex * A + (t - 1/2) * ez * B, normalised.
 
 	Painters: Biome.newPainter(size, cells, buf) allocates once; beginPatch / beginRect aim it at a surface;
-	paintStep does one small unit of work (one grid row or one pixel row) and returns true when the RGBA buffer
-	is complete. No allocation per step.
+	paintStep does one small unit of work (CHANGED (Planet detail): part of a grid row or of a pixel row) and
+	returns true when the RGBA buffer is complete. No allocation per step.
 
 	CHANGED (Phase 8): relief hooks for the terrain heightmap (Sim/Relief), so the ground's shape follows the colours:
 	  Biome.reliefFields(bodyId, x, y, z)  -> (ee, mountain) on Earth, (mare, highland variation) on Mun
@@ -49,8 +49,17 @@
 	Colours are unchanged.
 	CHANGED (Terrain polish): the ridge field's lines are rounded (smooth |n|), and the mountains are kept out of a
 	plain around the launch site (SITE_CALM_INNER_M / SITE_CALM_OUTER_M).
+	CHANGED (Planet detail): small-scale Earth features from Sim/BiomeDetail (Steamy: the planet looked "small" from
+	orbit): rugged coasts with bays and islands and small lakes (both part of the ground's shape: reliefFields returns
+	them, so Relief follows), rivers, farmland patchwork and forest / grass / desert mottling (colour only). Lakes and
+	rivers are the new kind "Lake". None of it reaches the launch site's plain (BiomeDetail.featureWeight).
+	Painters: the coarse grid is padded to cover the texture padding at any grid size (cells up to size / 2), work is
+	done in small chunks (a step never paints a whole 1024 px row), and beginPatch / beginRect take an optional ground
+	height function: the painter then bakes BiomeDetail.reliefShade (hollows darker, crests lighter, slopes shaded)
+	into the colours, evaluated on the grid nodes and interpolated per pixel.
 ]]
 
+local BiomeDetail = require(script.Parent.BiomeDetail) -- CHANGED (Planet detail)
 local Bodies = require(script.Parent.Parent.Config.Bodies)
 
 --============================================================================
@@ -61,6 +70,11 @@ local SEED = 424242 -- 1 .. 2^31 - 2, Park-Miller generator seed for the noise t
 -- Texture space
 local UV_INSET = 1 / 64 -- fraction of the texture kept as padding on each side
 local UV_FLIP_V = false -- set true if textures show mirrored inside each patch (engine V runs bottom-up)
+-- CHANGED (Planet detail): painter work per paintStep (one step stays well under a millisecond on desktop)
+local PAINT_NODES_PER_STEP = 32 -- grid nodes per step ...
+local PAINT_RELIEF_NODES_PER_STEP = 6 -- ... when each node also samples the ground height five times
+local PAINT_PIXELS_PER_STEP = 128 -- pixels per step ...
+local PAINT_CRATER_PIXELS_PER_STEP = 32 -- ... on the Mun's ground (its crater shader costs ~5x Earth's per pixel)
 
 -- Noise
 local USE_BUILTIN_NOISE = true -- Luau's math.noise (same C code in Roblox and Lune, ~20x faster than ours)
@@ -103,7 +117,7 @@ local K_TUNDRA_HEAT0 = 0.16 -- fully tundra-coloured below this heat
 local K_TUNDRA_HEAT1 = 0.3
 local K_SHALLOW_DEPTH = 0.05 -- turquoise -> mid blue over this depth
 local K_DEEP_DEPTH = 0.22 -- mid blue -> deep blue by this depth
-local K_BEACH_WIDTH = 0.018
+local K_BEACH_WIDTH = 0.012 -- CHANGED (Planet detail): was 0.018 (a thick bright outline round every coast from orbit)
 local K_FOREST_M0 = 0.6 -- moisture where forest starts
 local K_FOREST_M1 = 0.7
 local K_DESERT_M0 = 0.3 -- moisture where desert starts (drier = more desert)
@@ -137,7 +151,7 @@ local SITE_CALM_OUTER_M = 18000
 local C_DEEP = { 0.06, 0.2, 0.47 }
 local C_MID = { 0.1, 0.36, 0.66 }
 local C_SHALLOW = { 0.2, 0.68, 0.72 }
-local C_BEACH = { 0.91, 0.84, 0.6 }
+local C_BEACH = { 0.88, 0.82, 0.6 } -- CHANGED (Planet detail): a little less glaring (was 0.91, 0.84, 0.6)
 local C_GRASS_LUSH = { 0.34, 0.64, 0.24 }
 local C_GRASS_DRY = { 0.6, 0.64, 0.3 }
 local C_TUNDRA = { 0.52, 0.55, 0.44 }
@@ -149,6 +163,19 @@ local C_ROCK = { 0.5, 0.46, 0.42 }
 local C_ROCK_DARK = { 0.35, 0.32, 0.3 }
 local C_SNOW = { 0.95, 0.97, 1.0 }
 local C_SNOW_SHADE = { 0.8, 0.87, 0.95 }
+-- CHANGED (Planet detail): small-scale features (Sim/BiomeDetail)
+local C_LAKE = { 0.09, 0.27, 0.45 } -- lake water (deeper in the middle) ...
+local C_LAKE_SHORE = { 0.17, 0.44, 0.52 } -- ... and at its shore
+local FEATURE_TUNE = {
+	lakeAA = 0.025, -- lake value band blended at the shore (anti-aliasing)
+	lakeDeep = 0.2, -- lake value at which the water is fully C_LAKE
+	riverColor = { 0.14, 0.34, 0.47 },
+	riverLevel = 2, -- painters below this detail level skip rivers (they would alias)
+	mottleLush = 0.22, -- grass lush / dry variation
+	mottleForest = 0.11, -- forest edge variation (clearings, groves)
+	mottleDesert = 0.07, -- desert edge and tone variation
+	mottleTone = 0.05, -- brightness variation of land
+}
 
 -- Earth clouds
 local CLOUD_WARP_FREQ = 1.6
@@ -156,11 +183,18 @@ local CLOUD_WARP_STRENGTH = 0.25
 local CLOUD_FREQ = 2.3
 local CLOUD_OCTAVES = 4
 local CLOUD_GAIN = 0.55
-local CLOUD_DETAIL_FREQ = 30
-local CLOUD_DETAIL = 0.09
-local CLOUD_COVER0 = 0.08 -- field value where clouds start
-local CLOUD_COVER1 = 0.34 -- field value of full cover
-local CLOUD_MAX_ALPHA = 0.85
+-- CHANGED (Planet detail): sparse, wispy, high clouds (Steamy disliked the earlier thick decks / puffs): fewer and
+-- thinner, stretched east-west into streaks, with fibrous detail (was detail 30 / 0.09, cover 0.08..0.34, alpha 0.85)
+local CLOUD_STRETCH = 1.4 -- latitude frequency multiplier of the cloud systems (east-west elongation)
+local CLOUD_DETAIL_FREQ = 10 -- fibres ...
+local CLOUD_DETAIL_STRETCH = 2.2 -- ... strongly stretched east-west
+local CLOUD_DETAIL = 0.16
+local CLOUD_DETAIL_FREQ2 = 41
+local CLOUD_DETAIL2 = 0.06
+local CLOUD_COVER0 = 0.17 -- field value where clouds start
+local CLOUD_COVER1 = 0.55 -- field value of full cover
+local CLOUD_MAX_ALPHA = 0.62
+local CLOUD_WISP = 0.55 -- share of the alpha carried by the fibres (thin wisps between them)
 local CLOUD_BAND = 0.1 -- extra cover at the equator and mid-latitudes, less in the subtropics
 local CLOUD_BAND_WIDTH = 0.16
 local CLOUD_MIDLAT = 0.68
@@ -201,6 +235,7 @@ local RAY_KIND_LEVEL = 0.18 -- ray brightness above which the ground counts as "
 -- Props (per hectare) and their mix per biome
 local PROP_DENSITY: { [string]: number } = {
 	Ocean = 0,
+	Lake = 0, -- CHANGED (Planet detail)
 	Beach = 0.25,
 	Grass = 1.6,
 	Forest = 9,
@@ -217,6 +252,7 @@ local PROP_DENSITY: { [string]: number } = {
 
 export type Kind =
 	"Ocean"
+	| "Lake" -- CHANGED (Planet detail): lakes and rivers (inland water)
 	| "Beach"
 	| "Grass"
 	| "Forest"
@@ -245,10 +281,14 @@ type ShadeFn = (
 	octaves: number
 ) -> (number, number, number, number, Kind)
 
+export type HeightFn = (x: number, y: number, z: number) -> number -- CHANGED (Planet detail): ground height (m)
+
 export type Painter = {
 	size: number, -- pixels per side
 	cells: number, -- coarse grid cells per unit of (s, t)
-	nodes: number, -- grid nodes per side (cells + 3: params -1/cells .. 1 + 1/cells)
+	-- CHANGED (Planet detail): `pad` extra nodes beyond each edge cover the texture padding at any grid size
+	pad: number,
+	nodes: number, -- grid nodes per side (cells + 1 + 2 pad: params -pad/cells .. 1 + pad/cells)
 	buf: buffer, -- RGBA, at least size * size * 4 bytes
 	colI: { number }, -- per pixel column: grid cell index (0-based) and fraction
 	colF: { number },
@@ -259,10 +299,14 @@ export type Painter = {
 	nodeF2: { number },
 	nodeF3: { number },
 	nodeF4: { number },
+	nodeS: { number }, -- CHANGED (Planet detail): relief shade factor per node (1 without a height function)
 	-- current job
 	fields: FieldsFn,
 	shade: ShadeFn,
 	octaves: number,
+	height: HeightFn?, -- CHANGED (Planet detail): ground height for the relief shade (nil: no shade)
+	radius: number, -- body radius (m)
+	eps: number, -- relief shade sample offset (rad): one grid cell
 	rect: boolean,
 	m: { number }, -- patch rotation (row-major 3x3)
 	cx: number, -- rect centre (m, body-relative)
@@ -277,7 +321,10 @@ export type Painter = {
 	ex: number, -- rect extents (m)
 	ez: number,
 	nodeRow: number, -- grid rows done
+	nodeCol: number, -- CHANGED (Planet detail): nodes done in the current grid row
 	pixelRow: number, -- pixel rows done
+	pixelCol: number, -- CHANGED (Planet detail): pixels done in the current pixel row
+	pixelsPerStep: number, -- CHANGED (Planet detail): pixel work per step for the current shader
 	done: boolean,
 	-- statistics of the finished image
 	oceanPixels: number,
@@ -552,7 +599,9 @@ local function earthShade(
 		f *= 2.3
 		detail += 0.25 * noise3(x * f + 8.3, y * f + 27.1, z * f + 19.5)
 	end
-	local ee = e + K_COAST_DETAIL * detail
+	-- CHANGED (Planet detail): the small-scale features fade out around the launch site; mid-scale coast wiggle
+	local fw = BiomeDetail.featureWeight(x, y, z)
+	local ee = e + K_COAST_DETAIL * detail + BiomeDetail.coastOffset(x, y, z, e, fw)
 	local hh = heat + K_POLAR_DETAIL * detail
 	local snowW = smoothstep(K_SNOW_HEAT + K_SNOW_EDGE, K_SNOW_HEAT - K_SNOW_EDGE, hh)
 	local r, g, b
@@ -577,8 +626,11 @@ local function earthShade(
 	end
 	if landW > 0 then
 		local cold = smoothstep(K_TUNDRA_HEAT1, K_TUNDRA_HEAT0, hh)
+		-- CHANGED (Planet detail): 1 - 3 km patchiness (grass tone, forest edges, desert edges)
+		local mottle = if fw > 0 then BiomeDetail.mottle(x, y, z) * fw else 0
+		local smoothMountain = rg * smoothstep(K_MOUNT_E0, K_MOUNT_E1, e)
 		-- grass: dry -> lush with moisture, greyer toward the poles
-		local lush = clamp01(m * 1.6 - 0.3)
+		local lush = clamp01(m * 1.6 - 0.3 + FEATURE_TUNE.mottleLush * mottle)
 		r = C_GRASS_DRY[1] + (C_GRASS_LUSH[1] - C_GRASS_DRY[1]) * lush
 		g = C_GRASS_DRY[2] + (C_GRASS_LUSH[2] - C_GRASS_DRY[2]) * lush
 		b = C_GRASS_DRY[3] + (C_GRASS_LUSH[3] - C_GRASS_DRY[3]) * lush
@@ -586,8 +638,17 @@ local function earthShade(
 		g += (C_TUNDRA[2] - g) * cold
 		b += (C_TUNDRA[3] - b) * cold
 		kind = "Grass"
+		-- CHANGED (Planet detail): farmland patchwork on temperate lowland grass
+		if fw > 0 then
+			local farmW, fr, fg, fb = BiomeDetail.farmland(x, y, z, e, m, smoothMountain, hh, fw)
+			if farmW > 0 then
+				r += (fr - r) * farmW
+				g += (fg - g) * farmW
+				b += (fb - b) * farmW
+			end
+		end
 		-- forest
-		local forestW = smoothstep(K_FOREST_M0, K_FOREST_M1, m + 0.08 * detail)
+		local forestW = smoothstep(K_FOREST_M0, K_FOREST_M1, m + 0.08 * detail + FEATURE_TUNE.mottleForest * mottle)
 		if forestW > 0 then
 			local fr = C_FOREST[1] + (C_BOREAL[1] - C_FOREST[1]) * cold
 			local fg = C_FOREST[2] + (C_BOREAL[2] - C_FOREST[2]) * cold
@@ -600,9 +661,10 @@ local function earthShade(
 			end
 		end
 		-- desert
-		local desertW = smoothstep(K_DESERT_M0, K_DESERT_M1, m + 0.06 * detail) * smoothstep(0.35, K_DESERT_HEAT, hh)
+		local desertW = smoothstep(K_DESERT_M0, K_DESERT_M1, m + 0.06 * detail + FEATURE_TUNE.mottleDesert * mottle)
+			* smoothstep(0.35, K_DESERT_HEAT, hh)
 		if desertW > 0 then
-			local dune = 0.5 + 0.5 * d1
+			local dune = clamp01(0.5 + 0.5 * d1 + 2 * FEATURE_TUNE.mottleDesert * mottle) -- CHANGED (Planet detail)
 			local dr = C_DESERT[1] + (C_DUNE[1] - C_DESERT[1]) * dune
 			local dg = C_DESERT[2] + (C_DUNE[2] - C_DESERT[2]) * dune
 			local db = C_DESERT[3] + (C_DUNE[3] - C_DESERT[3]) * dune
@@ -639,8 +701,38 @@ local function earthShade(
 				kind = "Beach"
 			end
 		end
-		local grain = 1 + K_GRAIN * detail
+		local grain = 1 + K_GRAIN * detail + FEATURE_TUNE.mottleTone * mottle -- CHANGED (Planet detail): + mottle
 		r, g, b = r * grain, g * grain, b * grain
+		-- CHANGED (Planet detail): lakes (flat in Relief where the value is >= 0) and rivers (colour only)
+		if fw > 0 then
+			local lake = BiomeDetail.lakeValue(x, y, z, e, m, smoothMountain, hh, fw)
+			local aa = FEATURE_TUNE.lakeAA
+			if lake > -aa then
+				local lw = smoothstep(-aa, aa, lake)
+				local deep = smoothstep(0, FEATURE_TUNE.lakeDeep, lake)
+				local lr = C_LAKE_SHORE[1] + (C_LAKE[1] - C_LAKE_SHORE[1]) * deep
+				local lg = C_LAKE_SHORE[2] + (C_LAKE[2] - C_LAKE_SHORE[2]) * deep
+				local lb = C_LAKE_SHORE[3] + (C_LAKE[3] - C_LAKE_SHORE[3]) * deep
+				r += (lr - r) * lw
+				g += (lg - g) * lw
+				b += (lb - b) * lw
+				if lake >= 0 then
+					kind = "Lake"
+				end
+			end
+			if octaves >= FEATURE_TUNE.riverLevel then
+				local river = BiomeDetail.river(x, y, z, ee, m, smoothMountain, hh, fw, octaves)
+				if river > 0 then
+					local c = FEATURE_TUNE.riverColor
+					r += (c[1] - r) * river
+					g += (c[2] - g) * river
+					b += (c[3] - b) * river
+					if river >= 0.5 then
+						kind = "Lake"
+					end
+				end
+			end
+		end
 		if landW < 1 then
 			r += (wr - r) * (1 - landW)
 			g += (wg - g) * (1 - landW)
@@ -673,7 +765,13 @@ local function cloudFields(x: number, y: number, z: number): (number, number, nu
 	local wy = noise3(x * wf + 7.4, y * wf + 0.8, z * wf + 3.3)
 	local wz = noise3(x * wf + 5.5, y * wf + 4.2, z * wf + 9.9)
 	local px, py, pz = x + CLOUD_WARP_STRENGTH * wx, y + CLOUD_WARP_STRENGTH * wy, z + CLOUD_WARP_STRENGTH * wz
-	local c = fbm(px * CLOUD_FREQ + 13.1, py * CLOUD_FREQ + 3.7, pz * CLOUD_FREQ + 8.2, CLOUD_OCTAVES, CLOUD_GAIN)
+	local c = fbm(
+		px * CLOUD_FREQ + 13.1,
+		py * CLOUD_FREQ * CLOUD_STRETCH + 3.7, -- CHANGED (Planet detail): east-west elongated systems
+		pz * CLOUD_FREQ + 8.2,
+		CLOUD_OCTAVES,
+		CLOUD_GAIN
+	)
 	local ay = math.abs(y)
 	local e = ay / CLOUD_BAND_WIDTH
 	local mid = (ay - CLOUD_MIDLAT) / CLOUD_BAND_WIDTH
@@ -691,9 +789,14 @@ local function cloudShade(
 	_f4: number,
 	_octaves: number
 ): (number, number, number, number, Kind)
+	-- CHANGED (Planet detail): east-west fibres and finer streaks make the cover wispy
 	local f = CLOUD_DETAIL_FREQ
-	local d = noise3(x * f, y * f, z * f)
-	local alpha = smoothstep(CLOUD_COVER0, CLOUD_COVER1, c + CLOUD_DETAIL * d) * CLOUD_MAX_ALPHA
+	local d = noise3(x * f + 4.2, y * f * CLOUD_DETAIL_STRETCH + 1.9, z * f + 7.3)
+	local f2 = CLOUD_DETAIL_FREQ2
+	local d2 = noise3(x * f2 + 9.6, y * f2 * CLOUD_DETAIL_STRETCH + 5.1, z * f2 + 2.8)
+	local cover = smoothstep(CLOUD_COVER0, CLOUD_COVER1, c + CLOUD_DETAIL * d + CLOUD_DETAIL2 * d2)
+	local fibre = smoothstep(-0.35, 0.55, d + 0.5 * d2)
+	local alpha = cover * CLOUD_MAX_ALPHA * (1 - CLOUD_WISP + CLOUD_WISP * fibre)
 	return 1, 1, 1, alpha, "Plain"
 end
 
@@ -922,17 +1025,18 @@ for index, rc in rayCraters do
 end
 
 --[[
-	The two low-frequency numbers the ground shape is built from, at unit direction (x, y, z):
-	  Earth: (ee, mountain) = coast-level elevation (< 0 is ocean, exactly where sample() says "Ocean"), computed
-	         exactly as earthShade does at sample()'s detail level, and the smooth mountain mask (earthShade's
+	The low-frequency numbers the ground shape is built from, at unit direction (x, y, z):
+	  Earth: (ee, mountain, lake, e) = coast-level elevation (< 0 is ocean, exactly where sample() says "Ocean"),
+	         computed exactly as earthShade does at sample()'s detail level, the smooth mountain mask (earthShade's
 	         mountain value without its per-pixel jitter and coast detail: rock from about K_ROCK0, snowy peaks from
-	         about K_PEAK0)
-	  Mun:   (mare 0..1, highland variation ~-1..1)
-	  other: (0, 0)
+	         about K_PEAK0), CHANGED (Planet detail): the lake value (BiomeDetail.lakeValue: >= 0 exactly where
+	         sample() paints a lake, -1 where none can be) and the smooth continent elevation e (the lake's level)
+	  Mun:   (mare 0..1, highland variation ~-1..1, 0, 0)
+	  other: (0, 0, 0, 0)
 ]]
-function Biome.reliefFields(bodyId: number, x: number, y: number, z: number): (number, number)
+function Biome.reliefFields(bodyId: number, x: number, y: number, z: number): (number, number, number, number)
 	if bodyId == HOMEWORLD then
-		local e, _, rg, _ = earthFields(x, y, z)
+		local e, moist, rg, heat = earthFields(x, y, z)
 		-- same detail sum as earthShade at K_DETAIL_OCTAVES (3)
 		local f = K_DETAIL_FREQ
 		local detail = noise3(x * f, y * f, z * f)
@@ -940,13 +1044,20 @@ function Biome.reliefFields(bodyId: number, x: number, y: number, z: number): (n
 		detail += 0.5 * noise3(x * f + 31.7, y * f + 12.9, z * f + 4.4)
 		f *= 2.3
 		detail += 0.25 * noise3(x * f + 8.3, y * f + 27.1, z * f + 19.5)
-		local ee = e + K_COAST_DETAIL * detail
-		return ee, rg * smoothstep(K_MOUNT_E0, K_MOUNT_E1, e)
+		-- CHANGED (Planet detail): + the mid-scale coast wiggle and the lake value, exactly as earthShade
+		local fw = BiomeDetail.featureWeight(x, y, z)
+		local ee = e + K_COAST_DETAIL * detail + BiomeDetail.coastOffset(x, y, z, e, fw)
+		local mountain = rg * smoothstep(K_MOUNT_E0, K_MOUNT_E1, e)
+		local lake = -1
+		if fw > 0 then
+			lake = BiomeDetail.lakeValue(x, y, z, e, moist, mountain, heat + K_POLAR_DETAIL * detail, fw)
+		end
+		return ee, mountain, lake, e
 	elseif bodyId == MOON then
 		local mare, hv = dentFields(x, y, z)
-		return mare, hv
+		return mare, hv, 0, 0
 	end
-	return 0, 0
+	return 0, 0, 0, 0
 end
 
 export type CraterVisitor = (t: number, radius: number, scale: number) -> number
@@ -1267,18 +1378,20 @@ end
 --============================================================================
 local IDENTITY = { 1, 0, 0, 0, 1, 0, 0, 0, 1 }
 
--- A reusable painter for size x size images with a coarse grid of `cells` per side (cells <= size / 2, and
--- 1 / cells >= UV_INSET so the grid covers the padding pixels).
+-- A reusable painter for size x size images with a coarse grid of `cells` per side (cells <= size / 2).
+-- CHANGED (Planet detail): the grid gets as many padding nodes as it needs to cover the padding pixels (it used to
+-- require 1 / cells >= UV_INSET, i.e. cells <= 64).
 function Biome.newPainter(size: number, cells: number, buf: buffer): Painter
 	assert(buffer.len(buf) >= size * size * 4, "Biome.newPainter: buffer too small")
-	assert(Biome.uvToParam(0.5 / size, 0.5) >= -1 / cells - 1e-9, "Biome.newPainter: grid does not cover the padding")
-	local nodes = cells + 3
+	local firstParam = Biome.uvToParam(0.5 / size, 0.5) -- the outermost pixel centre (negative: in the padding)
+	local pad = math.max(1, math.ceil(-firstParam * cells - 1e-9))
+	local nodes = cells + 1 + 2 * pad
 	local count = nodes * nodes
 	local colI: { number } = table.create(size, 0)
 	local colF: { number } = table.create(size, 0)
 	for px = 0, size - 1 do
 		local s = Biome.uvToParam((px + 0.5) / size, 0.5)
-		local gs = s * cells + 1
+		local gs = s * cells + pad
 		local i0 = math.clamp(math.floor(gs), 0, nodes - 2)
 		colI[px + 1] = i0
 		colF[px + 1] = gs - i0
@@ -1286,6 +1399,7 @@ function Biome.newPainter(size: number, cells: number, buf: buffer): Painter
 	return {
 		size = size,
 		cells = cells,
+		pad = pad,
 		nodes = nodes,
 		buf = buf,
 		colI = colI,
@@ -1297,9 +1411,13 @@ function Biome.newPainter(size: number, cells: number, buf: buffer): Painter
 		nodeF2 = table.create(count, 0),
 		nodeF3 = table.create(count, 0),
 		nodeF4 = table.create(count, 0),
+		nodeS = table.create(count, 1),
 		fields = plainFields,
 		shade = noClouds,
 		octaves = 1,
+		height = nil,
+		radius = 1,
+		eps = 0,
 		rect = false,
 		m = IDENTITY,
 		cx = 0,
@@ -1314,7 +1432,10 @@ function Biome.newPainter(size: number, cells: number, buf: buffer): Painter
 		ex = 1,
 		ez = 1,
 		nodeRow = 0,
+		nodeCol = 0,
 		pixelRow = 0,
+		pixelCol = 0,
+		pixelsPerStep = PAINT_PIXELS_PER_STEP,
 		done = true,
 		oceanPixels = 0,
 		sumR = 0,
@@ -1323,22 +1444,33 @@ function Biome.newPainter(size: number, cells: number, buf: buffer): Painter
 	}
 end
 
-local function beginJob(p: Painter, bodyId: number, layer: Layer, octaves: number)
+local function beginJob(p: Painter, bodyId: number, layer: Layer, octaves: number, height: HeightFn?)
 	p.fields = fieldsFor(bodyId, layer)
 	p.shade = shadeFor(bodyId, layer)
 	p.octaves = octaves
+	-- CHANGED (Planet detail): optional relief shade
+	p.height = height
+	local body = Bodies.find(bodyId)
+	p.radius = if body and body.Radius > 0 then body.Radius else 1
 	p.nodeRow = 0
+	p.nodeCol = 0
 	p.pixelRow = 0
+	p.pixelCol = 0
+	p.pixelsPerStep = if bodyId == MOON and layer == "Ground"
+		then PAINT_CRATER_PIXELS_PER_STEP
+		else PAINT_PIXELS_PER_STEP
 	p.done = false
 	p.oceanPixels = 0
 	p.sumR, p.sumG, p.sumB = 0, 0, 0
 end
 
 -- Aims the painter at scaled-space patch `m` (row-major cube rotation) of `bodyId`.
-function Biome.beginPatch(p: Painter, bodyId: number, layer: Layer, m: { number }, octaves: number)
-	beginJob(p, bodyId, layer, octaves)
+-- CHANGED (Planet detail): `height` (optional, e.g. Relief.height for this body) bakes the relief shade in.
+function Biome.beginPatch(p: Painter, bodyId: number, layer: Layer, m: { number }, octaves: number, height: HeightFn?)
+	beginJob(p, bodyId, layer, octaves, height)
 	p.rect = false
 	p.m = m
+	p.eps = QUARTER_PI / p.cells -- one grid cell at the patch centre (the patch spans 45 degrees)
 end
 
 --[[
@@ -1360,14 +1492,16 @@ function Biome.beginRect(
 	bz: number,
 	ex: number,
 	ez: number,
-	octaves: number
+	octaves: number,
+	height: HeightFn? -- CHANGED (Planet detail)
 )
-	beginJob(p, bodyId, layer, octaves)
+	beginJob(p, bodyId, layer, octaves, height)
 	p.rect = true
 	p.cx, p.cy, p.cz = cx, cy, cz
 	p.ax, p.ay, p.az = ax, ay, az
 	p.bx, p.by, p.bz = bx, by, bz
 	p.ex, p.ez = ex, ez
+	p.eps = math.max(ex, ez) / p.cells / math.sqrt(cx * cx + cy * cy + cz * cz)
 end
 
 -- Unit direction of surface parameter (s, t) for the painter's current job.
@@ -1398,47 +1532,63 @@ local function toByte(v: number): number
 	return b
 end
 
--- One unit of work: a grid row, or a pixel row. Returns true when the image is complete.
+-- One unit of work: part of a grid row, or part of a pixel row. Returns true when the image is complete.
+-- CHANGED (Planet detail): chunked (PAINT_*_PER_STEP), padded grid, optional relief shade per node.
 function Biome.paintStep(p: Painter): boolean
 	if p.done then
 		return true
 	end
 	local nodes = p.nodes
 	local cells = p.cells
+	local pad = p.pad
 	if p.nodeRow < nodes then
 		local k = p.nodeRow
-		local t = (k - 1) / cells
+		local t = (k - pad) / cells
 		local fields = p.fields
+		local height = p.height
 		local nx, ny, nz = p.nodeX, p.nodeY, p.nodeZ
 		local n1, n2, n3, n4 = p.nodeF1, p.nodeF2, p.nodeF3, p.nodeF4
+		local ns = p.nodeS
 		local base = k * nodes
-		for i = 0, nodes - 1 do
-			local x, y, z = jobDirection(p, (i - 1) / cells, t)
+		local i0 = p.nodeCol
+		local i1 = math.min(nodes - 1, i0 + (if height then PAINT_RELIEF_NODES_PER_STEP else PAINT_NODES_PER_STEP) - 1)
+		for i = i0, i1 do
+			local x, y, z = jobDirection(p, (i - pad) / cells, t)
 			local idx = base + i + 1
 			nx[idx], ny[idx], nz[idx] = x, y, z
 			n1[idx], n2[idx], n3[idx], n4[idx] = fields(x, y, z)
+			ns[idx] = if height then BiomeDetail.reliefShade(height, x, y, z, p.eps, p.radius) else 1
 		end
-		p.nodeRow = k + 1
+		if i1 >= nodes - 1 then
+			p.nodeRow = k + 1
+			p.nodeCol = 0
+		else
+			p.nodeCol = i1 + 1
+		end
 		return false
 	end
 
 	local size = p.size
 	local py = p.pixelRow
 	local _, t = Biome.uvToParam(0.5, (py + 0.5) / size)
-	local gt = t * cells + 1
+	local gt = t * cells + pad
 	local j0 = math.clamp(math.floor(gt), 0, nodes - 2)
 	local fv = gt - j0
 	local gv = 1 - fv
 	local shade = p.shade
 	local octaves = p.octaves
+	local shaded = p.height ~= nil
 	local colI, colF = p.colI, p.colF
 	local nx, ny, nz = p.nodeX, p.nodeY, p.nodeZ
 	local n1, n2, n3, n4 = p.nodeF1, p.nodeF2, p.nodeF3, p.nodeF4
+	local ns = p.nodeS
 	local buf = p.buf
 	local rowBase = j0 * nodes + 1
-	local offset = py * size * 4
+	local px0 = p.pixelCol
+	local px1 = math.min(size - 1, px0 + p.pixelsPerStep - 1)
+	local offset = (py * size + px0) * 4
 	local ocean, sumR, sumG, sumB = 0, 0, 0, 0
-	for px = 1, size do
+	for px = px0 + 1, px1 + 1 do
 		local fu = colF[px]
 		local gu = 1 - fu
 		local k00 = rowBase + colI[px]
@@ -1461,6 +1611,10 @@ function Biome.paintStep(p: Painter): boolean
 			n4[k00] * w00 + n4[k10] * w10 + n4[k01] * w01 + n4[k11] * w11,
 			octaves
 		)
+		if shaded then
+			local f = ns[k00] * w00 + ns[k10] * w10 + ns[k01] * w01 + ns[k11] * w11
+			r, g, b = r * f, g * f, b * f
+		end
 		if kind == "Ocean" then
 			ocean += 1
 		end
@@ -1474,6 +1628,11 @@ function Biome.paintStep(p: Painter): boolean
 	p.sumR += sumR
 	p.sumG += sumG
 	p.sumB += sumB
+	if px1 < size - 1 then
+		p.pixelCol = px1 + 1
+		return false
+	end
+	p.pixelCol = 0
 	p.pixelRow = py + 1
 	if py + 1 >= size then
 		p.done = true

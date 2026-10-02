@@ -1592,7 +1592,7 @@ end
 
 local function dustColorFor(bodyId: number, up: Vec3d): Color3
 	local r, g, b, kind = Biome.sample(bodyId, up.x, up.y, up.z)
-	if kind == "Ocean" then
+	if kind == "Ocean" or kind == "Lake" then -- CHANGED (Planet detail): lakes and rivers splash too
 		return TUNE.DUST_WATER_COLOR
 	end
 	return Color3.new(r, g, b):Lerp(TUNE.DUST_SMOKE_COLOR, 1 - TUNE.DUST_GROUND_MIX)

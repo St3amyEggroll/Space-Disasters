@@ -23,15 +23,22 @@
 	and feet (a second smoothstep over Biome's mask, whose own ridges are now smooth too) and soft-crested detail
 	(smooth |n| ridged noise) instead of knife-edged ridges. Biome keeps a mountain-free plain within ~11 km of the
 	site, so from the base nothing beyond ~4 km rises over the 60 km planet's horizon.
+	CHANGED (Planet detail): Earth's lakes (Biome.reliefFields' lake value, from Sim/BiomeDetail) are water at the
+	land's base level (LAND_SCALE x the smooth continent elevation, LAKE_SINK lower, never below LAKE_MIN_LEVEL): no
+	hills or bumps, only the continent's own gentle rise (median slope ~0.5%, at most ~2.5%), with a bank blending the
+	ground down to it; the mid-scale coast wiggle comes in through ee as before. Both stay
+	out of the launch site's plain (BiomeDetail.featureWeight), so the site and the ground around it are unchanged.
 
 	API:
 		Relief.height(bodyId, x, y, z): number    metres above the body radius
 		Relief.bounds(bodyId): (number, number)   lowest / highest possible height (m)
+		Relief.heightFn(bodyId)                   CHANGED (Planet detail): (x, y, z) -> Relief.height(bodyId, ...)
 		Relief.siteWeight(x, y, z): number        Earth: 1 on the launch-site plane, 0 outside the blend
 		Relief.SITE_FLAT_RADIUS, Relief.SITE_BLEND_RADIUS (m)
 ]]
 
 local Biome = require(script.Parent.Biome)
+local BiomeDetail = require(script.Parent.BiomeDetail) -- CHANGED (Planet detail)
 local Bodies = require(script.Parent.Parent.Config.Bodies)
 
 --============================================================================
@@ -64,6 +71,9 @@ local MOUNT_DETAIL_OCTAVES = 2
 local MOUNT_DETAIL = 0.14 -- share of the mountain height that is ridged detail
 local MOUNT_DETAIL_SOFT = 0.22 -- smooth |n| width of the detail crests (0 = knife edge)
 local EARTH_MAX = 1800 -- m, hard cap
+-- CHANGED (Planet detail): lakes
+local LAKE_SINK = 12 -- m the water lies below the land's base level
+local LAKE_MIN_LEVEL = 2 -- m above sea level at least (lakes never reach down to the sea)
 
 -- Earth launch site (the plane of the base pocket)
 local SITE_FLAT_RADIUS = 900 -- m in the site's tangent plane: exactly the plane inside (the site plate is +-420)
@@ -93,6 +103,7 @@ local MOON = Bodies.MOON
 local EARTH_RADIUS = Bodies.get(HOMEWORLD).Radius
 local MOON_RADIUS = Bodies.get(MOON).Radius
 local CRATER_EXTENT = Biome.CRATER_EXTENT
+local LAKE_BANK = BiomeDetail.LAKE_BANK -- CHANGED (Planet detail)
 
 local mathNoise = math.noise
 
@@ -144,7 +155,7 @@ end
 -- Earth
 --============================================================================
 local function earthRelief(x: number, y: number, z: number): number
-	local ee, mountain = Biome.reliefFields(HOMEWORLD, x, y, z)
+	local ee, mountain, lake, e = Biome.reliefFields(HOMEWORLD, x, y, z)
 	if ee <= 0 then
 		return 0
 	end
@@ -169,6 +180,12 @@ local function earthRelief(x: number, y: number, z: number): number
 		h = floor
 	elseif h > EARTH_MAX then
 		h = EARTH_MAX
+	end
+	-- CHANGED (Planet detail): a lake is flat at its level where the lake value is >= 0 (Biome paints it there); the
+	-- bank (value -LAKE_BANK .. 0) blends the ground down (or up) to that level
+	if lake > -LAKE_BANK then
+		local level = math.max(LAKE_MIN_LEVEL, LAND_SCALE * e - LAKE_SINK)
+		h += (level - h) * smoothstep(-LAKE_BANK, 0, lake)
 	end
 	return h
 end
@@ -240,6 +257,21 @@ function Relief.height(bodyId: number, x: number, y: number, z: number): number
 		return moonRelief(x, y, z)
 	end
 	return 0
+end
+
+-- CHANGED (Planet detail): Relief.height for one body as a plain (x, y, z) -> m function (cached per body), for
+-- painters that bake the relief shade (Biome.beginPatch's height).
+local heightFns: { [number]: (number, number, number) -> number } = {}
+function Relief.heightFn(bodyId: number): (number, number, number) -> number
+	local fn = heightFns[bodyId]
+	if fn == nil then
+		local created = function(x: number, y: number, z: number): number
+			return Relief.height(bodyId, x, y, z)
+		end
+		heightFns[bodyId] = created
+		return created
+	end
+	return fn
 end
 
 -- Lowest and highest possible height (m) of a body's ground.

@@ -279,6 +279,7 @@ return function(t: TestKit.Context)
 			end
 		end
 		t.expectEqual(minA, 0)
-		t.expectTrue(maxA > 150, "no thick clouds anywhere")
+		-- CHANGED (Planet detail): the clouds are thinner now (at most ~0.62 alpha)
+		t.expectTrue(maxA > 100, "no thick clouds anywhere")
 	end)
 end

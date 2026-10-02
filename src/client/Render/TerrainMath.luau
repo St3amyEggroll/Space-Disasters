@@ -295,7 +295,7 @@ local function groundColour(
 		local o = index * 5.3
 		bright += amp * NOISE_AMPS[index] * math.noise(dx * f + o, dy * f + 2 * o, dz * f + 3 * o)
 	end
-	if kind == "Ocean" then
+	if kind == "Ocean" or kind == "Lake" then -- CHANGED (Planet detail): lakes and rivers are water too
 		bright = 1 + (bright - 1) * 0.3
 		return math.clamp(r * bright, 0, 1), math.clamp(g * bright, 0, 1), math.clamp(b * bright, 0, 1)
 	end

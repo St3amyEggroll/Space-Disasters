@@ -38,6 +38,24 @@
 	and an atmosphere shell (translucent patch clones in the body's AtmosphereColor: a halo around the limb).
 	If EditableImage or SurfaceAppearance texturing is unavailable, the planets stay flat-coloured / cloudless
 	with one warning.
+
+	CHANGED (Planet detail): Steamy: "when i am in orbit i feel like the planet is a small little planet by the level
+	of detail on it". Per graphics tier (Render/Quality, settings in Render/PlanetDetail):
+	  * detail slots: besides its base image every patch near the camera's ground point gets a sharper one (High 8 x
+	    1024 px, Medium 6 x 512, Low 2 x 512 on Earth; half on the Mun). The background painter moves the slots to
+	    the nearest patches of the dominant body (with hysteresis) and swaps a patch back to its base image when its
+	    slot moves on, in the same frame the slot's new pixels are written, so nothing ever shows wrong pixels.
+	  * every ground texture bakes in the relief shade of the real ground (Sim/Relief through BiomeDetail): valleys
+	    and crater bowls darker, crests lighter, slopes shaded.
+	  * paint order: the dominant body's base images nearest first, then its slots, then clouds, then other bodies.
+	    Work per frame is the tier's paintBudgetS; one painter step is a fraction of a millisecond.
+	  * atmosphere: up to four nested shells (pale near the ground, deeper blue above), so the halo beyond the limb
+	    fades outward; Low keeps the single original shell.
+	  * clouds (Medium+): a sparse wispy shell whose alpha comes from its texture (MeshPart.TextureContent, which
+	    scripts may write, unlike SurfaceAppearance.ColorMapContent), fading out toward the proxy handover altitude
+	    (the surface view below it draws no cloud shell).
+	The proxy mesh stays 24 x 24 quads per patch: its chord sag (~8 m on the 60 km Earth) is ~0.2 px at the limb
+	seen from 10 km, so a finer mesh would add triangles nobody can see.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -46,6 +64,9 @@ local Biome = require(ReplicatedStorage.Shared.Sim.Biome)
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
+local PlanetDetail = require(script.Parent.PlanetDetail) -- CHANGED (Planet detail)
+local Quality = require(script.Parent.Quality) -- CHANGED (Planet detail)
+local Relief = require(ReplicatedStorage.Shared.Sim.Relief) -- CHANGED (Planet detail)
 local RenderContext = require(script.Parent.RenderContext)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
@@ -83,25 +104,23 @@ local SUN_GLOW_LAYERS: { { size: number, transparency: number } } = {
 local PATCH_MATERIAL = Enum.Material.SmoothPlastic
 
 -- CHANGED (Phase 2a feedback): planet textures, clouds and atmosphere
-type TextureSpec = { size: number, cells: number } -- pixels per patch side, Biome coarse grid cells per side
-local GROUND_TEXTURES: { [number]: TextureSpec } = {
-	[Bodies.HOMEWORLD] = { size = 256, cells = 64 },
-	[Bodies.MOON] = { size = 128, cells = 32 },
-}
-local DEFAULT_TEXTURE: TextureSpec = { size = 128, cells = 32 } -- any other body
-local CLOUD_TEXTURE: TextureSpec = { size = 128, cells = 32 }
-local TEXTURE_DETAIL = 1 -- Biome detail level for scaled-space textures (ground tiles use more)
-local TEXTURE_BUDGET_S = 0.004 -- painting work per frame before the generator yields
-local MAX_EDITABLE_IMAGES = 96 -- hard cap on images this module creates (3 x 24 patches today)
+-- CHANGED (Planet detail): texture sizes, detail slots, atmosphere layers, cloud shell and paint budgets per tier
+-- live in Render/PlanetDetail
+type TextureSpec = PlanetDetail.TextureSpec
+local MAX_EDITABLE_IMAGES = 112 -- hard cap on images this module holds (48 base + 8 slots + 24 clouds today)
 -- CHANGED (Phase 2a playtest): Studio refused SurfaceAppearance.ColorMapContent from game scripts ("lacking
 -- capability Plugin"), so the cloud shell cannot be made at runtime; off until clouds have another route.
-local CLOUDS_ENABLED = false
-local CLOUD_SHELL_SCALE = 1.012 -- cloud shell radius / body radius
+-- CHANGED (Planet detail): clouds are back through MeshPart.TextureContent (an EditableImage with alpha, which
+-- scripts may set), sparse and wispy, Medium+ only (PlanetDetail.cloudTexture)
+local CLOUDS_ENABLED = true
+local CLOUD_MIN_TRANSPARENCY = 0.04 -- the cloud parts always render in the transparent pass (texture alpha)
+local CLOUD_FADE_STEP = 0.02 -- rewrite cloud part transparency when the fade moved by more than this
 local ATMOSPHERE_ENABLED = true
-local ATMOSPHERE_SHELL_SCALE = 1.045 -- rim shell radius / body radius (a thin halo around the limb)
 local ATMOSPHERE_MATERIAL = Enum.Material.SmoothPlastic -- lit by the sun; ForceField / Neon glow instead
-local ATMOSPHERE_TRANSPARENCY = 0.78
-local MAX_SHELL_SCALE = math.max(1, CLOUD_SHELL_SCALE, ATMOSPHERE_SHELL_SCALE) -- largest patch clone per body
+local RELIEF_SHADE = true -- CHANGED (Planet detail): bake the ground's relief shade into the ground textures
+local SLOT_SWAP_MARGIN = 0.02 -- a detail slot moves only to a patch this much closer (cos) than the one it shows
+local PAINT_IDLE_S = 0.25 -- nothing to paint: look again after this long
+local MAX_SHELL_SCALE = math.max(1, PlanetDetail.MAX_SHELL_SCALE) -- largest patch clone per body
 local SUN_MATERIAL = Enum.Material.Neon
 local RENDER_FIDELITY = Enum.RenderFidelity.Precise -- no LOD decimation of the silhouette
 local COLLISION_FIDELITY = Enum.CollisionFidelity.Box -- never collides; keeps creation cheap
@@ -145,6 +164,13 @@ type Limits = {
 
 type Kind = "Patches" | "Ball" | "Sun"
 
+type Slot = {
+	image: EditableImage?,
+	size: number, -- pixels per side of `image` (0 = none yet)
+	visual: Visual?, -- the body whose patch shows it
+	patch: number, -- that patch (0 = none)
+}
+
 type Visual = {
 	id: number,
 	radius: number, -- true radius (m); 0 for the sun
@@ -155,6 +181,19 @@ type Visual = {
 	partPatch: { number },
 	partScale: { number },
 	partAlpha: { number },
+	-- CHANGED (Planet detail): per patch index (1..24): its ground / cloud part, base / cloud image, the detail slot
+	-- showing on it; the part indices of each atmosphere layer and of the cloud shell
+	groundPart: { [number]: MeshPart },
+	baseImage: { [number]: EditableImage },
+	slotOn: { [number]: Slot },
+	cloudPart: { [number]: MeshPart },
+	cloudImage: { [number]: EditableImage },
+	cloudIndex: { [number]: number },
+	atmosphereIndex: { { number } },
+	cloudFade: number, -- cloud shell visibility last applied (0..1)
+	camDir: Vec3d, -- unit direction body centre -> camera (body axes)
+	camKnown: boolean,
+	altitude: number, -- camera altitude above the body radius (m)
 	glow: BillboardGui?,
 	entry: Entry,
 	dirUni: Vec3d, -- unit direction camera -> body, universe axes
@@ -311,7 +350,13 @@ end
 local initialised = false
 local fallback = false
 local keepAlive: { EditableMesh } = {} -- MeshParts vanish when their EditableMesh is destroyed: keep it referenced
-local keepAliveImages: { EditableImage } = {} -- CHANGED (Phase 2a feedback): same for the patch textures
+-- CHANGED (Planet detail): live EditableImages are referenced by their visual / slot (Visual.baseImage, cloudImage,
+-- Slot.image); this counts them against MAX_EDITABLE_IMAGES
+local imageCount = 0
+local tier: Quality.Tier = "Medium"
+local slots: { Slot } = {}
+local slotGeneration = 0 -- bumped when the slots are released (tier change): a slot job painted before is dropped
+local paintFocus: Visual? = nil -- the dominant body's visual (its textures first, detail slots go there)
 local patchTemplate: MeshPart? = nil -- unparented source of every patch clone (kept, never destroyed)
 local workspaceRef: Workspace? = nil
 local limits: Limits = computeLimits(DRAW_DISTANCE_CAP, false)
@@ -326,17 +371,17 @@ local moveParts: { BasePart } = {}
 local moveCFrames: { CFrame } = {}
 local scratchOffset: Vec3d = Vec3d.zero()
 
--- CHANGED (Phase 2a feedback): texture jobs, painted in order by the generator thread
+-- CHANGED (Phase 2a feedback): texture jobs, painted by the generator thread
+-- CHANGED (Planet detail): chosen one at a time by priority (pickJob) instead of a fixed queue
+type JobKind = "Base" | "Slot" | "Cloud"
 type TextureJob = {
+	kind: JobKind,
 	visual: Visual,
-	part: MeshPart,
-	partIndex: number,
-	bodyId: number,
-	layer: Biome.Layer,
-	matrix: { number },
+	patch: number,
 	spec: TextureSpec,
+	slot: Slot?,
+	generation: number,
 }
-local textureJobs: { TextureJob } = {}
 
 --============================================================================
 -- Instance creation
@@ -413,6 +458,17 @@ local function newVisual(id: number, radius: number, kind: Kind, parts: { BasePa
 		partPatch = {},
 		partScale = {},
 		partAlpha = {},
+		groundPart = {},
+		baseImage = {},
+		slotOn = {},
+		cloudPart = {},
+		cloudImage = {},
+		cloudIndex = {},
+		atmosphereIndex = {},
+		cloudFade = 0,
+		camDir = Vec3d.zero(),
+		camKnown = false,
+		altitude = math.huge,
 		glow = glow,
 		entry = newEntry(),
 		dirUni = Vec3d.zero(),
@@ -428,11 +484,8 @@ local function averageColor(body: Bodies.Body): Color3
 	return Color3.new(r, g, b)
 end
 
-local function textureSpecFor(bodyId: number): TextureSpec
-	return GROUND_TEXTURES[bodyId] or DEFAULT_TEXTURE
-end
-
--- Adds one shell of 24 patch clones to a Patches visual (and queues their texture jobs when `layer` is given).
+-- Adds one shell of 24 patch clones to a Patches visual; returns its part indices by patch index.
+-- CHANGED (Planet detail): textures are no longer queued here (the generator picks them by priority)
 local function addShell(
 	visual: Visual,
 	template: MeshPart,
@@ -441,10 +494,9 @@ local function addShell(
 	scale: number,
 	color: Color3,
 	material: Enum.Material,
-	shownAlpha: number,
-	layer: Biome.Layer?,
-	spec: TextureSpec
-)
+	shownAlpha: number
+): { number }
+	local indices: { number } = {}
 	for index = 1, #patchRotations do
 		local part = template:Clone()
 		configurePart(part, string.format("%s%02d", name, index), color, material)
@@ -453,18 +505,35 @@ local function addShell(
 		table.insert(visual.partPatch, index)
 		table.insert(visual.partScale, scale)
 		table.insert(visual.partAlpha, shownAlpha)
-		if layer then
-			table.insert(textureJobs, {
-				visual = visual,
-				part = part,
-				partIndex = #visual.parts,
-				bodyId = visual.id,
-				layer = layer,
-				matrix = patchMatrixList[index],
-				spec = spec,
-			})
+		indices[index] = #visual.parts
+	end
+	return indices
+end
+
+-- CHANGED (Planet detail): shows part `index` of a visual with transparency `alpha` (1 = hidden).
+local function setPartAlpha(visual: Visual, index: number, alpha: number)
+	visual.partAlpha[index] = alpha
+	if visual.shown then
+		visual.parts[index].Transparency = alpha
+	end
+end
+
+-- CHANGED (Planet detail): the tier's atmosphere layers on a body's shells (extra shells hidden).
+local function applyAtmosphere(visual: Visual)
+	local layers = PlanetDetail.atmosphereLayers(tier)
+	for k, indices in visual.atmosphereIndex do
+		local layer = layers[k]
+		for _, index in indices do
+			if layer then
+				visual.partScale[index] = layer.scale
+				visual.parts[index].Color = layer.color
+				setPartAlpha(visual, index, layer.transparency)
+			else
+				setPartAlpha(visual, index, 1)
+			end
 		end
 	end
+	visual.appliedRadius = 0 -- shell scales may have changed: rewrite every Size
 end
 
 local function createBodyVisual(body: Bodies.Body, parent: Folder): Visual
@@ -475,36 +544,44 @@ local function createBodyVisual(body: Bodies.Body, parent: Folder): Visual
 	local visual: Visual
 	if template then
 		visual = newVisual(body.Id, body.Radius, "Patches", {}, nil)
-		addShell(visual, template, folder, "Patch", 1, color, PATCH_MATERIAL, 0, "Ground", textureSpecFor(body.Id))
+		local ground = addShell(visual, template, folder, "Patch", 1, color, PATCH_MATERIAL, 0)
+		for patch, index in ground do
+			visual.groundPart[patch] = visual.parts[index] :: MeshPart
+		end
 		if CLOUDS_ENABLED and Biome.hasClouds(body.Id) then
-			-- hidden (alpha 1) until each patch's cloud texture is applied
-			addShell(
+			-- hidden (alpha 1) until each patch's cloud texture is applied and the tier / altitude show clouds
+			local clouds = addShell(
 				visual,
 				template,
 				folder,
 				"Cloud",
-				CLOUD_SHELL_SCALE,
+				PlanetDetail.CLOUD_SHELL_SCALE,
 				Color3.new(1, 1, 1),
 				PATCH_MATERIAL,
-				1,
-				"Clouds",
-				CLOUD_TEXTURE
+				1
 			)
+			for patch, index in clouds do
+				visual.cloudIndex[patch] = index
+				visual.cloudPart[patch] = visual.parts[index] :: MeshPart
+			end
 		end
 		local atmosphereColor = body.AtmosphereColor
 		if ATMOSPHERE_ENABLED and atmosphereColor then
-			addShell(
-				visual,
-				template,
-				folder,
-				"Atmosphere",
-				ATMOSPHERE_SHELL_SCALE,
-				atmosphereColor,
-				ATMOSPHERE_MATERIAL,
-				ATMOSPHERE_TRANSPARENCY,
-				nil,
-				DEFAULT_TEXTURE
-			)
+			-- CHANGED (Planet detail): nested layers, configured per tier by applyAtmosphere
+			for k = 1, PlanetDetail.ATMOSPHERE_MAX_LAYERS do
+				local indices = addShell(
+					visual,
+					template,
+					folder,
+					"Atmosphere" .. k,
+					PlanetDetail.MAX_SHELL_SCALE,
+					atmosphereColor,
+					ATMOSPHERE_MATERIAL,
+					1
+				)
+				table.insert(visual.atmosphereIndex, indices)
+			end
+			applyAtmosphere(visual)
 		end
 	else
 		local part = Instance.new("Part")
@@ -618,74 +695,316 @@ end
 --============================================================================
 local texturesDisabled = false
 local cloudsDisabled = false
+local slotsDisabled = false -- CHANGED (Planet detail): a slot image could not be created (memory budget)
 
--- Puts a finished image on its patch. Returns false (and disables that layer with one warning) on failure.
-local function applyTexture(job: TextureJob, image: EditableImage): boolean
-	local content = Content.fromObject(image)
-	if job.layer == "Clouds" then
-		local ok, err = pcall(function()
-			local appearance = Instance.new("SurfaceAppearance")
-			appearance.AlphaMode = Enum.AlphaMode.Transparency
-			appearance.ColorMapContent = content
-			appearance.Parent = job.part
-		end)
-		if not ok then
-			cloudsDisabled = true
-			warn(
-				"[ScaledSpace] cloud textures are unavailable (" .. tostring(err) .. "); Earth is drawn without clouds."
-			)
-			return false
-		end
-		-- reveal this cloud patch (it stayed hidden until now)
-		job.visual.partAlpha[job.partIndex] = 0
-		if job.visual.shown then
-			job.part.Transparency = 0
-		end
-		return true
+-- CHANGED (Planet detail): image bookkeeping (every image this module creates goes through here)
+local function createImage(size: number): (EditableImage?, string?)
+	if imageCount >= MAX_EDITABLE_IMAGES then
+		return nil, "image cap reached"
 	end
+	local AssetService = game:GetService("AssetService")
+	local ok, image = pcall(function(): EditableImage
+		return AssetService:CreateEditableImage({ Size = Vector2.new(size, size) })
+	end)
+	if not ok then
+		return nil, tostring(image)
+	end
+	imageCount += 1
+	return image, nil
+end
+
+local function destroyImage(image: EditableImage)
+	image:Destroy()
+	imageCount -= 1
+end
+
+-- Sets a MeshPart's texture (nil clears it). Returns false (and disables textures with one warning) on failure.
+local function setTexture(part: MeshPart, image: EditableImage?): boolean
 	local ok, err = pcall(function()
-		job.part.TextureContent = content
+		part.TextureContent = if image then Content.fromObject(image) else Content.none
 	end)
 	if not ok then
 		texturesDisabled = true
 		warn("[ScaledSpace] planet textures are unavailable (" .. tostring(err) .. "); planets stay flat-coloured.")
+	end
+	return ok
+end
+
+-- Patches of a visual nearest the camera first (index order while the camera direction is unknown).
+local function patchOrder(visual: Visual): { number }
+	if not visual.camKnown then
+		local order: { number } = {}
+		for patch = 1, #patchRotations do
+			table.insert(order, patch)
+		end
+		return order
+	end
+	local c = visual.camDir
+	return PlanetDetail.desiredPatches(patchMatrixList, c.x, c.y, c.z, #patchRotations)
+end
+
+local function closenessOf(visual: Visual, patch: number): number
+	local c = visual.camDir
+	return PlanetDetail.closeness(patchMatrixList[patch], c.x, c.y, c.z)
+end
+
+-- The next base ground image of `visual` to paint (nearest patch first), or nil.
+local function nextBaseJob(visual: Visual?): TextureJob?
+	if visual == nil or visual.kind ~= "Patches" or texturesDisabled then
+		return nil
+	end
+	for _, patch in patchOrder(visual) do
+		if not visual.baseImage[patch] then
+			return {
+				kind = "Base",
+				visual = visual,
+				patch = patch,
+				spec = PlanetDetail.baseTexture(visual.id),
+				slot = nil,
+				generation = slotGeneration,
+			}
+		end
+	end
+	return nil
+end
+
+-- The next detail-slot repaint on the dominant body: the nearest wanted patch without a slot, taking a free slot,
+-- one on another body, or the slot on the least close unwanted patch (if the wanted one is clearly closer).
+local function nextSlotJob(visual: Visual?): TextureJob?
+	if visual == nil or visual.kind ~= "Patches" or texturesDisabled or slotsDisabled or not visual.camKnown then
+		return nil
+	end
+	local spec = PlanetDetail.slotTexture(tier, visual.id)
+	local count = PlanetDetail.tierSpec(tier).slots
+	if spec == nil or count <= 0 or not PlanetDetail.slotsWanted(visual.altitude, visual.radius) then
+		return nil
+	end
+	while #slots < count do
+		table.insert(slots, { image = nil, size = 0, visual = nil, patch = 0 })
+	end
+	local c = visual.camDir
+	local wanted = PlanetDetail.desiredPatches(patchMatrixList, c.x, c.y, c.z, count)
+	local wantedSet: { [number]: boolean } = {}
+	for _, patch in wanted do
+		wantedSet[patch] = true
+	end
+	for _, patch in wanted do
+		if visual.slotOn[patch] == nil then
+			local victim: Slot? = nil
+			local victimScore = math.huge
+			for _, slot in slots do
+				local score
+				if slot.visual == nil then
+					score = -math.huge -- free
+				elseif slot.visual ~= visual then
+					score = -10 -- on another body
+				elseif not wantedSet[slot.patch] then
+					score = closenessOf(visual, slot.patch)
+				else
+					score = math.huge -- still wanted where it is
+				end
+				if score < victimScore then
+					victim, victimScore = slot, score
+				end
+			end
+			if victim and closenessOf(visual, patch) > victimScore + SLOT_SWAP_MARGIN then
+				return {
+					kind = "Slot",
+					visual = visual,
+					patch = patch,
+					spec = spec,
+					slot = victim,
+					generation = slotGeneration,
+				}
+			end
+			return nil -- the nearest missing patch cannot take a slot yet, so no farther one can either
+		end
+	end
+	return nil
+end
+
+-- The next cloud image to paint (Medium+), nearest the camera first, or nil.
+local function nextCloudJob(): TextureJob?
+	local spec = PlanetDetail.cloudTexture(tier)
+	if spec == nil or not CLOUDS_ENABLED or cloudsDisabled or texturesDisabled then
+		return nil
+	end
+	for _, visual in visuals do
+		if next(visual.cloudPart) ~= nil then
+			for _, patch in patchOrder(visual) do
+				if not visual.cloudImage[patch] then
+					return {
+						kind = "Cloud",
+						visual = visual,
+						patch = patch,
+						spec = spec,
+						slot = nil,
+						generation = slotGeneration,
+					}
+				end
+			end
+		end
+	end
+	return nil
+end
+
+-- Priority: the dominant body's base images, its detail slots, clouds, then every other body's base images.
+local function pickJob(): TextureJob?
+	local dominant = paintFocus
+	local job = nextBaseJob(dominant) or nextSlotJob(dominant) or nextCloudJob()
+	if job then
+		return job
+	end
+	for _, visual in visuals do
+		if visual ~= dominant then
+			job = nextBaseJob(visual)
+			if job then
+				return job
+			end
+		end
+	end
+	return nil
+end
+
+-- Takes a slot off the patch it shows on (that patch goes back to its base image).
+local function releaseSlot(slot: Slot)
+	local visual = slot.visual
+	if visual then
+		local patch = slot.patch
+		if visual.slotOn[patch] == slot then
+			visual.slotOn[patch] = nil
+			setTexture(visual.groundPart[patch], visual.baseImage[patch])
+		end
+	end
+	slot.visual = nil
+	slot.patch = 0
+end
+
+-- CHANGED (Planet detail): drops every slot (tier change): patches go back to their base images.
+local function releaseAllSlots()
+	slotGeneration += 1
+	for _, slot in slots do
+		releaseSlot(slot)
+		local image = slot.image
+		if image then
+			destroyImage(image)
+		end
+	end
+	table.clear(slots)
+end
+
+-- Puts a painted buffer on its target. Runs without yielding, so a slot moves in one frame.
+local function applyJob(job: TextureJob, buf: buffer): boolean
+	local visual, patch, size = job.visual, job.patch, job.spec.size
+	local image: EditableImage? = nil
+	local slot = job.slot
+	if job.kind == "Slot" then
+		assert(slot)
+		releaseSlot(slot) -- its old patch shows its base image again before the pixels change
+		local old = slot.image
+		if old and slot.size ~= size then
+			destroyImage(old)
+			slot.image, slot.size = nil, 0
+		end
+		if slot.image == nil then
+			local created, err = createImage(size)
+			if created == nil then
+				slotsDisabled = true
+				warn(
+					"[ScaledSpace] detail textures disabled (" .. tostring(err) .. "); planets keep their base images."
+				)
+				return false
+			end
+			slot.image, slot.size = created, size
+		end
+		image = slot.image
+	else
+		local created, err = createImage(size)
+		if created == nil then
+			if job.kind == "Cloud" then
+				cloudsDisabled = true
+				warn("[ScaledSpace] cloud textures disabled (" .. tostring(err) .. ").")
+			else
+				texturesDisabled = true
+				warn(
+					"[ScaledSpace] CreateEditableImage failed ("
+						.. tostring(err)
+						.. "); remaining planet patches stay flat-coloured. Enable Game Settings > Security >"
+						.. " 'Allow Mesh / Image APIs'."
+				)
+			end
+			return false
+		end
+		image = created
+	end
+	assert(image)
+	local written, writeErr = pcall(function()
+		image:WritePixelsBuffer(Vector2.zero, image.Size, buf)
+	end)
+	if not written then
+		texturesDisabled = true
+		warn("[ScaledSpace] WritePixelsBuffer failed (" .. tostring(writeErr) .. "); planet textures disabled.")
+		if job.kind ~= "Slot" then
+			destroyImage(image)
+		end
+		return false
+	end
+	if job.kind == "Base" then
+		visual.baseImage[patch] = image
+		if visual.slotOn[patch] == nil then
+			return setTexture(visual.groundPart[patch], image)
+		end
+		return true
+	elseif job.kind == "Slot" then
+		assert(slot)
+		slot.visual, slot.patch = visual, patch
+		visual.slotOn[patch] = slot
+		return setTexture(visual.groundPart[patch], image)
+	end
+	visual.cloudImage[patch] = image
+	if not setTexture(visual.cloudPart[patch], image) then
+		cloudsDisabled = true
 		return false
 	end
 	return true
 end
 
--- Paints every queued patch texture in order, yielding whenever TEXTURE_BUDGET_S of work has been done.
+-- CHANGED (Planet detail): the cloud shell's transparency for the current fade and tier.
+local function applyCloudAlpha(visual: Visual)
+	local show = PlanetDetail.cloudTexture(tier) ~= nil and not cloudsDisabled
+	for patch, index in visual.cloudIndex do
+		local alpha = 1
+		if show and visual.cloudImage[patch] and visual.cloudFade > 0 then
+			alpha = math.max(CLOUD_MIN_TRANSPARENCY, 1 - visual.cloudFade)
+		end
+		if visual.partAlpha[index] ~= alpha then
+			setPartAlpha(visual, index, alpha)
+		end
+	end
+end
+
+--[[
+	The background painter (CHANGED (Planet detail): runs for the whole session): picks the most useful texture
+	(pickJob), paints it with Biome's painter in budgeted slices, and applies it. Idles PAINT_IDLE_S when there is
+	nothing to do (e.g. the detail slots already sit on the nearest patches).
+]]
 local function generateTextures()
-	local AssetService = game:GetService("AssetService")
 	local painters: { [string]: Biome.Painter } = {}
 	local sliceStart = os.clock()
 	local function yieldIfDue()
-		if os.clock() - sliceStart >= TEXTURE_BUDGET_S then
+		if os.clock() - sliceStart >= PlanetDetail.tierSpec(tier).paintBudgetS then
 			task.wait()
 			sliceStart = os.clock()
 		end
 	end
-	for _, job in textureJobs do
-		if texturesDisabled or #keepAliveImages >= MAX_EDITABLE_IMAGES then
-			break
-		end
-		if job.layer == "Clouds" and cloudsDisabled then
+	while not texturesDisabled do
+		local job = pickJob()
+		if job == nil then
+			task.wait(PAINT_IDLE_S)
+			sliceStart = os.clock()
 			continue
 		end
 		local spec = job.spec
-		local created, image = pcall(function(): EditableImage
-			return AssetService:CreateEditableImage({ Size = Vector2.new(spec.size, spec.size) })
-		end)
-		if not created then
-			texturesDisabled = true
-			warn(
-				"[ScaledSpace] CreateEditableImage failed ("
-					.. tostring(image)
-					.. "); remaining planet patches stay flat-coloured. Enable Game Settings > Security >"
-					.. " 'Allow Mesh / Image APIs'."
-			)
-			break
-		end
 		local key = spec.size .. ":" .. spec.cells
 		local painter = painters[key]
 		if painter == nil then
@@ -694,27 +1013,35 @@ local function generateTextures()
 			painter = fresh
 		end
 		assert(painter)
-		Biome.beginPatch(painter, job.bodyId, job.layer, job.matrix, TEXTURE_DETAIL)
+		local layer: Biome.Layer = if job.kind == "Cloud" then "Clouds" else "Ground"
+		local height = if RELIEF_SHADE and layer == "Ground" then Relief.heightFn(job.visual.id) else nil
+		Biome.beginPatch(painter, job.visual.id, layer, patchMatrixList[job.patch], spec.detail, height)
 		while not Biome.paintStep(painter) do
 			yieldIfDue()
 		end
-		local written, err = pcall(function()
-			image:WritePixelsBuffer(Vector2.zero, image.Size, painter.buf)
-		end)
-		if not written then
-			image:Destroy()
-			texturesDisabled = true
-			warn("[ScaledSpace] WritePixelsBuffer failed (" .. tostring(err) .. "); planet textures disabled.")
-			break
-		end
-		if applyTexture(job, image) then
-			table.insert(keepAliveImages, image)
-		else
-			image:Destroy()
+		-- a slot job painted across a tier change (slots released) is stale
+		if job.kind ~= "Slot" or job.generation == slotGeneration then
+			if applyJob(job, painter.buf) and job.kind == "Cloud" then
+				applyCloudAlpha(job.visual)
+			end
 		end
 		yieldIfDue()
 	end
-	table.clear(textureJobs)
+end
+
+-- CHANGED (Planet detail): a new graphics tier: atmosphere layers, cloud visibility and detail slots follow it.
+local function applyTier(newTier: Quality.Tier)
+	if newTier == tier and initialised then
+		return
+	end
+	tier = newTier
+	releaseAllSlots()
+	for _, visual in visuals do
+		if visual.kind == "Patches" then
+			applyAtmosphere(visual)
+			applyCloudAlpha(visual)
+		end
+	end
 end
 
 --============================================================================
@@ -741,6 +1068,7 @@ function ScaledSpace.init(parent: Folder)
 		)
 	end
 	computeLimits(DRAW_DISTANCE_CAP, fallback, limits)
+	tier = Quality.tier() -- CHANGED (Planet detail): before the shells are made (atmosphere layers per tier)
 
 	for _, body in Bodies.List do
 		local visual: Visual
@@ -755,8 +1083,10 @@ function ScaledSpace.init(parent: Folder)
 		visualById[body.Id] = visual
 	end
 	initialised = true
+	-- CHANGED (Planet detail): follow the graphics tier (detail slots, atmosphere layers, clouds)
+	Quality.onChanged(applyTier)
 	-- CHANGED (Phase 2a feedback): paint the planet textures in the background
-	if #textureJobs > 0 then
+	if patchTemplate then
 		task.spawn(generateTextures)
 	end
 end
@@ -773,6 +1103,8 @@ function ScaledSpace.update(ctx: RenderContext.RenderContext, forceScaled: boole
 	local camPos = ctx.camera.Position
 	local dominantId = ctx.dominantBodyId
 	local dominantVisual = visualById[dominantId]
+	-- CHANGED (Planet detail): the painter's detail slots follow the dominant body
+	paintFocus = if dominantVisual and dominantVisual.kind == "Patches" then dominantVisual else nil
 
 	-- 1. proxy <-> surface handover for the dominant body
 	if forceScaled then
@@ -818,6 +1150,18 @@ function ScaledSpace.update(ctx: RenderContext.RenderContext, forceScaled: boole
 		if D > 0 then
 			Vec3d.scaleInto(visual.dirUni, offset, 1 / D)
 			visual.dirPocket = Frames.vectorToWorkspace(frame, visual.dirUni)
+			-- CHANGED (Planet detail): where the camera is over this body (detail slots, paint order, cloud fade)
+			Vec3d.scaleInto(visual.camDir, visual.dirUni, -1)
+			visual.camKnown = true
+			visual.altitude = D - visual.radius
+			if next(visual.cloudIndex) ~= nil then
+				local fade = PlanetDetail.cloudFade(visual.altitude, proxyMinAlt(visual.radius, limits))
+				local moved = math.abs(fade - visual.cloudFade)
+				if moved > CLOUD_FADE_STEP or (moved > 0 and (fade == 0 or fade == 1)) then
+					visual.cloudFade = fade
+					applyCloudAlpha(visual)
+				end
+			end
 		end
 	end
 
@@ -860,7 +1204,11 @@ function ScaledSpace.update(ctx: RenderContext.RenderContext, forceScaled: boole
 			local centreCFrame = CFrame.new(centre)
 			local patchIndex = visual.partPatch
 			local scales = visual.partScale
+			local alphas = visual.partAlpha
 			for index, part in visual.parts do
+				if alphas[index] >= 1 then
+					continue -- CHANGED (Planet detail): hidden shells (unused atmosphere layers, clouds) stay put
+				end
 				-- CHANGED (Phase 2a feedback): per-part cube rotation and shell scale
 				table.insert(moveParts, part)
 				table.insert(
