@@ -78,67 +78,70 @@ local function vertexBox(
 end
 
 return function(t: TestKit.Context)
-	t.test("near band: fine leaves over the square, one true-scale part, the rest one band per level", function()
-		local places: { { bodyId: number, dir: Vec3d } } = {
-			{ bodyId = HOMEWORLD, dir = Vec3d.new(1, 0, 0.02) }, -- the launch site
-			{ bodyId = HOMEWORLD, dir = Vec3d.new(0.7, 0.5, 0.5) }, -- near a cube-face corner (skewed lattice)
-			{ bodyId = MOON, dir = Vec3d.new(0.6, -0.5, 0.6) },
-		}
-		for _, place in places do
-			local bodyId, dir = place.bodyId, place.dir
-			local config = TerrainMath.config(bodyId) :: TerrainMath.Config
-			for _, height in { 2, 600, 3000 } do
-				for _, tier in { HIGH, LOW } do
-					local cam = cameraAt(bodyId, dir, height)
-					local selection, near = selectNear(config, cam, tier)
-					local assigned = TerrainMath.assignBands(config, selection.leaves, BAND_COUNT, near)
-					local chunks, nodes = {}, {}
-					local perBand: { [number]: number } = {}
-					local bandsUsed = 0
-					local ring: { TerrainMath.Node } = {}
-					for _, leaf in selection.leaves do
-						local u, v = TerrainMath.nearOffset(near, Vec3d.new(leaf.cx, leaf.cy, leaf.cz))
-						if math.abs(u) > NEAR_HALF or math.abs(v) > NEAR_HALF then
-							table.insert(ring, leaf)
+	t.test(
+		"near band: fine leaves over the square, one true-scale part, the rest one band per level (no rings)",
+		function()
+			local places: { { bodyId: number, dir: Vec3d } } = {
+				{ bodyId = HOMEWORLD, dir = Vec3d.new(1, 0, 0.02) }, -- the launch site
+				{ bodyId = HOMEWORLD, dir = Vec3d.new(0.7, 0.5, 0.5) }, -- near a cube-face corner (skewed lattice)
+				{ bodyId = MOON, dir = Vec3d.new(0.6, -0.5, 0.6) },
+			}
+			for _, place in places do
+				local bodyId, dir = place.bodyId, place.dir
+				local config = TerrainMath.config(bodyId) :: TerrainMath.Config
+				for _, height in { 2, 600, 3000 } do
+					for _, tier in { HIGH, LOW } do
+						local cam = cameraAt(bodyId, dir, height)
+						local selection, near = selectNear(config, cam, tier)
+						local assigned = TerrainMath.assignBands(config, selection.leaves, BAND_COUNT, near)
+						local chunks, nodes = {}, {}
+						local perBand: { [number]: number } = {}
+						local bandsUsed = 0
+						local ring: { TerrainMath.Node } = {}
+						for _, leaf in selection.leaves do
+							local u, v = TerrainMath.nearOffset(near, Vec3d.new(leaf.cx, leaf.cy, leaf.cz))
+							if math.abs(u) > NEAR_HALF or math.abs(v) > NEAR_HALF then
+								table.insert(ring, leaf)
+							end
 						end
-					end
-					-- levels counted from the finest leaf of the whole selection (stable band ids)
-					local merge = TerrainMath.mergeLevel(config, selection.leaves, BAND_COUNT - 1)
-					t.expectTrue(#ring > 0, "ground beyond the near band")
-					for _, leaf in selection.leaves do
-						local band = assigned[leaf.key]
-						if perBand[band] == nil then
-							bandsUsed += 1
+						-- levels counted from the finest leaf of the whole selection (stable band ids)
+						local merge = TerrainMath.mergeLevel(config, selection.leaves, BAND_COUNT - 1)
+						t.expectTrue(#ring > 0, "ground beyond the near band")
+						for _, leaf in selection.leaves do
+							local band = assigned[leaf.key]
+							if perBand[band] == nil then
+								bandsUsed += 1
+							end
+							perBand[band] = (perBand[band] or 0) + 1
+							local u, v = TerrainMath.nearOffset(near, Vec3d.new(leaf.cx, leaf.cy, leaf.cz))
+							local inside = math.abs(u) <= NEAR_HALF and math.abs(v) <= NEAR_HALF
+							if inside then
+								-- select() splits everything over the square down to the near leaf size
+								t.expectTrue(leaf.size <= NEAR_MAX_LEAF * 1.01, `leaf of {leaf.size} m in the square`)
+								t.expectEqual(band, TerrainMath.NEAR_BAND)
+								table.insert(chunks, TerrainMath.buildChunk(config, leaf))
+								table.insert(nodes, leaf)
+							else
+								t.expectEqual(
+									band,
+									TerrainMath.NEAR_BAND + 1 + math.min(TerrainMath.levelOf(config, leaf), merge)
+								)
+							end
 						end
-						perBand[band] = (perBand[band] or 0) + 1
-						local u, v = TerrainMath.nearOffset(near, Vec3d.new(leaf.cx, leaf.cy, leaf.cz))
-						local inside = math.abs(u) <= NEAR_HALF and math.abs(v) <= NEAR_HALF
-						if inside then
-							-- select() splits everything over the square down to the near leaf size
-							t.expectTrue(leaf.size <= NEAR_MAX_LEAF * 1.01, `leaf of {leaf.size} m in the square`)
-							t.expectEqual(band, TerrainMath.NEAR_BAND)
-							table.insert(chunks, TerrainMath.buildChunk(config, leaf))
-							table.insert(nodes, leaf)
-						else
-							t.expectEqual(
-								band,
-								TerrainMath.NEAR_BAND + 1 + math.min(TerrainMath.levelOf(config, leaf), merge)
-							)
+						t.expectTrue(bandsUsed <= BAND_COUNT, `{bandsUsed} bands`)
+						for band, count in perBand do
+							t.expectTrue(count <= TerrainMath.MAX_BAND_LEAVES + 5, `band {band}: {count} leaves`)
 						end
+						t.expectTrue(#chunks > 0, "the near band holds the ground under the camera")
+						-- the near band fits one part at true scale (in its best frame)
+						local axes = TerrainMath.bestAxes(chunks, near.axes)
+						local _, _, _, size = TerrainMath.frameBounds(chunks, nodes, nil, axes)
+						t.expectTrue(math.max(size.X, size.Y, size.Z) < PART_LIMIT, `near band box {size}`)
 					end
-					t.expectTrue(bandsUsed <= BAND_COUNT, `{bandsUsed} bands`)
-					for band, count in perBand do
-						t.expectTrue(count <= TerrainMath.MAX_BAND_LEAVES + 5, `band {band}: {count} leaves`)
-					end
-					t.expectTrue(#chunks > 0, "the near band holds the ground under the camera")
-					-- the near band fits one part at true scale (in its best frame)
-					local axes = TerrainMath.bestAxes(chunks, near.axes)
-					local _, _, _, size = TerrainMath.frameBounds(chunks, nodes, nil, axes)
-					t.expectTrue(math.max(size.X, size.Y, size.Z) < PART_LIMIT, `near band box {size}`)
 				end
 			end
 		end
-	end)
+	)
 
 	t.test(
 		"band frames: frameBounds is the exact vertex box (sunk leaves included); bestAxes is never worse",

@@ -19,6 +19,10 @@
 	  * maria sink, highlands roll, and every crater gets a bowl, a raised rim and an ejecta apron
 	  * clamped to [MOON_MIN, MOON_MAX]: the 500 m rails floor (Rails.minAltitude) stays above every peak
 	Other bodies: 0.
+	CHANGED (Terrain polish): gentler ground: longer, lower hills, smaller bumps, and mountains with rounded summits
+	and feet (a second smoothstep over Biome's mask, whose own ridges are now smooth too) and soft-crested detail
+	(smooth |n| ridged noise) instead of knife-edged ridges. Biome keeps a mountain-free plain within ~11 km of the
+	site, so from the base nothing beyond ~4 km rises over the 60 km planet's horizon.
 
 	API:
 		Relief.height(bodyId, x, y, z): number    metres above the body radius
@@ -42,18 +46,23 @@ local OCTAVE_SHIFT = 13.7
 local LAND_SCALE = 260 -- m per unit of coast-level elevation (ee 0.13 at the site -> ~34 m)
 local LAND_FLOOR = 0.3 -- land never dips below this fraction of LAND_SCALE * ee (no dry pits below the sea)
 local COAST_FADE = 0.12 -- elevation over which hills and bumps fade in from the coast
-local HILL_FREQ = 50 -- ~1.2 km rolling hills
+-- CHANGED (Terrain polish): gentler, smoother ground (Steamy: "the terrain looks bad"): longer, lower hills with
+-- softer octaves, smaller bumps, mountains with rounded summits and feet (a second smoothstep over the mask) and
+-- soft-crested detail (smooth |n|) instead of knife-edged ridged noise
+local HILL_FREQ = 40 -- ~1.5 km rolling hills (was 50)
 local HILL_OCTAVES = 3
-local HILL_GAIN = 0.45
-local HILL_AMP = 55 -- m
-local BUMP_FREQ = 190 -- ~320 m bumps
-local BUMP_AMP = 6 -- m
-local MOUNT_M0 = 0.32 -- mountain mask where mountains start rising (Biome rock starts at 0.52)
-local MOUNT_M1 = 0.95
-local MOUNT_POWER = 1.5
-local MOUNT_AMP = 1250 -- m at the top of the mask
-local MOUNT_DETAIL_FREQ = 70 -- ~850 m ridges on the mountains
-local MOUNT_DETAIL = 0.12 -- share of the mountain height that is ridged detail
+local HILL_GAIN = 0.4 -- was 0.45
+local HILL_AMP = 45 -- m (was 55)
+local BUMP_FREQ = 170 -- ~350 m bumps (was 190)
+local BUMP_AMP = 3.5 -- m (was 6)
+local MOUNT_M0 = 0.3 -- mountain mask where mountains start rising (Biome rock starts at 0.52)
+local MOUNT_M1 = 0.88 -- was 0.95: the crests of the mask sit on the rounded top of the curve
+local MOUNT_POWER = 1.3 -- was 1.5
+local MOUNT_AMP = 1150 -- m at the top of the mask (was 1250)
+local MOUNT_DETAIL_FREQ = 45 -- ~1.3 km soft ridges on the mountains (was 70, sharp)
+local MOUNT_DETAIL_OCTAVES = 2
+local MOUNT_DETAIL = 0.14 -- share of the mountain height that is ridged detail
+local MOUNT_DETAIL_SOFT = 0.22 -- smooth |n| width of the detail crests (0 = knife edge)
 local EARTH_MAX = 1800 -- m, hard cap
 
 -- Earth launch site (the plane of the base pocket)
@@ -112,10 +121,12 @@ local function fbm(x: number, y: number, z: number, octaves: number, gain: numbe
 end
 
 -- Ridged fractal in 0..1 (1 on the ridge lines).
-local function ridged(x: number, y: number, z: number, octaves: number): number
+-- CHANGED (Terrain polish): soft crests: |n| is smoothed to sqrt(n^2 + soft^2) - soft (soft 0: the old knife edge)
+local function ridged(x: number, y: number, z: number, octaves: number, soft: number): number
 	local sum, amp, norm = 0, 1, 0
 	for _ = 1, octaves do
-		local n = 1 - math.abs(mathNoise(x, y, z) * NOISE_SCALE)
+		local v = mathNoise(x, y, z) * NOISE_SCALE
+		local n = 1 - (math.sqrt(v * v + soft * soft) - soft)
 		if n < 0 then
 			n = 0
 		end
@@ -148,8 +159,9 @@ local function earthRelief(x: number, y: number, z: number): number
 	end
 	local m = smoothstep(MOUNT_M0, MOUNT_M1, mountain)
 	if m > 0 then
+		m = m * m * (3 - 2 * m) -- CHANGED (Terrain polish): rounded summits and feet
 		local f = MOUNT_DETAIL_FREQ
-		local ridge = ridged(x * f + 4.4, y * f + 8.1, z * f + 2.2, 2)
+		local ridge = ridged(x * f + 4.4, y * f + 8.1, z * f + 2.2, MOUNT_DETAIL_OCTAVES, MOUNT_DETAIL_SOFT)
 		h += MOUNT_AMP * m ^ MOUNT_POWER * (1 - MOUNT_DETAIL + MOUNT_DETAIL * 2 * ridge)
 	end
 	local floor = LAND_FLOOR * base

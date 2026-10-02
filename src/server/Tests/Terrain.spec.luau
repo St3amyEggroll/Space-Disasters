@@ -343,13 +343,14 @@ return function(t: TestKit.Context)
 		end
 	end)
 
+	-- CHANGED (Terrain polish): + the drawn ground under the plate (a quad spacing inside its edge) is sunk SITE_SINK
 	t.test("the launch site's ground plate is painted into the terrain (seen from high up)", function()
 		local config = TerrainMath.config(HOMEWORLD) :: TerrainMath.Config
 		local _, fi, fj = SurfaceHeight.latticeCoords(HOMEWORLD, Vec3d.new(1, 0, 0))
 		local span = TerrainMath.CHUNK
 		local node = TerrainMath.node(config, 1, config.maxDepth, math.floor(fi / span), math.floor(fj / span))
 		local chunk = TerrainMath.buildChunk(config, node)
-		local grey, green = 0, 0
+		local grey, green, sunkCount = 0, 0, 0
 		for v = 1, (span + 1) * (span + 1) do
 			local px, py, pz, _, _, _, r, _, b = TerrainMath.chunkVertex(chunk, v)
 			local x, y, z = chunk.ox + px, chunk.oy + py, chunk.oz + pz
@@ -361,9 +362,17 @@ return function(t: TestKit.Context)
 			else
 				green += 1
 			end
-			t.expectNear(x, EARTH_R - TerrainMath.RENDER_DROP, 0.01) -- the plane, just below the real plate
+			-- the plane, just below the real plate; sunk under it a quad spacing inside its edge
+			local inset = BaseLayout.SITE_HALF_EXTENT - node.stride * config.cellArc * 1.05
+			local sunk = math.abs(y) <= inset and math.abs(z) <= inset
+			local expected = EARTH_R - TerrainMath.RENDER_DROP - (if sunk then TerrainMath.SITE_SINK else 0)
+			t.expectNear(x, expected, 0.01)
+			if sunk then
+				sunkCount += 1
+			end
 		end
 		t.expectTrue(grey > 0, "plate vertices")
+		t.expectTrue(sunkCount > 0, "sunk vertices")
 	end)
 
 	t.test("LOD seams: skirts cover the gap to a coarser neighbour", function()

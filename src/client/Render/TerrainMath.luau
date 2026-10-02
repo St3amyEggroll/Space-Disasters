@@ -47,6 +47,25 @@
 	    to build two new bands in a row after a camera jump).
 	  * collisionCells / cellTriangles: the collision cells around a point (TerrainCollision updates cell by cell).
 
+	CHANGED (Terrain polish): Steamy's Studio test: terrain covered the launch site from the ground ("a flat green
+	surface slices through the base", towers sticking out of a ridge that is really kilometres behind the site) and
+	far ground showed through nearer hills ("I see through the earth"). Both come from bands drawn scaled down about
+	the camera, i.e. nearer than they are: a band of factor k covers anything true-scale (or any band of a larger
+	factor) that is really in front of it but farther than k x its distance.
+	  * Ring bands (planRings, assignBands with a RingContext): the leaves outside the near square are cut into
+	    rings by their distance from the square's centre, with the cuts placed so the smallest "nearest drawn
+	    depth" (k x nearest ground) of any ring is as large as possible (was one band per level of detail, whose
+	    last band held everything from ~5 km to the horizon at k ~0.03: mountains drawn ~200 studs away).
+	  * bandScales: the scaled bands share ONE factor (the smallest, the outermost ring's) so they keep their true
+	    order among themselves, except bands whose ground starts within the protected depth, which get just the
+	    factor that draws it there.
+	  * Seams (stitchCode / stitchChunk): where two bands meet, the outer band's skirt (which faced the camera and,
+	    drawn nearer, painted walls and blue stripes over the inner band) is cut to SKIRT_INNER, and the finer of
+	    the two edges is moved onto the coarser one, so there is no crack to cover.
+	  * The drawn ground under the base's 20-stud ground plate is sunk SITE_SINK m (no z-fighting, never through
+	    the plate when drawn scaled), and the vertex colours have slope soil / rock, high-ground and dry tints,
+	    brightness noise at three scales and cavity shading (groundColour).
+
 	All positions are body-relative metres (body axes = universe axes) in doubles.
 ]]
 
@@ -79,12 +98,34 @@ local RENDER_DROP = 0.12 -- m the drawn ground sits below the true ground
 local ROCK_SLOPE0 = 0.2 -- 1 - cos(slope): steep Earth ground starts turning to rock here (~37 deg)
 local ROCK_SLOPE1 = 0.42 -- fully rock (~55 deg)
 local ROCK_COLOR = { 0.47, 0.43, 0.39 }
+-- CHANGED (Terrain polish): richer vertex colours (groundColour): the land is no longer one flat green
+local SOIL_SLOPE0 = 0.04 -- 1 - cos(slope): bare soil starts showing on Earth slopes here (~16 deg) ...
+local SOIL_SLOPE1 = 0.17 -- ... at most SOIL_MAX of it by ~34 deg
+local SOIL_MAX = 0.35
+local SOIL_COLOR = { 0.46, 0.39, 0.29 }
+local HIGH_COLOR = { 0.5, 0.53, 0.42 } -- alpine meadow / scree tint on high ground
+local HIGH_H0 = 250 -- m: high ground tint starts here ...
+local HIGH_H1 = 1100 -- ... and reaches HIGH_MAX here
+local HIGH_MAX = 0.4
+local DRY_COLOR = { 0.66, 0.62, 0.34 } -- patches of drier grass
+local DRY_MAX = 0.28
+local NOISE_WAVELENGTHS = { 900, 260, 70 } -- m: brightness noise (largest first)
+local NOISE_AMPS = { 0.07, 0.05, 0.035 } -- +- brightness share per wavelength
+local DRY_WAVELENGTH = 1400 -- m: dry patches
+local CAVITY_FULL = 0.06 -- m of hollow per m of vertex spacing that gives the full CAVITY_SHADE
+local CAVITY_SHADE = 0.12 -- hollows this much darker, crests this much brighter
+local MOON_NOISE_AMP = 0.6 -- the Mun's brightness noise, as a share of NOISE_AMPS
+local NOISE_SPREAD = 1.4 -- math.noise -> about -1..1
+local SKIRT_INNER = 0.3 -- m: skirt on an edge facing a nearer band (stitchChunk; that band closes the seam)
+local SITE_SINK = 4 -- m: ground under the base's ground plate (20 studs thick) is drawn this much lower ...
+local SITE_SINK_SPACINGS = 1.05 -- ... where the vertex is at least this many quad spacings inside the plate edge
 -- the launch site's ground plate (HomeBase "Ground", 99 / 102 / 107) painted into the terrain, so the base still shows
 -- as a grey square from high up, where its parts are not drawn (Surface hides the site copy over scaled terrain)
 local SITE_PLATE_COLOR = { 99 / 255, 102 / 255, 107 / 255 }
 local SITE_PLATE_HALF = BaseLayout.SITE_HALF_EXTENT -- m, in the site's tangent plane
 local NODE_CACHE_MAX = 6000 -- cached quadtree nodes before the cache is cleared (a selection visits ~1000)
 local MIN_SCALE = 1e-4 -- smallest band scale factor
+local TRUE_SCALE_FACTOR = 0.9999 -- CHANGED (Terrain polish): a band factor at or above this is true scale
 local VERTEX_BYTES = 36 -- chunk vertex record: position, normal, colour (9 f32)
 -- CHANGED (Night review): the near band (assignBands / select with a Near)
 local NEAR_BAND = 0 -- band id of the near square's leaves (the other bands are 1 + level)
@@ -93,6 +134,11 @@ local NEAR_SIZE_PAD = 1.1 -- a node's footprint is taken this much larger than i
 local NEAR_MIN_COS = 0.5 -- only nodes within 60 deg of the near origin count (never the far side of the body)
 local SIZE_TOLERANCE = 1.01 -- leaf sizes compared with near.maxLeaf
 local FRAME_CANDIDATES = 4 -- band frame orientations tried about the up axis (bestAxes), plus the universe axes
+-- CHANGED (Terrain polish): ring bands around the near square (planRings / assignBands with a RingContext)
+local RING_SEARCH_STEPS = 18 -- binary search steps for the protected depth
+local RING_DEPTH_MAX = 8000 -- studs: upper end of that search
+local RING_KEEP = 0.85 -- the last plan's ring bounds stay while they protect at least this x the best depth
+local RING_TIE = 1e-6 -- m: leaf ring distances closer than this are one group (never split by a bound)
 --============================================================================
 
 export type Config = {
@@ -136,6 +182,19 @@ export type Params = {
 	bandCount: number?, -- bands the leaves will be drawn in (TerrainMath.bandOf): none may exceed MAX_BAND_LEAVES
 	horizonLead: number?, -- m: the horizon is taken this much higher than the camera (it climbs while meshes build)
 	near: Near?, -- CHANGED (Night review): near band (assignBands): nodes over the square split to near.maxLeaf
+	rings: RingContext?, -- CHANGED (Terrain polish): ring bands around the near square (assignBands)
+}
+
+--[[
+	CHANGED (Terrain polish): what the ring layout (planRings) needs: the camera, the engine limits TerrainMesh draws
+	a band within (bandScale) and the last plan's bounds (kept while still good: fewer rebuilds).
+]]
+export type RingContext = {
+	cam: Vec3d, -- body-relative camera
+	budget: number, -- studs: a band's box centre stays within this (engine culling)
+	farLimit: number, -- studs: a band's far end stays within this
+	partLimit: number, -- studs per part axis
+	previous: { number }?, -- ring bounds of the displayed plan
 }
 
 -- CHANGED (Night review): a right-handed tangent frame (body axes): x along the face lattice, y up, z = x cross y.
@@ -191,6 +250,7 @@ TerrainMath.MAX_BAND_LEAVES = MAX_BAND_LEAVES
 -- CHANGED (Night review): vertex indices of a chunk's four ground corners (bestAxes)
 local CORNER_VERTICES = { 1, CHUNK + 1, CHUNK * (CHUNK + 1) + 1, (CHUNK + 1) * (CHUNK + 1) }
 TerrainMath.RENDER_DROP = RENDER_DROP
+TerrainMath.SITE_SINK = SITE_SINK -- CHANGED (Terrain polish)
 
 local function smoothstep(e0: number, e1: number, v: number): number
 	local t = (v - e0) / (e1 - e0)
@@ -200,6 +260,77 @@ local function smoothstep(e0: number, e1: number, v: number): number
 		return 1
 	end
 	return t * t * (3 - 2 * t)
+end
+
+local function mix(r: number, g: number, b: number, c: { number }, w: number): (number, number, number)
+	return r + (c[1] - r) * w, g + (c[2] - g) * w, b + (c[3] - b) * w
+end
+
+--[[
+	CHANGED (Terrain polish): the drawn colour of a ground vertex (not the launch site): Biome's colour plus, on
+	Earth's land, dry patches on grass, a high-ground tint, bare soil on slopes and rock on steep ones; everywhere
+	brightness noise at three scales and a cavity shade (hollows darker, crests lighter: `cavity` is the vertex's
+	depth below its four neighbours' mean per metre of spacing), so the ground reads as shaped land instead of one
+	flat colour. Water only gets a little of the noise.
+]]
+local function groundColour(
+	bodyId: number,
+	kind: string,
+	dx: number,
+	dy: number,
+	dz: number,
+	r: number,
+	g: number,
+	b: number,
+	slope: number,
+	cavity: number,
+	height: number
+): (number, number, number)
+	local radius = Bodies.get(bodyId).Radius
+	local earth = bodyId == Bodies.HOMEWORLD
+	local amp = if earth then NOISE_SPREAD else NOISE_SPREAD * MOON_NOISE_AMP
+	local bright = 1
+	for index, wavelength in NOISE_WAVELENGTHS do
+		local f = radius / wavelength
+		local o = index * 5.3
+		bright += amp * NOISE_AMPS[index] * math.noise(dx * f + o, dy * f + 2 * o, dz * f + 3 * o)
+	end
+	if kind == "Ocean" then
+		bright = 1 + (bright - 1) * 0.3
+		return math.clamp(r * bright, 0, 1), math.clamp(g * bright, 0, 1), math.clamp(b * bright, 0, 1)
+	end
+	if earth then
+		if kind == "Grass" then
+			local f = radius / DRY_WAVELENGTH
+			local dry = math.clamp(math.noise(dx * f + 11.3, dy * f + 4.1, dz * f + 9.9) * NOISE_SPREAD * 2, 0, 1)
+			r, g, b = mix(r, g, b, DRY_COLOR, dry * DRY_MAX)
+		end
+		if kind == "Grass" or kind == "Forest" then
+			r, g, b = mix(r, g, b, HIGH_COLOR, smoothstep(HIGH_H0, HIGH_H1, height) * HIGH_MAX)
+		end
+		if kind ~= "Snow" then
+			r, g, b = mix(r, g, b, SOIL_COLOR, smoothstep(SOIL_SLOPE0, SOIL_SLOPE1, slope) * SOIL_MAX)
+		end
+		r, g, b = mix(r, g, b, ROCK_COLOR, smoothstep(ROCK_SLOPE0, ROCK_SLOPE1, slope))
+	end
+	bright *= 1 - CAVITY_SHADE * math.clamp(cavity / CAVITY_FULL, -1, 1)
+	return math.clamp(r * bright, 0, 1), math.clamp(g * bright, 0, 1), math.clamp(b * bright, 0, 1)
+end
+
+--[[
+	CHANGED (Terrain polish): how far (m) the drawn ground at unit direction (x, y, z) is sunk under the base's
+	ground plate: SITE_SINK where a quad `spacingCells` lattice cells wide around it lies under the plate, else 0.
+]]
+local function siteSink(config: Config, x: number, y: number, z: number, spacingCells: number): number
+	if config.bodyId ~= Bodies.HOMEWORLD or x <= 0 then
+		return 0
+	end
+	local inset = SITE_PLATE_HALF - spacingCells * config.cellArc * SITE_SINK_SPACINGS
+	local radius = config.radius
+	if math.abs(z) * radius / x <= inset and math.abs(y) * radius / x <= inset then
+		return SITE_SINK
+	end
+	return 0
 end
 
 --============================================================================
@@ -442,9 +573,14 @@ end
 
 -- Would any band hold over MAX_BAND_LEAVES?
 -- CHANGED (Night review): bands as assignBands lays them out (the near band too), not only one per level.
-local function crowded(config: Config, leaves: { Node }, bandCount: number, near: Near?): boolean
+-- CHANGED (Terrain polish): + ring bands (no layout fits: crowded)
+local function crowded(config: Config, leaves: { Node }, bandCount: number, near: Near?, rings: RingContext?): boolean
 	local perBand: { [number]: number } = {}
-	for _, band in TerrainMath.assignBands(config, leaves, bandCount, near) do
+	local assigned, _, fits = TerrainMath.assignBands(config, leaves, bandCount, near, rings)
+	if not fits then
+		return true
+	end
+	for _, band in assigned do
 		local count = (perBand[band] or 0) + 1
 		if count > MAX_BAND_LEAVES then
 			return true
@@ -465,7 +601,7 @@ function TerrainMath.select(config: Config, cam: Vec3d, params: Params, prevSpli
 	local tries = 1
 	local bandCount = params.bandCount or math.huge
 	while
-		(#leaves > params.maxLeaves or crowded(config, leaves, bandCount, params.near))
+		(#leaves > params.maxLeaves or crowded(config, leaves, bandCount, params.near, params.rings))
 		and tries < MAX_SELECT_RETRIES
 	do
 		splitK *= RETRY_FACTOR
@@ -561,6 +697,255 @@ function TerrainMath.nearOffset(near: Near, pos: Vec3d): (number, number)
 	return u, v
 end
 
+--============================================================================
+-- CHANGED (Terrain polish): ring bands
+--============================================================================
+--[[
+	Why rings: every band except the near one is drawn uniformly scaled down about the camera (bandScale), so it is
+	drawn NEARER than it is, by its factor k. Wherever a true-scale thing (the launch site, a craft, the near band's
+	own hills) is seen against such a band, the band covers it if k x (the band's distance there) is less than the
+	thing's distance. With one band per level of detail, the last band held every coarse level from ~5 km to the
+	horizon: k ~0.03-0.04, i.e. mountains 6 km away were drawn ~200 studs from the camera, in front of the launch
+	towers (Steamy's Studio screenshots), and the per-level rings drew their nearest ground at ~400-500 studs.
+	A part's size limit fixes k <= partLimit / (the band's box), so a band's nearest ground is drawn at most at
+	partLimit x (its nearest distance / its box): the best layout keeps every band's box small next to how far it
+	starts. planRings cuts the leaves outside the near square into rings by their distance from the near square's
+	centre (Chebyshev, in its tangent frame: leaves are squares in that frame, so rings are tight square annuli) and
+	places the cuts so that the smallest predicted "nearest drawn depth" of any ring (k x its nearest ground) is as
+	large as possible (a binary search over that depth with a greedy cut), within the band count and the leaves per
+	mesh. Everything true-scale nearer than that depth is never covered by a scaled band behind it.
+]]
+type RingAcc = {
+	minU: number,
+	maxU: number,
+	minV: number,
+	maxV: number,
+	top: number,
+	dmin: number,
+	dfar: number,
+	count: number,
+}
+
+type RingLeaf = {
+	c: number, -- Chebyshev distance of the leaf centre from the near origin (tangent, m)
+	u0: number, -- the leaf's square (tangent, m)
+	u1: number,
+	v0: number,
+	v1: number,
+	top: number, -- highest ground (m above the radius)
+	dmin: number, -- nearest distance from the camera (m, at least 1)
+	dfar: number, -- farthest distance from the camera (m)
+}
+
+local function ringLeaf(near: Near, cam: Vec3d, node: Node): RingLeaf
+	local u, v = nearCoords(near, node.cx, node.cy, node.cz)
+	local h = node.size * NEAR_SIZE_PAD / 2
+	local ex, ey, ez = node.cx - cam.x, node.cy - cam.y, node.cz - cam.z
+	local d = math.sqrt(ex * ex + ey * ey + ez * ez)
+	return {
+		c = math.max(math.abs(u), math.abs(v)),
+		u0 = u - h,
+		u1 = u + h,
+		v0 = v - h,
+		v1 = v + h,
+		top = node.top,
+		dmin = math.max(d - node.radius, 1),
+		dfar = d + node.radius,
+	}
+end
+
+local function ringAdd(acc: RingAcc, leaf: RingLeaf)
+	acc.minU = math.min(acc.minU, leaf.u0)
+	acc.maxU = math.max(acc.maxU, leaf.u1)
+	acc.minV = math.min(acc.minV, leaf.v0)
+	acc.maxV = math.max(acc.maxV, leaf.v1)
+	acc.top = math.max(acc.top, leaf.top)
+	acc.dmin = math.min(acc.dmin, leaf.dmin)
+	acc.dfar = math.max(acc.dfar, leaf.dfar)
+	acc.count += 1
+end
+
+local function ringEmpty(): RingAcc
+	return {
+		minU = math.huge,
+		maxU = -math.huge,
+		minV = math.huge,
+		maxV = -math.huge,
+		top = -math.huge,
+		dmin = math.huge,
+		dfar = 0,
+		count = 0,
+	}
+end
+
+-- The predicted nearest drawn depth (studs) of a ring: bandScale's factor (box from the leaf squares plus the
+-- sphere's drop, centre on the tangent plane) times its nearest ground.
+local function ringDepth(config: Config, near: Near, ctx: RingContext, acc: RingAcc): number
+	local reach = math.max(-acc.minU, acc.maxU, -acc.minV, acc.maxV)
+	local ext = math.max(
+		acc.maxU - acc.minU,
+		acc.maxV - acc.minV,
+		acc.top - config.minHeight + reach * reach / (2 * config.radius)
+	)
+	local uc, vc = (acc.minU + acc.maxU) / 2, (acc.minV + acc.maxV) / 2
+	local o, ax, az, cam = near.origin, near.axes.x, near.axes.z, ctx.cam
+	local dx = o.x + ax.x * uc + az.x * vc - cam.x
+	local dy = o.y + ax.y * uc + az.y * vc - cam.y
+	local dz = o.z + ax.z * uc + az.z * vc - cam.z
+	local k = TerrainMath.bandScale(
+		math.sqrt(dx * dx + dy * dy + dz * dz),
+		acc.dfar,
+		ext,
+		ctx.budget,
+		ctx.farLimit,
+		ctx.partLimit
+	)
+	return k * acc.dmin
+end
+
+-- Ring index (0-based) of distance c for ascending bounds.
+local function ringIndex(bounds: { number }, c: number): number
+	local index = 0
+	for _, b in bounds do
+		if c >= b then
+			index += 1
+		end
+	end
+	return index
+end
+
+--[[
+	Greedy cut of `leaves` (sorted by c) into rings whose predicted depth is at least `target`, at most
+	MAX_BAND_LEAVES each; leaves at the same c (RING_TIE) stay together. Returns the bounds, or nil when it takes more
+	than `maxRings` rings (or one group alone misses the target).
+]]
+local function greedyRings(
+	config: Config,
+	near: Near,
+	ctx: RingContext,
+	leaves: { RingLeaf },
+	target: number,
+	maxRings: number
+): { number }?
+	local bounds: { number } = {}
+	local acc: RingAcc? = nil
+	local n = #leaves
+	local i = 1
+	while i <= n do
+		local j = i
+		while j < n and leaves[j + 1].c - leaves[i].c <= RING_TIE do
+			j += 1
+		end
+		local trial = ringEmpty()
+		local current = acc
+		if current then
+			trial.minU, trial.maxU, trial.minV, trial.maxV = current.minU, current.maxU, current.minV, current.maxV
+			trial.top, trial.dmin, trial.dfar, trial.count = current.top, current.dmin, current.dfar, current.count
+		end
+		for k = i, j do
+			ringAdd(trial, leaves[k])
+		end
+		local fits = trial.count <= MAX_BAND_LEAVES and ringDepth(config, near, ctx, trial) >= target
+		if not fits and current then
+			-- close the ring before this group
+			table.insert(bounds, leaves[i].c)
+			if #bounds + 1 > maxRings then
+				return nil
+			end
+			trial = ringEmpty()
+			for k = i, j do
+				ringAdd(trial, leaves[k])
+			end
+			fits = trial.count <= MAX_BAND_LEAVES and ringDepth(config, near, ctx, trial) >= target
+		end
+		if not fits then
+			return nil
+		end
+		acc = trial
+		i = j + 1
+	end
+	return bounds
+end
+
+-- Predicted depth (smallest over the rings) and whether every ring fits a mesh, for given bounds.
+local function evaluateRings(
+	config: Config,
+	near: Near,
+	ctx: RingContext,
+	leaves: { RingLeaf },
+	bounds: { number },
+	maxRings: number
+): (boolean, number)
+	if #bounds + 1 > maxRings then
+		return false, 0
+	end
+	local accs: { RingAcc } = {}
+	for index = 1, #bounds + 1 do
+		accs[index] = ringEmpty()
+	end
+	for _, leaf in leaves do
+		ringAdd(accs[ringIndex(bounds, leaf.c) + 1], leaf)
+	end
+	local depth = math.huge
+	for _, acc in accs do
+		if acc.count > MAX_BAND_LEAVES then
+			return false, 0
+		elseif acc.count > 0 then
+			depth = math.min(depth, ringDepth(config, near, ctx, acc))
+		end
+	end
+	return true, depth
+end
+
+--[[
+	CHANGED (Terrain polish): ring bounds (ascending Chebyshev distances from the near origin, m; ring i holds the
+	leaves with bounds[i] <= c < bounds[i + 1]) for the leaves outside the near band, drawn with `maxRings` bands,
+	and their predicted nearest drawn depth (studs). nil when no layout fits (too many leaves: select() retries).
+	The previous bounds are kept while they still fit and reach RING_KEEP of the best depth.
+]]
+function TerrainMath.planRings(
+	config: Config,
+	nodes: { Node },
+	maxRings: number,
+	near: Near,
+	ctx: RingContext
+): ({ number }?, number)
+	local leaves: { RingLeaf } = table.create(#nodes)
+	for _, node in nodes do
+		table.insert(leaves, ringLeaf(near, ctx.cam, node))
+	end
+	table.sort(leaves, function(a: RingLeaf, b: RingLeaf): boolean
+		return a.c < b.c
+	end)
+	if #leaves == 0 then
+		return {}, RING_DEPTH_MAX
+	end
+	local best = greedyRings(config, near, ctx, leaves, 0, maxRings)
+	if best == nil then
+		return nil, 0
+	end
+	local lo, hi = 0, RING_DEPTH_MAX
+	for _ = 1, RING_SEARCH_STEPS do
+		local mid = (lo + hi) / 2
+		local cut = greedyRings(config, near, ctx, leaves, mid, maxRings)
+		if cut then
+			best, lo = cut, mid
+		else
+			hi = mid
+		end
+	end
+	local chosen = best :: { number }
+	local _, depth = evaluateRings(config, near, ctx, leaves, chosen, maxRings)
+	local previous = ctx.previous
+	if previous then
+		local fits, kept = evaluateRings(config, near, ctx, leaves, previous, maxRings)
+		if fits and kept >= RING_KEEP * depth then
+			return previous, kept
+		end
+	end
+	return chosen, depth
+end
+
 --[[
 	CHANGED (Night review): band id of every leaf (by key) when drawn with `bandCount` bands.
 	Without `near`: one band per level (id = the level), every level from mergeLevel up shares the last one.
@@ -568,15 +953,24 @@ end
 	(one part, at true scale while its centre is within the draw budget), every other leaf to a band per level as
 	above, shifted by one (id = 1 + level; the levels from the finest leaf of the selection + bandCount - 2 up share
 	the last one).
+	CHANGED (Terrain polish): with `near` and `rings`, the other leaves go to ring bands instead (id = 1 + ring index,
+	TerrainMath.planRings). Also returns the ring bounds (nil without rings) and whether a layout fits (false: too
+	many leaves for the bands; the ids are then per level).
 ]]
-function TerrainMath.assignBands(config: Config, leaves: { Node }, bandCount: number, near: Near?): { [number]: number }
+function TerrainMath.assignBands(
+	config: Config,
+	leaves: { Node },
+	bandCount: number,
+	near: Near?,
+	rings: RingContext?
+): ({ [number]: number }, { number }?, boolean)
 	local result: { [number]: number } = {}
 	if near == nil or bandCount < 2 then
 		local merge = TerrainMath.mergeLevel(config, leaves, bandCount)
 		for _, node in leaves do
 			result[node.key] = TerrainMath.bandOf(config, node, merge)
 		end
-		return result
+		return result, nil, true
 	end
 	local limit = near.maxLeaf * SIZE_TOLERANCE
 	local half = near.half
@@ -593,13 +987,24 @@ function TerrainMath.assignBands(config: Config, leaves: { Node }, bandCount: nu
 			table.insert(ring, node)
 		end
 	end
+	-- CHANGED (Terrain polish): ring bands
+	if rings then
+		local bounds = TerrainMath.planRings(config, ring, bandCount - 1, near, rings)
+		if bounds then
+			for _, node in ring do
+				local u, v = nearCoords(near, node.cx, node.cy, node.cz)
+				result[node.key] = NEAR_BAND + 1 + ringIndex(bounds, math.max(math.abs(u), math.abs(v)))
+			end
+			return result, bounds, true
+		end
+	end
 	-- the levels are counted from the finest of ALL leaves (not just these), so a few finest leaves crossing the
 	-- square's edge do not shift every band id by one (a plan would rebuild them all)
 	local merge = TerrainMath.mergeLevel(config, leaves, bandCount - 1)
 	for _, node in ring do
 		result[node.key] = NEAR_BAND + 1 + TerrainMath.bandOf(config, node, merge)
 	end
-	return result
+	return result, nil, rings == nil
 end
 
 TerrainMath.NEAR_BAND = NEAR_BAND
@@ -717,6 +1122,33 @@ function TerrainMath.bandScale(
 		k = MIN_SCALE
 	end
 	return k
+end
+
+--[[
+	CHANGED (Terrain polish): the factor each band is drawn at this frame. maxScales[i] is band i's largest factor
+	(bandScale), nearest[i] how near its ground comes (m). A band that fits at true scale stays so. The others are
+	drawn at the SAME factor - the smallest maximum among them (the outermost ring's) - so they keep their true
+	order among themselves (two bands scaled differently draw the farther one in front wherever the nearer one hides
+	it: distant sea and mountains showed through nearer hills, "see through the earth"), except that a band whose
+	ground starts within `protect` / that factor of the camera gets just the factor that draws that ground at
+	`protect` studs (so true-scale things nearer than `protect` are never covered by it), up to its maximum.
+]]
+function TerrainMath.bandScales(maxScales: { number }, nearest: { number }, protect: number): { number }
+	local floor = 1
+	for _, k in maxScales do
+		if k < TRUE_SCALE_FACTOR then
+			floor = math.min(floor, k)
+		end
+	end
+	local scales: { number } = table.create(#maxScales, 1)
+	for index, k in maxScales do
+		if k >= TRUE_SCALE_FACTOR then
+			scales[index] = k
+		else
+			scales[index] = math.min(k, math.max(floor, protect / math.max(nearest[index], 1)))
+		end
+	end
+	return scales
 end
 
 --[[
@@ -910,22 +1342,26 @@ function TerrainMath.buildChunk(config: Config, node: Node): Chunk
 			end
 			cx, cy, cz = cx / len, cy / len, cz / len
 			nx[v], ny[v], nz[v] = cx, cy, cz
-			local r, gg, bb = Biome.sample(bodyId, dx, dy, dz)
-			if
-				earth
-				and dx > 0
-				and math.abs(dy) <= SITE_PLATE_HALF * dx / radius
-				and math.abs(dz) <= SITE_PLATE_HALF * dx / radius
-			then
+			local r, gg, bb, kind = Biome.sample(bodyId, dx, dy, dz)
+			-- CHANGED (Terrain polish): the site test in metres of the site's tangent plane (sink below)
+			local siteE = if earth and dx > 0 then math.abs(dz) * radius / dx else math.huge
+			local siteN = if earth and dx > 0 then math.abs(dy) * radius / dx else math.huge
+			if siteE <= SITE_PLATE_HALF and siteN <= SITE_PLATE_HALF then
 				-- base-pocket axes at lat 0 / lon 0: east = universe +Z, north = universe +Y, up = +X
 				r, gg, bb = SITE_PLATE_COLOR[1], SITE_PLATE_COLOR[2], SITE_PLATE_COLOR[3]
-			elseif earth then
-				local rock = smoothstep(ROCK_SLOPE0, ROCK_SLOPE1, 1 - (cx * dx + cy * dy + cz * dz))
-				if rock > 0 then
-					r += (ROCK_COLOR[1] - r) * rock
-					gg += (ROCK_COLOR[2] - gg) * rock
-					bb += (ROCK_COLOR[3] - bb) * rock
-				end
+				-- CHANGED (Terrain polish): under the base's 20-stud ground plate the drawn ground is sunk SITE_SINK m
+				-- (every triangle touching such a vertex lies under the plate: it is a full quad spacing inside its
+				-- edge), so it can never z-fight the plate or rise through it when drawn scaled about the camera
+				local sink = siteSink(config, dx, dy, dz, s)
+				px[v] -= dx * sink
+				py[v] -= dy * sink
+				pz[v] -= dz * sink
+			else
+				-- CHANGED (Terrain polish): slope, cavity, height and noise detail (groundColour)
+				local slope = 1 - (cx * dx + cy * dy + cz * dz)
+				local cavity = (hx[ia] + hx[ib] + hx[ja] + hx[jb]) / 4 - hx[idx]
+				r, gg, bb =
+					groundColour(bodyId, kind, dx, dy, dz, r, gg, bb, slope, cavity / (s * config.cellArc), hx[idx])
 			end
 			cr[v], cg[v], cb[v] = r, gg, bb
 		end
@@ -1079,6 +1515,128 @@ function TerrainMath.chunkVertex(
 		buffer.readf32(data, o + 24),
 		buffer.readf32(data, o + 28),
 		buffer.readf32(data, o + 32)
+end
+
+--============================================================================
+-- CHANGED (Terrain polish): band seams (stitchCode / stitchChunk)
+--============================================================================
+--[[
+	Every band but the near one is drawn scaled down about the camera, nearer than it is, and each band's skirts
+	hang below its edges. The skirt on a band's inner edge faces the camera, and since its band is drawn nearer
+	than the finer band inside it, it covered that band's ground just inside the seam: walls and stripes (in the
+	ground's colour, or blue along coasts) along every band boundary, "see through the earth". So at a seam between
+	two bands:
+	  * the leaf on the outer side (higher band id) keeps only a SKIRT_INNER skirt on that edge, and
+	  * the finer of the two leaves has its edge vertices moved onto the coarser leaf's straight edge (stitched), so
+	    the two edges are the same line: no crack to cover, in truth or on screen (both bands are scaled about the
+	    camera: points of one line stay on one line).
+	A leaf's code packs, per edge (1..4: u-, u+, v-, v+), the stitch (log2 of how much coarser the neighbour is; 0 =
+	none) plus 8 if the edge only keeps the short skirt: code = sum(edgeCode * 16^(edge - 1)).
+]]
+function TerrainMath.stitchCode(stitchLog2: { number }, inner: { boolean }): number
+	local code = 0
+	for edge = 1, 4 do
+		local e = math.clamp(stitchLog2[edge] or 0, 0, 7) + (if inner[edge] then 8 else 0)
+		code += e * 16 ^ (edge - 1)
+	end
+	return code
+end
+
+--[[
+	A chunk with its seams handled by `code` (stitchCode): a new Chunk (same triangles, new vertex buffer and box);
+	the chunk itself when code is 0. Stitched edge vertices lie on the straight line between the coarser
+	neighbour's lattice vertices (its edge, RENDER_DROP below the ground like every drawn vertex); every skirt is
+	rebuilt below its (moved) edge, short on edges marked inner.
+]]
+function TerrainMath.stitchChunk(config: Config, node: Node, chunk: Chunk, code: number): Chunk
+	if code == 0 then
+		return chunk
+	end
+	local bodyId, radius = config.bodyId, config.radius
+	local face, i0, j0, s = node.face, node.i0, node.j0, node.stride
+	local data = buffer.create(buffer.len(chunk.data))
+	buffer.copy(data, 0, chunk.data)
+	local ox, oy, oz = chunk.ox, chunk.oy, chunk.oz
+	local surfaceCount = (CHUNK + 1) * (CHUNK + 1)
+	-- a vertex of the coarser neighbour (spacing `cells`), drawn as buildChunk draws it
+	local function drawnPoint(i: number, j: number, cells: number): (number, number, number)
+		local x, y, z = SurfaceHeight.nodeDirection(bodyId, face, i, j)
+		local r = radius + SurfaceHeight.nodeHeight(bodyId, face, i, j) - RENDER_DROP - siteSink(config, x, y, z, cells)
+		return x * r, y * r, z * r
+	end
+	for edge = 1, 4 do
+		local e = math.floor(code / 16 ^ (edge - 1)) % 16
+		local stitch = e % 8
+		local inner = e >= 8
+		if stitch == 0 and not inner then
+			continue
+		end
+		local span = s * 2 ^ stitch -- the coarser neighbour's vertex spacing along this edge (lattice cells)
+		local skirt = if inner then SKIRT_INNER else chunk.skirt
+		local first = surfaceCount + (edge - 1) * (CHUNK + 1)
+		for k = 0, CHUNK do
+			local a, b = edgeVertex(edge, k)
+			local v = a * (CHUNK + 1) + b + 1
+			local o = (v - 1) * VERTEX_BYTES
+			local i, j = i0 + a * s, j0 + b * s
+			local x, y, z = SurfaceHeight.nodeDirection(bodyId, face, i, j)
+			local px, py, pz = buffer.readf32(data, o), buffer.readf32(data, o + 4), buffer.readf32(data, o + 8)
+			if stitch > 0 then
+				-- along the edge: j on edges 1 / 2, i on edges 3 / 4
+				local along = if edge <= 2 then j else i
+				local rest = along % span
+				if rest ~= 0 then
+					local t0 = along - rest
+					local ax, ay, az, bx, by, bz
+					if edge <= 2 then
+						ax, ay, az = drawnPoint(i, t0, span)
+						bx, by, bz = drawnPoint(i, t0 + span, span)
+					else
+						ax, ay, az = drawnPoint(t0, j, span)
+						bx, by, bz = drawnPoint(t0 + span, j, span)
+					end
+					local t = rest / span
+					px = ax + (bx - ax) * t - ox
+					py = ay + (by - ay) * t - oy
+					pz = az + (bz - az) * t - oz
+					buffer.writef32(data, o, px)
+					buffer.writef32(data, o + 4, py)
+					buffer.writef32(data, o + 8, pz)
+				end
+			end
+			local so = (first + k) * VERTEX_BYTES
+			buffer.writef32(data, so, px - x * skirt)
+			buffer.writef32(data, so + 4, py - y * skirt)
+			buffer.writef32(data, so + 8, pz - z * skirt)
+		end
+	end
+	local minX, minY, minZ = math.huge, math.huge, math.huge
+	local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
+	for v = 1, chunk.vertexCount do
+		local o = (v - 1) * VERTEX_BYTES
+		local x, y, z = buffer.readf32(data, o), buffer.readf32(data, o + 4), buffer.readf32(data, o + 8)
+		minX, maxX = math.min(minX, x), math.max(maxX, x)
+		minY, maxY = math.min(minY, y), math.max(maxY, y)
+		minZ, maxZ = math.min(minZ, z), math.max(maxZ, z)
+	end
+	return {
+		key = chunk.key,
+		depth = chunk.depth,
+		ox = ox,
+		oy = oy,
+		oz = oz,
+		vertexCount = chunk.vertexCount,
+		triangleCount = chunk.triangleCount,
+		data = data,
+		tris = chunk.tris,
+		skirt = chunk.skirt,
+		minX = minX,
+		minY = minY,
+		minZ = minZ,
+		maxX = maxX,
+		maxY = maxY,
+		maxZ = maxZ,
+	}
 end
 
 --[[

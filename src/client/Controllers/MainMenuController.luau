@@ -17,7 +17,9 @@
 	  Play    instant: the menu content and the scene fade to black (CLOSE_FADE_S), the camera goes back to the
 	          character (CameraType Custom, CameraSubject = the Humanoid), controls and core GUIs come back,
 	          UIState.setMenuOpen(false), the scene is parked, and the black fades away (REVEAL_FADE_S). The player is
-	          already at their plot (the server spawns them there).
+	          already at their plot (the server spawns them there). CHANGED (Terrain polish): the black first waits
+	          (TERRAIN_WAIT_S at most) until the ground around the base is drawn as meshes (Surface.isReady), so the
+	          game never opens on the blocky placeholder plates.
 	  Reopen  UIState.onMenuRequested (the builder's Menu button): ignored (with a toast) while the local character
 	          sits in a seat, a flight is active (piloting, a flight pocket) or the map view is open.
 	Keys: Enter = Play while the menu shows and no dialog is open. Settings opens UI/SettingsPanel; Credits /
@@ -44,6 +46,7 @@ local MenuScene = require(script.Parent.Parent.Render.MenuScene)
 local Kit = require(script.Parent.Parent.UI.Kit)
 local PocketController = require(script.Parent.PocketController)
 local SettingsPanel = require(script.Parent.Parent.UI.SettingsPanel)
+local Surface = require(script.Parent.Parent.Render.Surface) -- CHANGED (Terrain polish)
 local Theme = require(script.Parent.Parent.UI.Theme)
 local UIState = require(script.Parent.Parent.UI.UIState)
 
@@ -55,6 +58,9 @@ local REOPEN_FADE_OUT_S = 0.3 -- to black before the scene appears on a reopen
 local REOPEN_FADE_IN_S = 0.6
 local CLOSE_FADE_S = 0.3 -- Play: to black ...
 local REVEAL_FADE_S = 0.35 -- ... then from black at the plot (about 0.6 s in all)
+-- CHANGED (Terrain polish): the black stays until the ground around the base is drawn as meshes (no blocky plates
+-- first), at most this long
+local TERRAIN_WAIT_S = 6
 local CONTENT_FADE_S = Theme.Tween.Fade
 local PLAY_KEYS = { Enum.KeyCode.Return, Enum.KeyCode.KeypadEnter }
 local HIDDEN_CORE_GUIS = { Enum.CoreGuiType.Backpack, Enum.CoreGuiType.Health, Enum.CoreGuiType.PlayerList }
@@ -215,11 +221,21 @@ function MainMenuController.play()
 		end
 		restoreCoreGuis()
 		UIState.setMenuOpen(false) -- CHANGED (Phase 11 review): also switches the character controls back on
-		v.fadeCover(0, REVEAL_FADE_S, function()
-			if is("Closing") then
-				state = "Closed"
-				v.setEnabled(false)
+		-- CHANGED (Terrain polish): stay black until the base's ground meshes are on screen (TERRAIN_WAIT_S at most)
+		task.spawn(function()
+			local started = os.clock()
+			repeat
+				task.wait()
+			until not is("Closing") or os.clock() - started >= TERRAIN_WAIT_S or Surface.isReady()
+			if not is("Closing") then
+				return
 			end
+			v.fadeCover(0, REVEAL_FADE_S, function()
+				if is("Closing") then
+					state = "Closed"
+					v.setEnabled(false)
+				end
+			end)
 		end)
 	end)
 end

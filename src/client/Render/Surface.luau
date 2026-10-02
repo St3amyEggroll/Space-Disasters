@@ -40,6 +40,17 @@
 	  * Props: only chunks over true-scale ground are drawn (SurfaceProps' ground filter, TerrainMesh.isTrueScaleAt),
 	    re-checked whenever the displayed terrain bands change (TerrainMesh.version).
 
+	CHANGED (Terrain polish): Steamy's Studio test ("the base is broken"): the copy was drawn at the factor of the
+	ground under it, but the hills and mountains behind the site are drawn at smaller factors (nearer than the
+	site), so they covered it (pieces of the site "stuck in" a ridge), and in the base pocket there was no copy at
+	all: when the camera was far from the site (on foot outside it, or after a jump) the ground under the real base
+	was a scaled band, drawn (1 - k) x the camera height above the base's plate, covering pads, plots and roads.
+	Now (siteWantedScale): when the ground under the site is at true scale nothing changes (the real base, or the
+	copy at true scale in a flight pocket, with a craft on its pad); when it is scaled, the copy is drawn in every
+	pocket (in the base pocket it covers the real base exactly: same image, nearer) at the smaller of that factor
+	and TerrainMesh.depthScale, so nothing behind the site is ever drawn in front of it. Its ground plate is thin
+	(the real one's 20-stud sides would show as a dark rim). Surface.isReady (the main menu's Play fade).
+
 	Positions are kept in doubles relative to their body and converted with Frames only after the reference is
 	subtracted (invariant I1).
 
@@ -51,6 +62,7 @@
 		Surface.prebuild(ctx)                               -- CHANGED (Phase 8): build the ground for ctx's camera
 		                                                    -- without drawing it (the main menu builds the base's)
 		Surface.summary(): string                           -- CHANGED (Phase 8): F3 debug line
+		Surface.isReady(): boolean                          -- CHANGED (Terrain polish): ground meshes on screen
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -83,6 +95,10 @@ local PREBUILD_FACTOR = 1.4 -- CHANGED (Phase 8): build the terrain below this x
 -- CHANGED (Night review): the copy drawn scaled like the terrain under it
 local SITE_SCALE_RATIO = 0.94 -- rescale steps (TerrainMath.scaleStep)
 local SITE_KEEP_HALF = 600 -- m: TerrainMesh keeps this square around the site inside its near band while it can
+-- CHANGED (Terrain polish): the copy whenever the ground under the site is scaled (the base pocket too)
+local SITE_TRUE_SCALE = 0.9999 -- terrain factor at or above this: the site's ground is drawn at true scale
+local SITE_REACH = 610 -- m from the site centre to its farthest part (plate corner +-420, 80-stud towers)
+local SITE_COPY_PLATE_THICKNESS = 0.6 -- studs: the copy's ground plate (the real one is 20 thick, sunk in the ground)
 
 -- CHANGED (Phase 8): props per Quality tier: draw radius (m; at most ~0.7 x TerrainMesh's near-disc radius, so props
 -- only stand on true-scale terrain), part cap and density (share of Biome's props per hectare)
@@ -169,6 +185,7 @@ type SiteScaleRecords = {
 }
 local siteRecords: SiteScaleRecords? = nil
 local siteScale = 1 -- the scale the copy is built at now
+local siteTier = "" -- CHANGED (Terrain polish): the tier whose content the copy was built with
 local siteLastCamera: Vector3? = nil
 
 --============================================================================
@@ -188,6 +205,11 @@ local function buildSiteCopy(tier: string): (Model, BasePart)
 	end
 	local rootPart = model.PrimaryPart
 	assert(rootPart, "HomeBase.build() has no PrimaryPart")
+	-- CHANGED (Terrain polish): a thin ground plate (same top). The copy is drawn in front of the terrain around it
+	-- when scaled, so the real plate's 20-stud sides (hidden in the ground at the base) would show as a dark rim.
+	local plateTop = rootPart.CFrame * CFrame.new(0, rootPart.Size.Y / 2, 0)
+	rootPart.Size = Vector3.new(rootPart.Size.X, SITE_COPY_PLATE_THICKNESS, rootPart.Size.Z)
+	rootPart.CFrame = plateTop * CFrame.new(0, -SITE_COPY_PLATE_THICKNESS / 2, 0)
 	local rootCFrame = rootPart.CFrame
 	local doomed: { Instance } = {}
 	for _, d in model:GetDescendants() do
@@ -300,23 +322,53 @@ local function destroySite()
 	siteScale = 1
 end
 
+--[[
+	CHANGED (Terrain polish): which copy to draw (nil: none) and at what wanted scale.
+	  * the ground under the site at true scale: the base pocket needs nothing (the real base is right); elsewhere
+	    the copy is drawn at true scale (a craft on its pad stands on it)
+	  * the ground under the site drawn scaled about the camera (the camera is far from the site, or high above
+	    it): the real base would be drawn behind that ground (it hides the base's lower (1 - k) x camera height:
+	    Steamy's "a flat green surface slices through the base"), so the copy is drawn in every pocket, scaled
+	    like that ground or less: TerrainMesh.depthScale keeps it in front of every scaled band behind it (the
+	    hills and mountains drawn nearer than they are), so nothing behind the site covers it
+]]
+local function siteWantedScale(terrainScale: number, inBase: boolean, siteDistance: number): number?
+	if terrainScale >= SITE_TRUE_SCALE then
+		return if inBase then nil else 1
+	end
+	return math.min(terrainScale, TerrainMesh.depthScale(siteDistance + SITE_REACH))
+end
+
 local function updateSite(ctx: RenderContext.RenderContext, surfaceMode: boolean)
 	local parent = root
 	-- CHANGED (Night review): shown over scaled terrain too (drawn scaled like it, below); the terrain under it only
 	-- has to be drawn at all (scaleAt nil: no band holds it, e.g. beyond the horizon)
+	-- CHANGED (Terrain polish): in the base pocket too, whenever the ground under the site is scaled
+	local siteDistanceSq = Vec3d.distanceSq(ctx.cameraDominant, SITE_POS)
 	local wanted = parent ~= nil
 		and surfaceMode
-		and ctx.pocketId ~= BASE_POCKET_ID
 		and ctx.dominantBodyId == Bodies.HOMEWORLD
-		and Vec3d.distanceSq(ctx.cameraDominant, SITE_POS) <= SITE_VIEW_DISTANCE * SITE_VIEW_DISTANCE
+		and siteDistanceSq <= SITE_VIEW_DISTANCE * SITE_VIEW_DISTANCE
 	local terrainScale = if wanted then TerrainMesh.scaleAt(SITE_POS, SITE_MARGIN) else nil
 	if not wanted or parent == nil or terrainScale == nil then
 		hideSite()
 		return
 	end
+	local wantedScale = siteWantedScale(terrainScale, ctx.pocketId == BASE_POCKET_ID, math.sqrt(siteDistanceSq))
+	if wantedScale == nil then
+		hideSite()
+		return
+	end
+	-- CHANGED (Terrain polish): in the base pocket the copy covers the real base, so it carries all of it (plots
+	-- and decor too, whatever the tier); elsewhere the tier decides as before
+	local contentTier = if ctx.pocketId == BASE_POCKET_ID then SITE_FULL_TIER else Quality.tier()
+	if siteModel ~= nil and siteTier ~= contentTier then
+		destroySite()
+	end
 	local model, rootPart = siteModel, siteRoot
 	if model == nil or rootPart == nil then
-		local built, builtRoot = buildSiteCopy(Quality.tier()) -- CHANGED (Night review)
+		local built, builtRoot = buildSiteCopy(contentTier) -- CHANGED (Night review)
+		siteTier = contentTier -- CHANGED (Terrain polish)
 		model, rootPart = built, builtRoot
 		siteModel, siteRoot = built, builtRoot
 		siteRootBase = builtRoot.CFrame
@@ -326,7 +378,8 @@ local function updateSite(ctx: RenderContext.RenderContext, surfaceMode: boolean
 	end
 	assert(model and rootPart)
 	-- CHANGED (Night review): drawn like the terrain under it (at or a step in front of its scale factor)
-	local scale = TerrainMath.scaleStep(terrainScale, siteScale, SITE_SCALE_RATIO)
+	-- CHANGED (Terrain polish): ... and in front of every scaled band behind it (siteWantedScale)
+	local scale = TerrainMath.scaleStep(wantedScale, siteScale, SITE_SCALE_RATIO)
 	local records = siteRecords
 	if scale ~= siteScale and records then
 		applySiteScale(records, scale)
@@ -409,6 +462,12 @@ end
 -- CHANGED (Phase 8): builds (without drawing) the ground around ctx's camera; the main menu calls this for the base.
 function Surface.prebuild(ctx: RenderContext.RenderContext)
 	TerrainMesh.update(ctx, false, true)
+end
+
+-- CHANGED (Terrain polish): whether the ground is on screen as meshes (or can only be plates); the main menu holds
+-- its Play fade on it.
+function Surface.isReady(): boolean
+	return TerrainMesh.isReady()
 end
 
 -- CHANGED (Phase 8): F3 debug line.

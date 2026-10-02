@@ -47,6 +47,8 @@
 	  Biome.reliefFields(bodyId, x, y, z)  -> (ee, mountain) on Earth, (mare, highland variation) on Mun
 	  Biome.craterSum(x, y, z, visit)      -> sum of visit(t, radius, scale) over the Mun craters reaching (x, y, z)
 	Colours are unchanged.
+	CHANGED (Terrain polish): the ridge field's lines are rounded (smooth |n|), and the mountains are kept out of a
+	plain around the launch site (SITE_CALM_INNER_M / SITE_CALM_OUTER_M).
 ]]
 
 local Bodies = require(script.Parent.Parent.Config.Bodies)
@@ -84,6 +86,7 @@ local K_DRY_BAND_STRENGTH = 0.3
 local K_EQUATOR_WET = 0.08 -- extra moisture at the equator
 local K_RIDGE_FREQ = 2.7
 local K_RIDGE_OCTAVES = 3
+local K_RIDGE_SOFT = 0.12 -- CHANGED (Terrain polish): rounds the ridge lines (smooth |n|: no knife-edge creases)
 local K_HEAT_NOISE_FREQ = 3.1
 local K_HEAT_NOISE = 0.05 -- noisy polar-cap edge
 -- Earth: per-pixel detail
@@ -123,6 +126,12 @@ local SITE_SEA_BIAS = 0.45
 local SITE_ELEV = 0.13 -- elevation (above sea) forced at the site
 local SITE_MOIST = 0.48
 local SITE_RIDGE = 0.1
+-- CHANGED (Terrain polish): no mountains within SITE_CALM_INNER_M of the pad, back to the natural ridges by
+-- SITE_CALM_OUTER_M. The site sits in a broad plain: from the ground there, the curvature of the 60 km planet hides
+-- everything past ~4 km, so no far (scaled) terrain band is ever drawn behind the base (Render/TerrainMesh), and
+-- the first mountains rise near the horizon instead of right behind the pads.
+local SITE_CALM_INNER_M = 11000
+local SITE_CALM_OUTER_M = 18000
 
 -- Earth colours (linear 0..1 RGB, stylised)
 local C_DEEP = { 0.06, 0.2, 0.47 }
@@ -420,10 +429,13 @@ local function fbm(x: number, y: number, z: number, octaves: number, gain: numbe
 end
 
 -- Ridged fractal in [0, 1]: 1 on the ridge lines.
+-- CHANGED (Terrain polish): |n| is smoothed (sqrt(n^2 + s^2) - s), so the ridge lines (and the mountains Relief
+-- raises on them) are rounded instead of knife-edged
 local function ridged(x: number, y: number, z: number, octaves: number): number
 	local sum, amp, norm = 0, 1, 0
 	for _ = 1, octaves do
-		local n = 1 - math.abs(noise3(x, y, z))
+		local v = noise3(x, y, z)
+		local n = 1 - (math.sqrt(v * v + K_RIDGE_SOFT * K_RIDGE_SOFT) - K_RIDGE_SOFT)
 		sum += amp * n * n
 		norm += amp
 		x = x * LACUNARITY + OCTAVE_SHIFT
@@ -471,6 +483,8 @@ local siteLandRadius = SITE_LAND_RADIUS_M / homeRadius
 local seaAngle = SITE_SEA_OFFSET_M / homeRadius
 local seaX, seaZ = math.cos(seaAngle), math.sin(seaAngle) -- east of lat 0 / lon 0 is +Z
 local seaRadius = SITE_SEA_RADIUS_M / homeRadius
+local siteCalmInner = SITE_CALM_INNER_M / homeRadius -- CHANGED (Terrain polish)
+local siteCalmOuter = SITE_CALM_OUTER_M / homeRadius
 
 -- (elevation above sea level, moisture ~0..1, ridge 0..1, heat ~0 at the poles .. 1 at the equator)
 local function earthFields(x: number, y: number, z: number): (number, number, number, number)
@@ -507,6 +521,11 @@ local function earthFields(x: number, y: number, z: number): (number, number, nu
 		elev += (SITE_ELEV - elev) * flat
 		moist += (SITE_MOIST - moist) * flat
 		ridge += (SITE_RIDGE - ridge) * flat
+	end
+	-- CHANGED (Terrain polish): the mountain-free plain around the site
+	local calm = smoothstep(siteCalmOuter, siteCalmInner, siteDist)
+	if calm > 0 then
+		ridge += (SITE_RIDGE - ridge) * calm
 	end
 	return elev, moist, ridge, heat
 end
