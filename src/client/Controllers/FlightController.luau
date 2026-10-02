@@ -115,6 +115,8 @@ local CAMERA_UP_BLEND_HEIGHT = 3000 -- m above that over which up blends to the 
 local SOLAR_PLANE_NORMAL = Vector3.yAxis -- universe axes: every orbit lies in the XZ plane
 -- CHANGED (Physics feel): camera speed cues (ChaseCamera zoom fit and shake)
 local CAMERA_SHAKE_GROUND_HEIGHT = 120 -- m above the ground where the extra near-ground shake has faded out
+-- CHANGED (Night review): studs the camera's orbit centre (CoM) may move before the craft size is recomputed
+local CAMERA_SIZE_CENTRE_STEP = 0.5
 -- CHANGED (Phase 5): rails
 local RAILS_IDLE_TIME = GameConfig.RAILS_IDLE_TIME
 local RAILS_RETRY_S = GameConfig.RAILS_RETRY_S
@@ -827,17 +829,38 @@ local function cameraUp(frame: Frames.Frame): Vector3
 end
 
 -- CHANGED (Physics feel): bounding radius (studs) of the seat's craft, from its design (cached per model).
+-- CHANGED (Night review): the radius about the camera's ORBIT CENTRE (the pilot's centre of mass, else the root
+-- block's centre, as cameraTarget uses): the farthest block corner from it (CraftDesign.reachFrom). Half the bounding
+-- box's diagonal was only right about the box's centre, so ChaseCamera's zoom cap let an off-centre stack reach past
+-- the true-scale zone. Recomputed when the model, the design (staging) or the orbit centre (fuel burn) changes.
 local cameraSizeModel: Model? = nil
+local cameraSizeDesign: CraftDesign.Design? = nil
+local cameraSizeCentre = Vector3.zero
 local cameraSizeValue = 0
 local function cameraCraftSize(seatInfo: SeatInfo): number
 	local model = seatInfo.craftModel
-	if model ~= cameraSizeModel then
-		local design = if sim and craftId == seatInfo.craftId
-			then (sim :: Craft).physics.design
-			else CraftBuilder.readDesign(model)
-		local minV, maxV = CraftDesign.bounds(design)
+	local own = if sim and craftId == seatInfo.craftId then sim :: Craft else nil
+	local design = if own then own.physics.design else cameraSizeDesign
+	if model ~= cameraSizeModel or design == nil then
+		design = CraftBuilder.readDesign(model)
+	end
+	local d = design :: CraftDesign.Design
+	local centre: Vector3
+	if own then
+		centre = own.physics.originCenter + own.physics.com
+	else
+		local root = CraftDesign.rootBlock(d)
+		centre = if root then CraftDesign.blockCenter(root) * CraftDesign.GRID else Vector3.zero
+	end
+	if
+		model ~= cameraSizeModel
+		or d ~= cameraSizeDesign
+		or (centre - cameraSizeCentre).Magnitude > CAMERA_SIZE_CENTRE_STEP
+	then
 		cameraSizeModel = model
-		cameraSizeValue = (maxV - minV).Magnitude * CraftDesign.GRID / 2
+		cameraSizeDesign = d
+		cameraSizeCentre = centre
+		cameraSizeValue = CraftDesign.reachFrom(d, centre)
 	end
 	return cameraSizeValue
 end

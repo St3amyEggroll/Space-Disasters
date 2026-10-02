@@ -60,6 +60,10 @@ local EvaService = {}
 local lostSince: { [Player]: number } = {}
 local tokens: { [Player]: { amount: number, time: number } } = {}
 local lastBoard: { [Player]: number } = {}
+-- CHANGED (Night review): the helmet light each player last asked for. The client sends it once when an EVA starts,
+-- usually before the server counts him as on EVA or has built his jetpack (next upkeep), so it was dropped and
+-- nobody else saw the light. Now it is remembered and applied when the jetpack is built.
+local lastLight: { [Player]: boolean } = {}
 local accumulator = 0
 
 --============================================================================
@@ -192,7 +196,8 @@ local function jetpackOf(character: Model?): Model?
 	return if found and found:IsA("Model") then found else nil
 end
 
-local function addJetpack(character: Model)
+-- CHANGED (Night review): `light` = the helmet light the player last asked for (lastLight)
+local function addJetpack(character: Model, light: boolean)
 	if jetpackOf(character) then
 		return
 	end
@@ -201,6 +206,7 @@ local function addJetpack(character: Model)
 		return
 	end
 	local model = buildJetpack()
+	model:SetAttribute("Light", light)
 	local pack = model.PrimaryPart :: BasePart
 	-- every part was built around the identity: move them all onto the torso's back
 	local place = torso.CFrame * CFrame.new(0, 0, torso.Size.Z / 2 + PACK_SIZE.Z / 2)
@@ -308,7 +314,13 @@ local function onEvaInput(player: Player, kind: unknown, on: unknown)
 	if (kind ~= "Thrust" and kind ~= "Light") or type(on) ~= "boolean" then
 		return
 	end
-	if not allow(player) or not BubbleService.isEva(player) then
+	if not allow(player) then
+		return
+	end
+	if kind == "Light" then
+		lastLight[player] = on :: boolean -- CHANGED (Night review): kept for the next jetpack (addJetpack)
+	end
+	if not BubbleService.isEva(player) then
 		return
 	end
 	local model = jetpackOf(player.Character)
@@ -346,7 +358,7 @@ local function upkeep()
 		local character = player.Character
 		if BubbleService.isEva(player) then
 			if character then
-				addJetpack(character)
+				addJetpack(character, lastLight[player] == true)
 			end
 			if isLost(player) then
 				local since = lostSince[player]
@@ -381,6 +393,7 @@ function EvaService.Start()
 		lostSince[player] = nil
 		tokens[player] = nil
 		lastBoard[player] = nil
+		lastLight[player] = nil -- CHANGED (Night review)
 	end)
 	RunService.Heartbeat:Connect(function(dt: number)
 		accumulator += dt

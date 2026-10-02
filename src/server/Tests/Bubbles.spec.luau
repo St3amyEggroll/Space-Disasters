@@ -310,11 +310,19 @@ return function(t: TestKit.Context)
 			crafts = { craft(30, 5, 0, 0) },
 			astronauts = { astronaut(100, 5, 0, false) },
 		}, {}, "his solo pocket is not re-pointed while he settles")
+		-- CHANGED (Night review): was "an unsettled astronaut keeps no craft" (DropCraft). His position is unknown
+		-- while he settles and he may be right beside the craft (just joined, or pinned by a repoint / rebase), so
+		-- an uncrewed secondary craft of his pocket is kept until he settles
 		expectActions({
 			pockets = { craftPocket(1, 10, 0, 2) },
 			crafts = { craft(10, 1, 0, 1), craft(30, 1, SPLIT + 50, 0) },
-			astronauts = { astronaut(100, 1, SPLIT + 40, false) },
-		}, { { kind = "DropCraft", craftId = 30 } }, "an unsettled astronaut keeps no craft")
+			astronauts = { astronaut(100, 1, 0, false) },
+		}, {}, "an unsettled astronaut keeps the pocket's crafts until he settles")
+		expectActions({
+			pockets = { craftPocket(1, 10, 0, 2), craftPocket(2, 20, 5 * SPLIT, 1) },
+			crafts = { craft(10, 1, 0, 1), craft(30, 1, SPLIT + 50, 0), craft(20, 2, 5 * SPLIT, 1) },
+			astronauts = { astronaut(100, 2, 5 * SPLIT, false) },
+		}, { { kind = "DropCraft", craftId = 30 } }, "one unsettled in ANOTHER pocket keeps nothing here")
 		expectActions({
 			pockets = { soloPocket(5, 100, 0) },
 			crafts = { craft(30, nil, 100, 0, true) },

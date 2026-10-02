@@ -5,6 +5,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TestKit = require(script.Parent.TestKit)
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
+local Eva = require(ReplicatedStorage.Shared.Sim.Eva) -- CHANGED (Night review): the level-ground rule
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 local Kepler = require(ReplicatedStorage.Shared.Sim.Kepler)
@@ -48,21 +49,54 @@ return function(t: TestKit.Context)
 		t.expectNear((rot.UpVector - expected.UpVector).Magnitude, 0, 1e-6)
 	end)
 
-	t.test("SURFACE_ALIGNED: the reference is the ground under the astronaut, up = the tile's normal", function()
+	-- CHANGED (Night review): up is the radial up at the ground point (was the terrain triangle's normal)
+	t.test("SURFACE_ALIGNED: the reference is the ground under the astronaut, up = the radial up", function()
 		local body = Bodies.get(Bodies.MOON)
 		local dir = Vec3d.normalize(Vec3d.new(0.2, 0.5, -0.7))
 		local feet = Vec3d.scale(dir, body.Radius + 40)
 		local ref = PocketFrames.solo("SURFACE_ALIGNED", Bodies.MOON, feet, Vec3d.new(5, 5, 5), 50)
-		local h, up = SurfaceHeight.height(Bodies.MOON, ref.pos)
+		local h = SurfaceHeight.height(Bodies.MOON, ref.pos)
 		t.expectNear(h, 0, 1e-6, "on the ground")
-		t.expectNear((ref.rot.UpVector - Vec3d.toVector3(up)).Magnitude, 0, 1e-5, "pocket up = ground normal")
+		local radial = Vec3d.normalize(ref.pos)
+		t.expectNear((ref.rot.UpVector - Vec3d.toVector3(radial)).Magnitude, 0, 1e-5, "pocket up = radial up")
 		local pos, vel = PocketFrames.referenceAt(ref, 5000)
 		t.expectNear(Vec3d.distance(pos, ref.pos), 0, 1e-12, "fixed on the ground")
 		t.expectEqual(Vec3d.length(vel), 0)
 		-- the ground point is pocket y = 0, like the base pocket
 		local frame = Frames.new(ref.bodyId, pos, ref.rot, SLOT)
 		local ws = Frames.pointToWorkspace(frame, feet)
-		t.expectNear(ws.Y - SLOT.Y, Vec3d.dot(Vec3d.sub(feet, ref.pos), up), WS_TOLERANCE, "height is pocket Y")
+		t.expectNear(ws.Y - SLOT.Y, Vec3d.dot(Vec3d.sub(feet, ref.pos), radial), WS_TOLERANCE, "height is pocket Y")
+	end)
+
+	-- CHANGED (Night review): a solo pocket made on a steep slope is level (walking gravity straight down) and the
+	-- slope around it still counts as standing ground for walking
+	t.test("SURFACE_ALIGNED on a steep slope: the pocket stays level", function()
+		local body = Bodies.get(Bodies.MOON)
+		local found: Vec3d.Vec3d? = nil
+		for i = 1, 4000 do
+			local a, b = i * 0.6180339887 * 2 * math.pi, math.acos(1 - 2 * ((i - 0.5) / 4000))
+			local dir = Vec3d.new(math.sin(b) * math.cos(a), math.cos(b), math.sin(b) * math.sin(a))
+			local _, normal = SurfaceHeight.height(Bodies.MOON, Vec3d.scale(dir, body.Radius))
+			if Vec3d.dot(normal, dir) < 0.9 then
+				found = dir
+				break
+			end
+		end
+		t.expectTrue(found ~= nil, "the Mun has slopes steeper than 25 degrees")
+		local dir = found :: Vec3d.Vec3d
+		local feet = Vec3d.scale(dir, body.Radius + 1)
+		local ref = PocketFrames.solo("SURFACE_ALIGNED", Bodies.MOON, feet, Vec3d.zero(), 0)
+		local _, normal = SurfaceHeight.height(Bodies.MOON, ref.pos)
+		local up = ref.rot.UpVector
+		local radial = Eva.radialUp(ref.pos)
+		local alignment = up.X * radial.x + up.Y * radial.y + up.Z * radial.z
+		t.expectNear(alignment, 1, 1e-6, "pocket up is radial")
+		t.expectTrue(up.X * normal.x + up.Y * normal.y + up.Z * normal.z < 0.9, "not the slope's normal")
+		-- 100 m away along the slope it is still level ground for the walk / float rules
+		local side = Vec3d.normalize(Vec3d.cross(radial, Vec3d.new(0, 1, 0)))
+		local away = Eva.radialUp(Vec3d.addScaled(ref.pos, side, 100))
+		local there = up.X * away.x + up.Y * away.y + up.Z * away.z
+		t.expectTrue(Eva.stationaryPocket(0, there), "stationary 100 m away")
 	end)
 
 	t.test("attributes round trip and reject garbage", function()

@@ -318,9 +318,11 @@ end
 -- Modes
 --============================================================================
 
--- How well the pocket's up matches the ground's up under a body-relative point (cosine).
-local function groundAlignment(frame: Frames.Frame, bodyId: number, pos: Vec3d): number
-	local _, up = SurfaceHeight.height(bodyId, pos)
+-- How well the pocket's up matches the radial up at a body-relative point (cosine).
+-- CHANGED (Night review): the radial up (Eva.radialUp), not the terrain triangle's normal: since Phase 8 that tilts
+-- with every slope, and on slopes over 20 degrees the astronaut could never walk.
+local function groundAlignment(frame: Frames.Frame, pos: Vec3d): number
+	local up = Eva.radialUp(pos)
 	local pocketUp = frame.refRot.UpVector
 	return pocketUp.X * up.x + pocketUp.Y * up.y + pocketUp.Z * up.z
 end
@@ -414,7 +416,7 @@ local function startEva(humanoid: Humanoid, root: BasePart)
 	nearestTimer = math.huge
 	enterFloat(humanoid)
 	-- next to a landed craft (a pocket that stands still on the ground) he steps out and drops to the ground walking
-	local stationary = Eva.stationaryPocket(Vec3d.length(frameVel), groundAlignment(frame, s.bodyId, s.pos))
+	local stationary = Eva.stationaryPocket(Vec3d.length(frameVel), groundAlignment(frame, s.pos))
 	if stationary and Eva.shouldWalk(true, true, Eva.groundHeight(s.bodyId, s.pos), 0) then
 		enterWalk(humanoid, root, frame, frameVel)
 	end
@@ -528,7 +530,7 @@ local function stepFloat(dt: number, root: BasePart, humanoid: Humanoid, folder:
 
 	-- touch down in a pocket that stands still on the ground: walk
 	local feet = Eva.groundHeight(s.bodyId, s.pos)
-	local stationary = Eva.stationaryPocket(Vec3d.length(frameVel), groundAlignment(frame, s.bodyId, s.pos))
+	local stationary = Eva.stationaryPocket(Vec3d.length(frameVel), groundAlignment(frame, s.pos))
 	if Eva.shouldWalk(false, stationary, feet, Vec3d.length(s.vel)) then
 		enterWalk(humanoid, root, frame, frameVel)
 	end
@@ -584,7 +586,7 @@ local function stepWalk(dt: number, root: BasePart, humanoid: Humanoid)
 
 	-- the pocket moves (for UNSTEADY_S: a resting craft's state jitters) or he flew high: float
 	local feet = h - Eva.ROOT_HEIGHT
-	local stationary = Eva.stationaryPocket(Vec3d.length(frameVel), groundAlignment(frame, s.bodyId, s.pos))
+	local stationary = Eva.stationaryPocket(Vec3d.length(frameVel), groundAlignment(frame, s.pos))
 	unsteadyTime = if stationary then 0 else unsteadyTime + dt
 	if not Eva.shouldWalk(true, unsteadyTime < UNSTEADY_S, feet, Vec3d.length(s.vel)) then
 		local rel = Vec3d.sub(s.vel, frameVel)
@@ -647,12 +649,10 @@ local function step(dt: number)
 		fuel = Eva.refill(fuel, dt) -- aboard a craft the jetpack fills up
 	end
 	local folder = pocketFolder()
-	local want = humanoid ~= nil
-		and root ~= nil
-		and not seated
-		and PocketController.pocketId() ~= 0
-		and folder ~= nil
-		and now >= exitAt
+	-- CHANGED (Night review): the pocket folder is no longer required here (it can be missing for a moment, e.g. a
+	-- transfer that arrives before the new folder replicates): stopping threw the absolute state away and gave the
+	-- character Roblox gravity for that moment. Without a folder the EVA waits (below) instead.
+	local want = humanoid ~= nil and root ~= nil and not seated and PocketController.pocketId() ~= 0 and now >= exitAt
 	if not want then
 		stopEva()
 		if now >= exitAt then
@@ -664,6 +664,21 @@ local function step(dt: number)
 		return
 	end
 	local h, r = humanoid :: Humanoid, root :: BasePart
+	if folder == nil then
+		-- CHANGED (Night review): no pocket folder (yet): keep the state and hold the character where it is; the next
+		-- step with a folder advances the absolute state over the gap (Eva.advance catches up)
+		if mode == "Float" then
+			r.AssemblyLinearVelocity = Vector3.zero
+			r.AssemblyAngularVelocity = Vector3.zero
+		elseif mode == "Walk" then
+			stopHop()
+		end
+		thrusting = false
+		EvaVisuals.update(false, lightOn and mode ~= "Off")
+		hud.update(hudData())
+		syncThrust()
+		return
+	end
 	if mode == "Off" then
 		startEva(h, r)
 	end

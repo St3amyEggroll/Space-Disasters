@@ -42,6 +42,9 @@ local friendCache: { [string]: { value: boolean, time: number } } = {}
 local lastHatch: { [Player]: number } = {}
 local seatedListeners: { (player: Player, seat: Seat) -> () } = {}
 local seatReach: ((player: Player, seat: Seat) -> boolean)? = nil -- CHANGED (Phase 6): BubbleService.seatInReach
+-- CHANGED (Night review): BubbleService.isEva. An astronaut's SitPrompt also sends EvaBoard (EvaService), which
+-- checks the same and tells him why it failed, so the prompt path stays quiet for him (no second, identical Notify)
+local evaCheck: ((player: Player) -> boolean)? = nil
 
 -- Owner user id and boarding mode for whatever contains `instance` (a craft or a hangar build).
 local function ownership(instance: Instance): (number?, string)
@@ -172,14 +175,23 @@ local function onSitPrompt(prompt: ProximityPrompt, player: Player)
 	end
 	-- CHANGED (Phase 6): prompts are triggered by the client; in a flight pocket only the clients know where the
 	-- seat really is (they pose the model), so BubbleService checks the reach against that pose
+	local check = evaCheck
+	local quiet = check ~= nil and check(player) -- CHANGED (Night review): EvaBoard reports for astronauts
 	local reach = seatReach
 	if reach and not reach(player, seat) then
-		notifyRemote:FireClient(player, "Get closer to the seat", "Error")
+		if not quiet then
+			notifyRemote:FireClient(player, "Get closer to the seat", "Error")
+		end
 		return
 	end
 	if not canBoard(player, seat) then
-		notifyRemote:FireClient(player, "The owner hasn't allowed you to board this craft", "Error")
+		if not quiet then
+			notifyRemote:FireClient(player, "The owner hasn't allowed you to board this craft", "Error")
+		end
 		return
+	end
+	if seat.Occupant ~= nil then
+		return -- CHANGED (Night review): taken during the permission check (it may yield), e.g. by his own EvaBoard
 	end
 	sitIn(player, seat)
 end
@@ -256,6 +268,12 @@ end
 -- clients draw it). BubbleService sets it.
 function CrewService.setSeatReach(check: (player: Player, seat: Seat) -> boolean)
 	seatReach = check
+end
+
+-- CHANGED (Night review): "is this player on EVA?" (BubbleService.isEva): a failed SitPrompt stays quiet for an
+-- astronaut, whose EvaBoard request reports the same failure (one Notify, not two).
+function CrewService.setEvaCheck(check: (player: Player) -> boolean)
+	evaCheck = check
 end
 
 function CrewService.Start()

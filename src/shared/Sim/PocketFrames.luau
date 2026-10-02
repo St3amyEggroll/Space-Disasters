@@ -13,8 +13,9 @@
 	                   so Roblox's sky, sun and day / night stay right. The astronaut's own motion lives in universe
 	                   axes (Shared/Sim/Eva), so turning axes never move him.
 	  SURFACE_ALIGNED  on (or just above) the ground. The reference is a fixed ground point (the feet of the astronaut
-	                   when it was made), axes X east / Y = the ground tile's normal / Z north, so walking with
+	                   when it was made), axes X east / Y = the radial up there / Z north, so walking with
 	                   workspace gravity is right (pocket y = 0 is the ground there, like the base pocket).
+	                   CHANGED (Night review): Y was the ground triangle's normal (tilted on slopes, see solo).
 	The server moves the reference (a rebase, a PocketTransfer in place) when the astronaut drifts more than
 	EVA_REBASE_DIST from it, when the mode should change (desiredMode, with hysteresis) and on SOI changes.
 
@@ -72,19 +73,23 @@ end
 
 --[[
 	A reference for an astronaut at pos / vel (relative to bodyId) at ut. INERTIAL: the astronaut's own state.
-	SURFACE_ALIGNED: the ground point under him (the tile plane SurfaceHeight uses) with the tile's normal as up.
+	SURFACE_ALIGNED: the ground point under him (the terrain triangle SurfaceHeight uses) with the RADIAL up there.
+	CHANGED (Night review): was the triangle's normal as up. Since Phase 8 the ground is ~23 m triangles, so a pocket
+	made on a slope was tilted like the slope: walking gravity (pocket -Y) pulled the astronaut sideways and the
+	pocket no longer counted as level ground (Eva.stationaryPocket) a few metres away.
 ]]
 function PocketFrames.solo(mode: Mode, bodyId: number, pos: Vec3d, vel: Vec3d, ut: number): Reference
 	if mode == "SURFACE_ALIGNED" then
 		local h, up = SurfaceHeight.height(bodyId, pos)
 		local ground = Vec3d.addScaled(pos, up, -h)
+		local radial = if Vec3d.lengthSq(ground) > 1 then Vec3d.normalize(ground) else up
 		return {
 			mode = mode,
 			bodyId = bodyId,
 			pos = ground,
 			vel = Vec3d.zero(),
 			ut = ut,
-			rot = Frames.surfaceRotation(up),
+			rot = Frames.surfaceRotation(radial), -- CHANGED (Night review): radial up, not the slope's normal
 		}
 	end
 	local p = Vec3d.clone(pos)

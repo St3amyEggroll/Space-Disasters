@@ -23,6 +23,9 @@
 	ALLOWED_KEYS can be bound; RESERVED_KEYS never can (Roblox menu, chat, player list, console, debug overlay,
 	fullscreen). Ctrl+Z (builder undo), F3 (debug overlay) and Escape are fixed. A key is used at most once per
 	context; one key may serve a Flight and a Build action (M: map view / mirror symmetry).
+	CHANGED (Night review): on EVA the EVA actions, MapView and ToggleHUD (Flight keys) and the seat prompts (E) all
+	listen, so MapView / ToggleHUD count in the EVA context too (SHARED_ACTIONS: swaps and sanitizing keep them
+	apart from the EVA keys) and E is reserved there (CONTEXT_RESERVED_KEYS).
 	Flight defaults reproduce the Phase 2a controls exactly. FlightModel commands torque (-pitch, -roll, -yaw) about
 	craft X / Y / Z, so the positive pitch input (W) moves the nose toward -Z, the navball's bottom: pitch DOWN;
 	the positive yaw input (D) moves it toward +X: yaw RIGHT; and the positive roll input (E) turns +X toward +Z,
@@ -50,6 +53,10 @@
 	  SettingsSchema.isAllowedKey(name) -> boolean
 	  SettingsSchema.findAction(id) -> Action?
 	  SettingsSchema.actionsFor(context) -> { Action }        display order
+	  SettingsSchema.listensIn(actionId) -> { Context }       CHANGED (Night review): its context + shared ones
+	  SettingsSchema.isKeyAllowedFor(actionId, key) -> boolean   CHANGED (Night review): bindable, not reserved there
+	  SettingsSchema.sharesKeys(a, b) -> boolean              CHANGED (Night review): they listen at the same time
+	  SettingsSchema.rebind(keybinds, actionId, key) -> (ok, swappedWith?)   CHANGED (Night review): with swaps
 	  SettingsSchema.defaultKeybinds() -> { [string]: string } fresh table
 	  SettingsSchema.pilotKeys(keybinds) -> { string }        CHANGED (Phase 11 review): Flight keys + PILOT_SINK_KEYS
 	  SettingsSchema.defaults() -> Values                     fresh table
@@ -212,6 +219,12 @@ local ALLOWED_KEYS: { string } = {
 	"Backspace",
 }
 local RESERVED_KEYS: { string } = { "Escape", "Slash", "Backquote", "Tab", "F3", "F9", "F11" }
+-- CHANGED (Night review): actions of an earlier context that also listen in a later one: on EVA the map view and the
+-- HUD toggle work with their Flight keys, so those keys count in the EVA context too (no EVA action may take them)
+local SHARED_ACTIONS: { [string]: { string } } = { EVA = { "MapView", "ToggleHUD" } }
+-- CHANGED (Night review): keys no action listening in a context may use: on EVA, E triggers the seat prompts
+-- (boarding a craft), so neither an EVA action nor MapView / ToggleHUD (shared above) may be bound to it
+local CONTEXT_RESERVED_KEYS: { [string]: { string } } = { EVA = { "E" } }
 -- CHANGED (Phase 11 review): keys the pilot's binding always captures, bound to an action or not: the pre-Phase-11
 -- flight keys. A freed Space would reach the default jump (out of the seat), a freed LeftShift the shift lock.
 local PILOT_SINK_KEYS: { string } = {
@@ -345,6 +358,51 @@ function SettingsSchema.findAction(id: string): Action?
 	return actionById[id]
 end
 
+-- CHANGED (Night review): every context an action listens in: its own, plus those that share it (SHARED_ACTIONS).
+function SettingsSchema.listensIn(actionId: string): { Context }
+	local action = actionById[actionId]
+	if action == nil then
+		return {}
+	end
+	local contexts: { Context } = { action.context }
+	for _, context in CONTEXTS do
+		local shared = SHARED_ACTIONS[context]
+		if shared and table.find(shared, actionId) and not table.find(contexts, context) then
+			table.insert(contexts, context)
+		end
+	end
+	return contexts
+end
+
+-- CHANGED (Night review): may this action be bound to this key? A bindable key that no context the action listens
+-- in reserves (CONTEXT_RESERVED_KEYS: E on EVA).
+function SettingsSchema.isKeyAllowedFor(actionId: string, key: string): boolean
+	if actionById[actionId] == nil or not SettingsSchema.isAllowedKey(key) then
+		return false
+	end
+	for _, context in SettingsSchema.listensIn(actionId) do
+		local reserved = CONTEXT_RESERVED_KEYS[context]
+		if reserved and table.find(reserved, key) then
+			return false
+		end
+	end
+	return true
+end
+
+-- CHANGED (Night review): do two (different) actions listen at the same time, so they must not share a key? Same
+-- context, or one of them also listens in the other's context (MapView / ToggleHUD on EVA).
+function SettingsSchema.sharesKeys(a: string, b: string): boolean
+	if a == b or actionById[a] == nil or actionById[b] == nil then
+		return false
+	end
+	for _, context in SettingsSchema.listensIn(a) do
+		if table.find(SettingsSchema.listensIn(b), context) then
+			return true
+		end
+	end
+	return false
+end
+
 function SettingsSchema.actionsFor(context: Context): { Action }
 	local list: { Action } = {}
 	for _, action in ACTIONS do
@@ -397,19 +455,70 @@ function SettingsSchema.defaults(): Values
 	}
 end
 
--- Every action gets a bindable key; within a context no key is used twice (see the header for the rules).
+-- CHANGED (Night review): the ids of the actions of earlier contexts that also listen in `context` (may be empty).
+local NO_ACTIONS: { string } = {}
+local function sharedInto(context: string): { string }
+	return SHARED_ACTIONS[context] or NO_ACTIONS
+end
+
+-- Resets every action of a context to its default key.
+local function resetContext(result: { [string]: string }, context: string)
+	for _, action in ACTIONS do
+		if action.context == context then
+			result[action.id] = action.default
+		end
+	end
+end
+
+-- CHANGED (Night review): the keys a context's actions find taken before they are assigned: those of the actions of
+-- earlier contexts that also listen here (SHARED_ACTIONS), already in `result`.
+local function sharedKeys(result: { [string]: string }, context: string): { [string]: boolean }
+	local used: { [string]: boolean } = {}
+	for _, id in sharedInto(context) do
+		local key = result[id]
+		if key then
+			used[key] = true
+		end
+	end
+	return used
+end
+
+-- CHANGED (Night review): is every key of a context's actions (and of the actions shared into it) used only once?
+local function contextConsistent(result: { [string]: string }, context: string): boolean
+	local used = sharedKeys(result, context)
+	for _, action in ACTIONS do
+		if action.context == context then
+			local key = result[action.id]
+			if key == nil or used[key] then
+				return false
+			end
+			used[key] = true
+		end
+	end
+	return true
+end
+
+--[[
+	Every action gets a bindable key; within a context no key is used twice (see the header for the rules).
+	CHANGED (Night review): a context also counts the keys of the actions shared into it (SHARED_ACTIONS: MapView and
+	ToggleHUD on EVA), and keys a context reserves (E on EVA) give the action its default. If a context's defaults
+	still meet a shared action's key, those shared actions get their defaults too (and their own context all of its
+	defaults if that collides there).
+]]
 function SettingsSchema.sanitizeKeybinds(raw: unknown): { [string]: string }
 	local source: { [any]: any } = if type(raw) == "table" then raw :: { [any]: any } else {}
 	local result: { [string]: string } = {}
 	for _, context in CONTEXTS do
-		local used: { [string]: boolean } = {}
+		local used = sharedKeys(result, context) -- CHANGED (Night review)
 		local collided = false
 		for _, action in ACTIONS do
 			if action.context ~= context then
 				continue
 			end
 			local wanted = source[action.id]
-			local key = if type(wanted) == "string" and allowedSet[wanted] then wanted else action.default
+			-- CHANGED (Night review): isKeyAllowedFor (was allowedSet): also the keys the context reserves
+			local allowed = type(wanted) == "string" and SettingsSchema.isKeyAllowedFor(action.id, wanted)
+			local key = if allowed then wanted :: string else action.default
 			if used[key] then
 				key = action.default -- the later action gives way
 			end
@@ -421,14 +530,64 @@ function SettingsSchema.sanitizeKeybinds(raw: unknown): { [string]: string }
 			result[action.id] = key
 		end
 		if collided then
-			for _, action in ACTIONS do
-				if action.context == context then
-					result[action.id] = action.default
+			resetContext(result, context)
+			-- CHANGED (Night review): the defaults may still meet a shared action's key: that one gives way too
+			if not contextConsistent(result, context) then
+				for _, id in sharedInto(context) do
+					local shared = actionById[id]
+					result[id] = shared.default
+					if not contextConsistent(result, shared.context) then
+						resetContext(result, shared.context)
+					end
 				end
 			end
 		end
 	end
 	return result
+end
+
+--[[
+	CHANGED (Night review): binds `actionId` to `key` in a keybinds table (changed in place), the Settings screen's
+	rebind (was inline in Settings.setKeybind). False (nothing changed) for an unknown action or a key it may not use
+	(isKeyAllowedFor). Every action that listens together with it (sharesKeys) and holds that key takes its previous
+	key instead (a swap; one key may be held by a Flight AND an EVA action, which both swap); returns the first of
+	them. False too when such a swap would itself clash (the previous key is not allowed for that action, or a third
+	action listening with it holds it already).
+]]
+function SettingsSchema.rebind(keybinds: { [string]: string }, actionId: string, key: string): (boolean, string?)
+	if not SettingsSchema.isKeyAllowedFor(actionId, key) then
+		return false, nil
+	end
+	local previous = keybinds[actionId]
+	if previous == key then
+		return true, nil
+	end
+	local others: { string } = {}
+	for _, other in ACTIONS do
+		if keybinds[other.id] == key and SettingsSchema.sharesKeys(actionId, other.id) then
+			table.insert(others, other.id)
+		end
+	end
+	for _, otherId in others do
+		if previous == nil or not SettingsSchema.isKeyAllowedFor(otherId, previous) then
+			return false, nil
+		end
+		for _, third in ACTIONS do
+			if
+				third.id ~= actionId
+				and keybinds[third.id] == previous
+				and not table.find(others, third.id)
+				and SettingsSchema.sharesKeys(otherId, third.id)
+			then
+				return false, nil
+			end
+		end
+	end
+	for _, otherId in others do
+		keybinds[otherId] = previous
+	end
+	keybinds[actionId] = key
+	return true, others[1]
 end
 
 function SettingsSchema.sanitize(raw: unknown): Values

@@ -295,21 +295,52 @@ local function setPocket(id: number)
 	pocketChanged:Fire(id)
 end
 
-local function onTransfer(transferId: unknown, _source: unknown, dest: unknown, m: unknown, epoch: unknown)
+--[[
+	CHANGED (Night review): `absolute` (optional CFrame): the server's own placement of the character in the
+	destination (FlightService.sendHome: the player's plot spawn). An unseated character is put there (at rest)
+	instead of being moved by M: M was built from the server's replicated, lagging position, so an astronaut who
+	moves himself landed off by his motion over the lag (km after a recent merge or rebase). The camera follows by the
+	same move. And a transfer into the base pocket (whose reference does not move) keeps the character's TRUE
+	velocity: the velocity relative to the old pocket plus the old pocket's own velocity (it was only the relative
+	part, so an astronaut leaving a moving craft's pocket for the base lost or gained the craft's speed).
+]]
+local function onTransfer(
+	transferId: unknown,
+	_source: unknown,
+	dest: unknown,
+	m: unknown,
+	epoch: unknown,
+	absolute: unknown
+)
 	if type(transferId) ~= "number" or type(dest) ~= "number" or typeof(m) ~= "CFrame" then
 		return
 	end
 	local transform = m :: CFrame
+	local cameraMove = transform
 	local character = player.Character
 	local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
 	local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
-	if humanoid and humanoid.SeatPart == nil and root and root:IsA("BasePart") then
-		-- not seated: move ourselves by the same rigid transform as the craft (seated crew ride with the seat)
-		root.CFrame = transform * root.CFrame
-		root.AssemblyLinearVelocity = transform:VectorToWorldSpace(root.AssemblyLinearVelocity)
+	if character and humanoid and humanoid.SeatPart == nil and root and root:IsA("BasePart") then
+		if typeof(absolute) == "CFrame" then
+			-- CHANGED (Night review): placed by the server's absolute destination
+			local before = root.CFrame
+			character:PivotTo(absolute :: CFrame)
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.AssemblyAngularVelocity = Vector3.zero
+			cameraMove = root.CFrame * before:Inverse()
+		else
+			-- not seated: move ourselves by the same rigid transform as the craft (seated crew ride with the seat)
+			local velocity = root.AssemblyLinearVelocity
+			if dest == 0 then
+				-- CHANGED (Night review): into the base (at rest): the true velocity, not only the relative part
+				velocity += Frames.vectorToWorkspace(frame, frameVelocity)
+			end
+			root.CFrame = transform * root.CFrame
+			root.AssemblyLinearVelocity = transform:VectorToWorldSpace(velocity)
+		end
 	end
 	local camera = Workspace.CurrentCamera
-	camera.CFrame = transform * camera.CFrame
+	camera.CFrame = cameraMove * camera.CFrame
 	if type(epoch) == "number" then
 		frame.frameEpoch = epoch
 	end

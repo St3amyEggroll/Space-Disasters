@@ -124,10 +124,30 @@ return function(t: TestKit.Context)
 		end
 		local side =
 			Vec3d.normalize(Vec3d.cross(up, if math.abs(up.y) < 0.9 then Vec3d.new(0, 1, 0) else Vec3d.new(1, 0, 0)))
-		local astronaut = Eva.new(Bodies.MOON, start, Vec3d.scale(side, 5), 0)
-		fly(astronaut, 3)
+		-- CHANGED (Night review): Coulomb friction (0.25 x the Mun's 1.62 m/s^2): 1 m/s stops in about 2.5 s
+		local astronaut = Eva.new(Bodies.MOON, start, Vec3d.scale(side, 1), 0)
+		fly(astronaut, 4)
 		t.expectTrue(Vec3d.length(astronaut.vel) < 0.05, "stopped by friction")
 		t.expectNear(Eva.groundHeight(Bodies.MOON, astronaut.pos), 0, 0.01)
+	end)
+
+	-- CHANGED (Night review): the old fixed 6 m/s^2 of friction beat the 3 m/s^2 jetpack on Earth's ground
+	t.test("friction follows the load: the jetpack moves a floating astronaut lying on Earth's ground", function()
+		local body = Bodies.get(Bodies.HOMEWORLD)
+		local up = Vec3d.new(1, 0, 0) -- the launch site: the flat plane x = R
+		local start = Vec3d.scale(up, body.Radius + Eva.ROOT_HEIGHT)
+		t.expectNear(Eva.groundHeight(Bodies.HOMEWORLD, start), 0, 0.01, "standing on the ground")
+		local astronaut = Eva.new(Bodies.HOMEWORLD, start, Vec3d.zero(), 0)
+		local push = Vec3d.new(0, 0, GameConfig.EVA_THRUST_ACCEL)
+		fly(astronaut, 5, push)
+		local net = GameConfig.EVA_THRUST_ACCEL - Eva.GROUND_FRICTION_COEF * body.SurfaceGravity
+		t.expectTrue(net > 0.4, "the jetpack beats Earth's ground friction")
+		local moved = astronaut.pos.z - start.z
+		t.expectNear(moved, 0.5 * net * 25, 1, `slides along at the net push ({moved} m in 5 s)`)
+		t.expectNear(Eva.groundHeight(Bodies.HOMEWORLD, astronaut.pos), 0, 0.01, "still on the ground")
+		-- once the jetpack stops, friction brings him to rest
+		fly(astronaut, 5)
+		t.expectTrue(Vec3d.length(astronaut.vel) < 0.05, "stopped by friction")
 	end)
 
 	t.test("air slows a fall to skydiving speed", function()
@@ -247,17 +267,95 @@ return function(t: TestKit.Context)
 		t.expectTrue(Eva.stationaryPocket(0, Vec3d.dot(craftUp, corner)), "from a craft's pocket")
 	end)
 
-	t.test("time jumps: a small step back is a straight line, a big jump only resyncs", function()
+	-- CHANGED (Night review): a jump ahead (frame hitch) is integrated, not only resynced
+	t.test("time jumps: a small step back is a straight line, a hitch is caught up", function()
 		local pos, vel = orbitState()
+		local mu = Bodies.get(Bodies.HOMEWORLD).Mu
 		local astronaut = Eva.new(Bodies.HOMEWORLD, pos, vel, 50)
 		Eva.advance(astronaut, 49.9)
 		t.expectNear(astronaut.pos.z, pos.z - vel.z * 0.1, 1e-6, "back along the velocity")
 		t.expectNear(astronaut.ut, 49.9, 1e-12)
 		local before = Vec3d.clone(astronaut.pos)
-		Eva.advance(astronaut, 60)
-		t.expectEqual(astronaut.ut, 60, "resynced")
+		Eva.advance(astronaut, 48)
+		t.expectEqual(astronaut.ut, 48, "a big step back only resyncs")
 		t.expectNear(Vec3d.distance(before, astronaut.pos), 0, 1e-9, "without moving")
 		t.expectTrue(not Eva.advance(astronaut, 0 / 0), "NaN time is ignored")
+		-- hitches of 0.6 s and 10 s: still beside the craft (was 412 m and 6.9 km behind)
+		for _, hitch in { 0.6, 10 } do
+			local beside = Eva.new(Bodies.HOMEWORLD, pos, vel, 0)
+			fly(beside, 1)
+			Eva.advance(beside, beside.ut + hitch)
+			local craft = Kepler.propagate(mu, pos, vel, beside.ut)
+			t.expectNear(Vec3d.distance(beside.pos, craft), 0, 0.05, `after a {hitch} s hitch`)
+			t.expectNear(beside.ut, 1 + hitch, 1e-9)
+		end
+		-- longer than MAX_CATCH_UP in vacuum: the conic
+		local high = Bodies.get(Bodies.HOMEWORLD).Radius + 30000
+		local hp, hv = Vec3d.new(high, 0, 0), Vec3d.new(0, 0, Universe.circularSpeed(Bodies.HOMEWORLD, high))
+		local coasting = Eva.new(Bodies.HOMEWORLD, hp, hv, 0)
+		local long = Eva.MAX_CATCH_UP * 4
+		Eva.advance(coasting, long)
+		local exact = Kepler.propagate(mu, hp, hv, long)
+		t.expectNear(Vec3d.distance(coasting.pos, exact), 0, 1e-3, "on its conic after a long jump")
+		-- ... but with the jetpack firing (or in air) a long jump still only resyncs
+		local burning = Eva.new(Bodies.HOMEWORLD, hp, hv, 0)
+		Eva.advance(burning, long, Vec3d.new(0, 3, 0))
+		t.expectNear(Vec3d.distance(burning.pos, hp), 0, 1e-9, "no guessing under thrust")
+		t.expectEqual(burning.ut, long)
+	end)
+
+	-- CHANGED (Night review): walking on slopes (Phase 8 terrain): the pocket's up is compared with the radial up
+	t.test("slopes steeper than 20 degrees still count as level ground next to a landed craft", function()
+		local body = Bodies.get(Bodies.MOON)
+		local steep: Vec3d.Vec3d? = nil
+		for i = 1, 4000 do
+			local a, b = i * 0.6180339887 * 2 * math.pi, math.acos(1 - 2 * ((i - 0.5) / 4000))
+			local dir = Vec3d.new(math.sin(b) * math.cos(a), math.cos(b), math.sin(b) * math.sin(a))
+			local _, normal = SurfaceHeight.height(Bodies.MOON, Vec3d.scale(dir, body.Radius))
+			if Vec3d.dot(normal, dir) < 0.9 then
+				steep = dir
+				break
+			end
+		end
+		t.expectTrue(steep ~= nil, "found a slope steeper than 25 degrees")
+		local dir = steep :: Vec3d.Vec3d
+		local point = Vec3d.scale(dir, body.Radius)
+		local _, normal = SurfaceHeight.height(Bodies.MOON, point)
+		-- a landed craft's pocket (HORIZON_ALIGNED near the ground) has the radial up at the craft
+		local pocketUp = Universe.pocketUp(Bodies.MOON, point, 0)
+		t.expectTrue(not Eva.stationaryPocket(0, Vec3d.dot(pocketUp, normal)), "the slope's normal is too steep")
+		t.expectTrue(Eva.stationaryPocket(0, Vec3d.dot(pocketUp, Eva.radialUp(point))), "the radial up is level")
+		t.expectNear(Vec3d.length(Eva.radialUp(Vec3d.zero())), 1, 1e-12, "a unit vector even at the centre")
+	end)
+
+	-- CHANGED (Night review): the server's check of replicated EVA motion
+	t.test("plausibleMove: trusts motion an astronaut can do, not teleports or absurd speeds", function()
+		local pos, vel = orbitState()
+		local previous: Eva.Sample = Eva.new(Bodies.HOMEWORLD, pos, vel, 100)
+		local dt = 0.25
+		local function after(offset: Vec3d.Vec3d, dv: Vec3d.Vec3d, step: number?): Eva.Sample
+			local s = step or dt
+			return Eva.new(
+				Bodies.HOMEWORLD,
+				Vec3d.add(Vec3d.addScaled(pos, vel, s), offset),
+				Vec3d.add(vel, dv),
+				100 + s
+			)
+		end
+		t.expectTrue(Eva.plausibleMove(nil, previous), "no history: trusted")
+		t.expectTrue(Eva.plausibleMove(previous, after(Vec3d.zero(), Vec3d.zero())), "coasting")
+		t.expectTrue(Eva.plausibleMove(previous, after(Vec3d.new(0, 5, 0), Vec3d.new(0, 40, 0))), "a jump")
+		t.expectTrue(not Eva.plausibleMove(previous, after(Vec3d.new(0, 500, 0), Vec3d.zero())), "a 500 m teleport")
+		t.expectTrue(not Eva.plausibleMove(previous, after(Vec3d.zero(), Vec3d.new(900, 0, 0))), "900 m/s more")
+		t.expectTrue(not Eva.plausibleMove(nil, after(Vec3d.zero(), Vec3d.new(9000, 0, 0))), "absurd speed")
+		local broken = after(Vec3d.zero(), Vec3d.zero())
+		broken.pos = Vec3d.new(0 / 0, 0, 0)
+		t.expectTrue(not Eva.plausibleMove(nil, broken), "NaN")
+		-- a long gap (a transfer's pin, lag) starts a new history; another body too
+		t.expectTrue(Eva.plausibleMove(previous, after(Vec3d.new(0, 1500, 0), Vec3d.zero(), 5)), "after a gap")
+		local mun = after(Vec3d.new(0, 1500, 0), Vec3d.zero())
+		mun.bodyId = Bodies.MOON
+		t.expectTrue(Eva.plausibleMove(previous, mun), "another body")
 	end)
 
 	t.test("setBody keeps the true position and velocity", function()

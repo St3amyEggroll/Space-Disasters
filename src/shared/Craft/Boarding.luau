@@ -59,18 +59,23 @@ end
 
 -- Client: does the cosmetic copy of a craft get boarding prompts? Only for a player in the base pocket, on crafts
 -- flying (not debris) in another pocket, while they are slow.
+-- CHANGED (Night review): also on flying crafts announced in pocket 0, i.e. without a real model (an uncrewed craft
+-- whose pocket was released, e.g. landed near the base after its crew went home): the server builds one when
+-- boarded (FlightService). Before, such a craft could never be boarded again. Pad crafts (prelaunch) stay excluded.
 function Boarding.offersPrompts(
 	localPocketId: number,
-	craftPocketId: number,
+	_craftPocketId: number,
 	prelaunch: boolean,
 	isDebris: boolean,
 	speed: number
 ): boolean
-	return localPocketId == BASE_POCKET_ID
-		and craftPocketId ~= BASE_POCKET_ID
-		and not prelaunch
-		and not isDebris
-		and Boarding.slowEnough(speed)
+	return localPocketId == BASE_POCKET_ID and not prelaunch and not isDebris and Boarding.slowEnough(speed)
+end
+
+-- CHANGED (Night review): a flying craft announced in this pocket id has no real model yet (pocket 0): every seat
+-- counts as free on the client (there is no real seat to read) and the server builds the model when boarded.
+function Boarding.withoutRealModel(craftPocketId: number): boolean
+	return craftPocketId == BASE_POCKET_ID
 end
 
 -- Client: is it worth offering prompts on a craft with this boarding mode (the real model's Boarding attribute)?

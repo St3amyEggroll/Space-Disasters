@@ -13,6 +13,8 @@
 	  * puts one client-side ProximityPrompt on each seat of the copy (PartVisuals.seatPrompt: the same look, text
 	    and key as a real seat's SitPrompt, "Pilot" on a pilot seat), created once per copy model, never per frame;
 	  * enables a prompt only while the matching Seat of the real model (replicated, hidden in its pocket) is free;
+	    CHANGED (Night review): a flying craft without a real model (announced in pocket 0, an uncrewed craft whose
+	    pocket was released) is offered with every seat free; the server builds its real model when boarded;
 	  * removes every prompt of a craft that is no longer offered (copy hidden, LOD marker, craft removed, player
 	    seated or in another pocket, out of range) or whose copy was rebuilt.
 	Triggering a prompt fires BoardCraft(craftId, seatBlockId); the server checks everything again and answers by
@@ -159,7 +161,9 @@ local function onFootRoot(): BasePart?
 	return nil
 end
 
-local function refreshCraft(candidate: Candidate, real: Model)
+-- CHANGED (Night review): `real` is nil for a craft without a real model (Boarding.withoutRealModel): every seat is
+-- free then (the server builds the model when one is boarded).
+local function refreshCraft(candidate: Candidate, real: Model?)
 	local model = candidate.model :: Model
 	local previous = active[candidate.craftId]
 	if previous and previous.model ~= model then
@@ -182,12 +186,17 @@ local function refreshCraft(candidate: Candidate, real: Model)
 		if kept then
 			table.insert(kept, seat)
 		end
-		local realSeat = seat.realSeat
-		if realSeat == nil or realSeat.Parent == nil or not realSeat:IsDescendantOf(real) then
-			realSeat = seatOfBlock(real, seat.blockId)
-			seat.realSeat = realSeat
+		local free = true
+		if real then
+			local realSeat = seat.realSeat
+			if realSeat == nil or realSeat.Parent == nil or not realSeat:IsDescendantOf(real) then
+				realSeat = seatOfBlock(real, seat.blockId)
+				seat.realSeat = realSeat
+			end
+			free = realSeat ~= nil and realSeat.Occupant == nil
+		else
+			seat.realSeat = nil
 		end
-		local free = realSeat ~= nil and realSeat.Occupant == nil
 		if seat.prompt.Enabled ~= free then
 			seat.prompt.Enabled = free
 		end
@@ -220,19 +229,21 @@ function BoardPrompts.update(candidates: { [number]: Candidate })
 	local here = (root :: BasePart).Position
 	for craftId, candidate in candidates do
 		local model, copyRoot = candidate.model, candidate.root
-		local real = if model and copyRoot then realModel(candidate) else nil
+		-- CHANGED (Night review): a craft without a real model (pocket 0) is offered too (the server builds one)
+		local noReal = Boarding.withoutRealModel(candidate.pocketId)
+		local real = if model and copyRoot and not noReal then realModel(candidate) else nil
 		local offered = model ~= nil
 			and copyRoot ~= nil
 			and model.Parent ~= nil
-			and real ~= nil
+			and (real ~= nil or noReal)
 			and Boarding.modeMayAllow(
-				(real :: Model):GetAttribute(BOARDING_ATTRIBUTE),
+				if real then real:GetAttribute(BOARDING_ATTRIBUTE) else nil,
 				candidate.ownerUserId,
 				player.UserId
 			)
 			and Boarding.inRange(((copyRoot :: BasePart).Position - here).Magnitude, candidate.radius)
 		if offered then
-			refreshCraft(candidate, real :: Model)
+			refreshCraft(candidate, real)
 		else
 			clearCraft(craftId)
 		end

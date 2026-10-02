@@ -18,6 +18,9 @@
 	                                                     false when the action is unknown or the key not allowed; if
 	                                                     another action of the same context had that key, the two
 	                                                     swap keys and its id is returned; fires onChanged("keybinds")
+	                                                     CHANGED (Night review): SettingsSchema.rebind: "same context"
+	                                                     = listening at the same time (MapView / ToggleHUD on EVA),
+	                                                     and false for E on anything that listens on EVA
 	  Settings.resetKeybinds()                           every action back to its default key
 	  Settings.resetAll()                                every field back to its default
 	  Settings.onChanged(fn(field)) -> RBXScriptConnection
@@ -110,15 +113,12 @@ function Settings.setKeybind(action: string, key: Enum.KeyCode): (boolean, strin
 	if previous == key.Name then
 		return true, nil
 	end
-	local swappedWith: string? = nil
-	for _, other in SettingsSchema.ACTIONS do
-		if other.context == definition.context and other.id ~= action and binds[other.id] == key.Name then
-			swappedWith = other.id
-			binds[other.id] = previous
-			break
-		end
+	-- CHANGED (Night review): SettingsSchema.rebind (swaps across the contexts that listen together, e.g. an EVA key
+	-- and MapView; E is refused for anything that listens on EVA). Was: swaps within the action's context only.
+	local ok, swappedWith = SettingsSchema.rebind(binds, action, key.Name)
+	if not ok then
+		return false, nil
 	end
-	binds[action] = key.Name
 	userChanged(KEYBINDS_FIELD)
 	return true, swappedWith
 end

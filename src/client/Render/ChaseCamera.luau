@@ -96,7 +96,9 @@ export type Target = {
 	toWorkspace: CFrame, -- rotation from the stable space to workspace axes (the pocket frame's refRotInv)
 	-- CHANGED (Physics feel): optional speed-cue inputs (header)
 	key: number?, -- identifies the flight (craft id): a restart for the same key keeps the player's zoom
-	size: number?, -- studs, the craft's bounding radius (zoom fit at the start of a flight)
+	-- studs, the craft's bounding radius (zoom fit at the start of a flight). CHANGED (Night review): about `position`
+	-- (the orbit centre: the farthest block corner from it), so the zoom cap keeps the whole craft in the zone
+	size: number?,
 	thrustFraction: number?, -- 0..1 of the craft's active engine thrust being produced now
 	nearGround: number?, -- 0..1, 1 = on the ground, 0 = high enough that the ground no longer adds shake
 	dynamicPressure: number?, -- Pa

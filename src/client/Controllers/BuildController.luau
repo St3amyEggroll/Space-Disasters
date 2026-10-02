@@ -42,6 +42,7 @@ local Paint = require(ReplicatedStorage.Shared.Config.Paint)
 local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
 local BuildUI = require(script.Parent.Parent.UI.BuildUI)
 local Keybinds = require(script.Parent.Parent.Settings.Keybinds) -- CHANGED (Phase 11)
+local PocketController = require(script.Parent.PocketController) -- CHANGED (Night review): zoom cap in flight
 local UIState = require(script.Parent.Parent.UI.UIState) -- CHANGED (Phase 11)
 
 type Block = CraftDesign.Block
@@ -57,6 +58,11 @@ local STATS_INTERVAL_S = 0.25
 local RAY_LENGTH = 1500
 local UNDO_LIMIT = GameConfig.UNDO_STACK_SIZE
 local CAMERA_MAX_ZOOM = 320
+-- CHANGED (Night review): outside the base pocket the stock camera (V in flight, always on EVA) may zoom out at most
+-- this far: planets' scaled-space proxies are drawn NEAR_RENDER_RADIUS from the camera, and a craft or astronaut
+-- beyond that vanished behind the planet (ChaseCamera has the same cap with the same margin)
+local FLIGHT_ZOOM_MARGIN = 20 -- studs
+local FLIGHT_MAX_ZOOM = GameConfig.NEAR_RENDER_RADIUS - FLIGHT_ZOOM_MARGIN
 local DELETE_HIGHLIGHT_COLOR = Color3.fromRGB(255, 70, 70)
 local PAINT_HIGHLIGHT_COLOR = Color3.fromRGB(90, 180, 255)
 local SEQ_RETENTION = 400 -- forget pending seqs older than this (rejected ops never get an ack)
@@ -716,6 +722,21 @@ end
 
 function BuildController.Start()
 	player.CameraMaxZoomDistance = math.max(player.CameraMaxZoomDistance, CAMERA_MAX_ZOOM)
+	-- CHANGED (Night review): capped at FLIGHT_MAX_ZOOM outside the base pocket, given back at home
+	local homeMaxZoom = player.CameraMaxZoomDistance
+	local zoomCapped = false
+	local function applyZoomLimit(pocketId: number)
+		if pocketId ~= 0 and not zoomCapped then
+			homeMaxZoom = player.CameraMaxZoomDistance
+			player.CameraMaxZoomDistance = math.min(homeMaxZoom, FLIGHT_MAX_ZOOM)
+			zoomCapped = true
+		elseif pocketId == 0 and zoomCapped then
+			player.CameraMaxZoomDistance = homeMaxZoom
+			zoomCapped = false
+		end
+	end
+	PocketController.onPocketChanged(applyZoomLimit)
+	applyZoomLimit(PocketController.pocketId())
 
 	Remotes.event("Notify").OnClientEvent:Connect(function(text: unknown, kind: unknown)
 		if type(text) == "string" then
