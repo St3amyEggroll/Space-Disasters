@@ -528,6 +528,92 @@ Steamy asked for "an effects phase, to update effects of rockets and everything"
 - **Seeing players on foot from other pockets:** `Puppets` draws them as animated puppets at their true position (12 nearest, up to 1.5 km, line of sight).
   - Each frame the hidden real character's Motor6D.Transform values are copied to the puppet.
 
+### D43. Effects v2 and one graphics tier (Steamy: "effects still look shitty ... working on mobile ... go with graphics quality")
+- **One tier:** `Render/Quality` is the only source of detail.
+  - SavedQualityLevel 1-3 is Low, 4-6 Medium, 7-10 High.
+  - Automatic is High on PC and Medium on phones and consoles.
+  - Phones and consoles never go above Medium.
+  - Every costly client layer reads it and reacts to `Quality.onChanged`.
+- **Effects:** `Effects`, `EffectsMath` and `Plumes` were reworked.
+  - Re-entry plasma: a shock-layer shell on the windward side, flame tongues and streaks downstream along the true air-relative velocity, embers, and windward blocks glowing (Highlight, High only).
+  - Plumes by engine type and air pressure. Liquid engines get shock diamonds; solid boosters get a dense orange flame with smoke.
+  - Explosions: a core and outer fireball, smoke, sparks and debris.
+  - Separation flash, trail, dust and vapour.
+  - Only `fire_main` / `smoke_main` / `sparkles_main` textures are used.
+- **Budgets:** per-tier budgets live in `EffectsMath.BUDGETS`, including plumes 6/12/24 and burst events per frame.
+  - PointLights and Highlights are High only.
+  - Engines over the plume budget get a cheap core-and-glow plume.
+
+### D44. Phase 6: EVA, bubbles, boarding
+- **Model:** the astronaut is a point with a true position and velocity under the body's real gravity, with light air drag and ground contact.
+  - The client sets the HumanoidRootPart every frame (PlatformStand, local Gravity 0).
+  - Forward hitches are integrated: up to 30 s in steps, beyond that by Kepler with no thrust or air.
+- **Jetpack:** 3 m/s², 60 s of fuel. Fuel is client-side and refills in 4 s while seated.
+- **Walking:** only in a pocket that stands still on the ground, with gravity scaled to the body. "Level" is judged against the radial up, not the terrain triangle (D45).
+- **Bubbles (BubbleService, 4 Hz, `Sim/Bubbles` is pure):**
+  - Merge at 250 m, split at 400 m.
+  - Solo pockets are INERTIAL in space or SURFACE_ALIGNED on the ground, with axes from the radial up. They rebase at 300 m.
+  - Uncrewed boardable crafts get a real model in a nearby occupied pocket.
+  - Nothing merges within 800 m of the base. An astronaut below 150 m and within 600 m of the base goes to the base pocket.
+- **Deviations from the spec:**
+  1. Absolute state, not an offset.
+  2. The root is set directly, not through AlignPosition.
+  3. INERTIAL pockets use the D31 horizon/sun axes.
+  4. The server decides rebases (no EVARebase remote).
+  5. There is no Crew Cabin (D34), so boarding is through seat prompts plus `EvaBoard`, and `crewOf` only counts seated players.
+  6. A crewed craft is preferred as a pocket's primary.
+  7. End Flight sends home the seated crew plus astronauts whose last craft is this one.
+  8. A destroyed pod kills only that craft's seated crew.
+  9. Return-to-pad also needs the craft within 600 m of the base.
+  10. No fall damage on EVA.
+- **Trust:** EVA motion is client-owned. The server only trusts samples that `Eva.plausibleMove` accepts (speed, position and velocity bounds).
+- **Not done:**
+  - Docking: crafts pass through each other.
+  - Walking on a moving craft.
+  - Jetpacks on puppets.
+  - Landing crafts near the base do not join the base pocket.
+  - Touch buttons (named actions are ready).
+
+### D45. Phase 8: surface terrain
+- **`Sim/Relief` (shared, deterministic):** heights come from Biome's own fields.
+  - Earth: flat oceans at sea level, hills (about ±55 m), ridged mountains up to about 1.4 km.
+  - Mun: maria lower, highland roll, crater bowls with rims. Heights clamp to -600..+320 m, under the 500 m rails floor.
+  - The site is exactly the base plane within 900 m and blends out by 2.6 km.
+- **`SurfaceHeight`:** a fixed ~23 m triangle lattice on the cube-sphere with cached node heights. `height()` returns the height above the triangle under the point and that triangle's normal, so crafts rest on slopes. It is about 2x faster than the old tile version.
+- **Client:**
+  - `TerrainMath` is a cube-sphere quadtree of 8x8-quad chunks with skirts.
+  - `TerrainMesh` makes one EditableMesh per detail band, at most 6 plus 1 being built (S12: about 8 meshes in total, ScaledSpace keeps 1). Bands are built in the background with a per-frame budget and placed uniformly scaled about the camera when needed.
+  - `TerrainCollision` builds wedge pairs near the local character.
+  - Part plates are the fallback.
+- **Budgets:** per tier, Low 180 / Medium 240 / High 320 leaves (about 33k / 45k / 58k triangles).
+
+### D46. Night review (2026-10-02)
+- **Reviews:** 5 independent read-only reviews of everything merged in the last day, run in Lune where possible: EVA and bubbles, terrain, effects and phone performance, multiplayer integration, and a full single-player walkthrough. Each finding was verified by the fixer before it was fixed.
+- **EVA and multiplayer fixes:**
+  - hitch drift (411 m behind after a 0.6 s hitch);
+  - slopes and tilted solo pockets now use the radial up;
+  - ground friction scales with load, so the jetpack can move you on Earth's ground;
+  - an uncrewed craft near the base can be boarded again (it gets a pocket and a real model on demand);
+  - End Flight uses each player's last craft;
+  - `sendHome` places the character with an absolute destination, so it no longer depends on the lagging server root;
+  - only seated players ride along at launch;
+  - no double Notifies;
+  - EVA plausibility checks;
+  - stock-camera zoom capped outside the base;
+  - EVA keybind conflicts are prevented, with E reserved on EVA;
+  - the chase zoom cap measures from the camera's orbit centre;
+  - `/base` uses `sendHome`.
+- **Effects and phone fixes:**
+  - dust works on hills;
+  - plumes are budgeted;
+  - the launch-site copy is one welded assembly moved by its root (1004 to 1 writes per frame), with Plots and Decor dropped below High;
+  - props are cheaper while flying;
+  - site lights only on High (`Render/SiteLights`);
+  - prop shadows, menu Bloom/SunRays and ground puppets follow the tier;
+  - consoles max Medium;
+  - mobile draw distance on Automatic is 1400.
+- **Terrain fixes:** see the terrain commit message (mesh budget on camera jumps, the menu at quality 1, true-scale objects behind scaled bands, the site copy staying visible, props, collision updates).
+
 ## Phase 0 spike results
 
 Steamy ran all ten spikes in Studio on 2026-09-30. The raw `[SPIKE ...]` output is summarized here.

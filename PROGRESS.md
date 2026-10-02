@@ -9,17 +9,60 @@
 | 3: Multiplayer crafts | **Built. Waiting for Steamy's playtest** (D35) |
 | 4: Scaled space and visuals | Started early: scaled-space bodies, sky and lighting came with 2a (D26) |
 | 5: Orbits, rails, map, navball | **Built. Waiting for Steamy's playtest** (D36) |
-| 6: EVA, bubbles, boarding | Not started |
-| 7: Time warp | Not started |
-| 7b: Solar system: Mars (Steamy) | Not started. Earth (with the Mun) and Mars both orbit Sol; fly Earth to Mars with transfer orbits. Comes after time warp, because the trip is long |
-| 8: Surface terrain | Not started |
+| 6: EVA, bubbles, boarding | **Built. Waiting for Steamy's playtest** (D44) |
+| 7: Time warp | Not started (Steamy: wait) |
+| 7b: Solar system: Mars (Steamy) | Not started (Steamy: wait, decide tomorrow). Earth (with the Mun) and Mars both orbit Sol; fly Earth to Mars with transfer orbits. Comes after time warp, because the trip is long |
+| 8: Surface terrain | **Built. Waiting for Steamy's playtest** (D45) |
 | 9: Polish and backlog | Not started |
-| 10: Effects (Steamy) | **Built. Waiting for Steamy's playtest** (D38) |
+| 10: Effects (Steamy) | **Built, then reworked (Effects v2, D43). Waiting for Steamy's playtest** |
 | 11: UI renovation (Steamy) | **Built. Waiting for Steamy's playtest** (D40). Also the physics feel change (D41) and multiplayer fixes (D42) |
 
 Phase 2 is split into 2a/2b so you can playtest halfway through (agreed with Steamy).
 
 ---
+
+## Night of 2026-10-02: what was built (see D43-D46)
+- **Effects v2 (D43):**
+  - Re-entry plasma: a glowing shell, flame tongues, embers and hot parts.
+  - Engine plumes: liquid engines get shock diamonds, boosters a thick orange flame.
+  - Better explosions, smoke, dust and vapour.
+  - Everything follows one graphics tier (`Render/Quality`: Low / Medium / High; phones max Medium).
+- **Phase 6, EVA (D44):**
+  - F gets you out of your seat in flight.
+  - Float with a jetpack: WASD, Space and Ctrl move you, R brakes against the nearest craft, L is the helmet light. The jetpack has its own fuel bar, which refills when you sit.
+  - Walk and hop on the ground, including the Mun.
+  - Board any free seat, including empty rockets.
+  - Rockets and astronauts within 250 m share a pocket (they split again past 400 m).
+  - "Return to plot" button.
+- **Phase 8, terrain (D45):**
+  - Earth: real hills, mountains and valleys, matching the map colours. Oceans are flat.
+  - Mun: craters and seas.
+  - The launch site stays flat and blends into the hills.
+  - Rockets settle on slopes.
+  - Detail follows the graphics tier. Part plates are the fallback if EditableMesh is off.
+- **Night review (D46):** 5 independent reviews (EVA, terrain, effects and phone performance, multiplayer, full play-through) found about 40 problems. Each was checked, then fixed. Details in D46.
+
+## Night of 2026-10-02: how to test
+1. **Effects:**
+   - Launch at graphics quality 10. Look for the bright flame, shock diamonds near the ground and a pale plume in space.
+   - Get into orbit (`/orbit 15`), burn backwards until the periapsis is below 4 km, and watch the plasma from about 8 km down.
+   - Do it again at quality 1: it should be a simpler version.
+2. **EVA:**
+   - In orbit, press F. You float above the pod.
+   - Fly with WASD, Space and Ctrl. R stops you, L is the light.
+   - Fly over 1 km away and back.
+   - Press E on the pod's Pilot prompt to get back in.
+   - Try "Return to plot".
+3. **EVA on the Mun:** land on the Mun (`/orbit 10 mun`, then descend, or `/hover 100 mun`), press F, walk, and hold Space to hop.
+4. **Terrain:**
+   - From the base, hills start about 1 km out.
+   - Fly low over Earth and land on a hill (`/hover 50`): the rocket should rest tilted, not slide.
+   - Land in a Mun crater.
+   - F3 shows a "Terrain:" line.
+5. **Two players:**
+   - Launch separately and meet within 250 m: both rockets become solid for each other.
+   - Float across and board a free seat.
+   - A player who lands near the base, gets out and walks away can still board the rocket again.
 
 ## Phase 11: what was built (see D40, D41, D42)
 - **Main menu:** your avatar floats in space with junk, a satellite, the Mun, shooting stars and sun glare. The buttons are Play (Enter), Settings, and Credits / Updates.
