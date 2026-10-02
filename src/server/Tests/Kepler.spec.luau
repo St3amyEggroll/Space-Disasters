@@ -222,8 +222,9 @@ return function(t: TestKit.Context)
 
 	t.test("radius crossing time matches a brute-force scan", function()
 		local r0 = Vec3d.new(HOME.Radius + 30000, 0, 0)
-		local v0 = Vec3d.new(-200, 0, 300) -- periapsis about 23 km: falls into the atmosphere
-		local top = HOME.Radius + 7000
+		-- CHANGED (Physics feel): periapsis is inside the 60 km planet, so it falls through the atmosphere top
+		local v0 = Vec3d.new(-200, 0, 300)
+		local top = HOME.Radius + (HOME.Atmosphere :: Bodies.Atmosphere).Top
 		local dt = Kepler.findRadiusCrossing(MU, r0, v0, top, 0, 1e4, HOME.Radius) :: number
 		t.expectTrue(dt ~= nil, "crosses the atmosphere top")
 		local brute = 0

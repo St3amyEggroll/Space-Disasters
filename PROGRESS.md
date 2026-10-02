@@ -15,11 +15,64 @@
 | 8: Surface terrain | Not started |
 | 9: Polish and backlog | Not started |
 | 10: Effects (Steamy) | **Built. Waiting for Steamy's playtest** (D38) |
-| 11: UI renovation (Steamy) | Not started: a new look for the builder, flight HUD, map and menus |
+| 11: UI renovation (Steamy) | **Built. Waiting for Steamy's playtest** (D40). Also the physics feel change (D41) and multiplayer fixes (D42) |
 
 Phase 2 is split into 2a/2b so you can playtest halfway through (agreed with Steamy).
 
 ---
+
+## Phase 11: what was built (see D40, D41, D42)
+- **Main menu:** your avatar floats in space with junk, a satellite, the Mun, shooting stars and sun glare. The buttons are Play (Enter), Settings, and Credits / Updates.
+- **Settings:** all saved to your account.
+  - Controls & Camera: mouse sensitivity, invert Y, camera smoothing, camera shake, rebind every key.
+  - Interface: UI size, Show HUD (F2), units, hints.
+  - Audio: music and effects volume.
+- **Flight HUD (KSP layout):**
+  - Top centre: the altimeter wheels and the ATMOSPHERE bar.
+  - Bottom centre: the navball with the speed plate, the SAS button, the throttle arc and HDG.
+  - Right: the stage stack.
+  - Bottom left: THR / FUEL and the lamps.
+  - Top right: End Flight (Leave Flight for passengers) with a confirmation.
+- **Builder:**
+  - Left: the parts catalog.
+  - Top: the toolbar, including Menu and Settings.
+  - Right: the KSP staging list, the stats card and ROLL OUT.
+- **Physics feel:**
+  - lighter air drag and engines x1.5;
+  - Earth back to 60 km (orbit about 710 m/s);
+  - clouds, trees by the pads, the vapour cone, camera fit and shake, a taller tower.
+- **Multiplayer:**
+  - Dropped stages no longer jump backwards.
+  - Players on the ground can board your rocket after you sit (you need a free seat, e.g. an External Seat).
+  - Players on foot show up while you fly.
+
+## Phase 11: how to test
+1. **Menu:** join. It fades in from black and you see your avatar floating, Earth below, the sun top-right, junk and shooting stars. WASD should not move you.
+2. **Settings:**
+   - Move the sliders and rebind a key (click it, press the new key; Escape cancels).
+   - Switch Units to Imperial.
+   - Rejoin: the settings should still be there.
+3. **Play:** a quick fade, then you're on your plot with the builder.
+   - Click buttons over the baseplate: no blocks should be placed.
+   - The Menu button goes back to space.
+4. **Builder:**
+   - Build the sanity rocket. The staging list shows STAGE 1 (launch) at the bottom with TWR about 2.9.
+   - Clear asks first.
+   - Save and Load work.
+5. **Flight:**
+   - Roll Out and press Space. It should leave the pad fast (100 m/s in about 5 s), with the camera rumbling.
+   - The altimeter wheels roll. You pass through clouds around 2-3 km, and the vapour cone shows near the speed of sound.
+   - Orbit is about 710 m/s at 10 km.
+6. **HUD:**
+   - F2 hides it.
+   - Clicking SAS lights it green.
+   - End Flight, then Cancel does nothing. End Flight, then End Flight sends you to your plot with the rocket gone.
+7. **Two players (Test > Clients and Servers):**
+   - Player 1 builds a pod plus an External Seat and rolls out.
+   - Player 2 walks up and presses Sit, and boards.
+   - Launch: player 2 can Leave Flight.
+   - Fly alone and look down: the other player walks around at the base.
+8. **Deploy:** in orbit, stage off a payload in front of you. It should drift away smoothly, with no jump backwards.
 
 ## Phase 10: what was built (see D38)
 
@@ -123,7 +176,7 @@ Please tell us what looks too strong, too weak, or wrong. Every number is a tuna
   - Drag from the atmosphere (`Shared/Sim/Atmosphere`), with nose cones helping. Fins give lift and stability.
   - Ground contact, and crashes: any block that hits harder than its crash tolerance breaks off.
   - SAS holds your heading.
-- **The world while flying** (planets are now half size, D27, and much prettier, D30):
+- **The world while flying** (Earth is 60 km again, D41, and much prettier, D30):
   - Sol, Earth and Mun are drawn as textured spheres in the sky. Earth has oceans, continents, deserts, forests, mountains, ice caps, clouds and an atmosphere glow. Mun has craters and dark seas.
   - Near the ground: matching textured terrain colours, plus trees, pines, cacti, bushes and rocks (boulders and crater rims on Mun), and a copy of Space Disasters Inc., so you can see the base as you leave.
   - The sun moves with the day cycle. When it's below the horizon you get the "shadow side" look (Q1 = A). The sky darkens as you climb out of the air.

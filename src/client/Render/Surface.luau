@@ -62,7 +62,7 @@ local TILE_TOP_GAP = 0.1 -- studs, tile top face below the true tile plane
 local MAX_TILE_EXTENT = 2048 -- studs, Roblox part size limit
 local COLLIDE_RADIUS = GameConfig.TILE_COLLIDE_RADIUS -- studs, tile nearest point to the local player's root
 local SHADOW_RADIUS = 1000 -- studs, tiles farther than this from the camera cast no shadow
-local POOL_PREWARM = 100 -- tile parts created at init (a full cap is 69-93 tiles)
+local POOL_PREWARM = 100 -- tile parts created at init (a full cap is 61-99 tiles; CHANGED (Physics feel): measured on the 60 km Earth and Mun)
 
 -- CHANGED (Phase 2a feedback): biome-textured tiles
 local TEXTURED_TILES_ENABLED = true

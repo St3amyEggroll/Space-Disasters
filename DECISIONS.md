@@ -180,7 +180,9 @@ The 2a request included the sky, so the D10/D11 scaled space and the Q1 = A ligh
 - **The limb budget:** a proxy sphere only needs its visible limb within the draw distance, not its far hemisphere. Budgeting for the limb lets proxies sit closer and bigger than the first, far-side budget allowed.
 - **Fallback:** if EditableMesh is unavailable (the place isn't published, or the Mesh/Image APIs setting is off), bodies are drawn as single Ball parts.
 
-### D27. Smaller planets (Steamy, Phase 2a feedback)
+### D27. Smaller planets (Steamy, Phase 2a feedback). SUPERSEDED by D41
+> D41 brought back the 60 km Earth and the 15 km Mun at 450 km.
+
 Steamy felt Kablamo was too big, so both bodies are **half size**. This deviates from the spec's Section 6.1 values.
 - **Kablamo:** radius 30 km (was 60 km), surface gravity still 9.81. The atmosphere top is 7 km (was 8 km), with a 1 km scale height.
   - Low orbit at 10 km altitude is about 470 m/s (was about 710), with a period of about 8.9 minutes.
@@ -442,6 +444,89 @@ Steamy asked for "an effects phase, to update effects of rockets and everything"
 - **Mars (Steamy's choice: a real solar system):** Earth (with the Mun) and Mars will both orbit Sol, with Sol as the root body. This is a new Phase 7b after time warp, because interplanetary transfers are long. Planned scale: orbits sized so an Earth-to-Mars transfer takes a few minutes at 50× warp.
 
 ---
+
+### D40. Phase 11: UI renovation (Steamy)
+- **Look:** KSP 1.x, after Steamy's reference photo:
+  - dark translucent rounded panels with yellow-green titles;
+  - light grey buttons with dark text;
+  - gunmetal gauge bezels and plates.
+- **Where the look lives:** `UI/Theme` holds the design tokens and DisplayOrders. `UI/Kit` is the widget kit. `UI/KitMath` has the pure helpers.
+  - `Kit.screen` returns a ScreenGui plus a design-pixel canvas.
+  - The canvas has one UIScale: screen fit (1366x710 reference) times the UI size setting.
+- **Global UI state (`UI/UIState`):** whether the menu is open, a set of modals, and `isInputBlocked`.
+  - Gameplay input (flight, build, map, chase camera, `Keybinds.isDown`) is ignored while the menu or any modal is open.
+  - The character's own PlayerModule controls are disabled too, so Space can't make you jump out of a seat while you rebind keys.
+- **Settings:**
+  - Shared schema `Config/SettingsSchema`. It is pure and tested, and holds the fields, ranges, the action list with default keys, and the allowed and reserved keys.
+  - Client store `Settings/Settings` and `Settings/Keybinds`.
+  - Saved by `SettingsController` through the remotes `RequestSettings`, `SettingsData` and `SaveSettings`, into the new optional `settings` field of the existing DataStore entry (SaveService, still DATA_VERSION 1).
+  - `SettingsService` validates the JSON size, sanitizes it and rate-limits saves.
+  - Future sounds must use the `SoundService.Music` / `SoundService.Effects` SoundGroups, which follow the volume sliders.
+- **Keys:** every key action is a named action (`FlightController.performAction` / `setHeld`, `BuildController.performAction`), so phone buttons can call the same code later.
+  - The pilot's ContextActionService binding always sinks the old fixed key set (Space, WASD, QE, Shift, Ctrl, ...) plus whatever is rebound. A key that is no longer used still can't reach Roblox's jump.
+  - Ctrl+Z (undo), F3 (debug) and Escape are fixed.
+- **Main menu (`MainMenuController`, `Render/MenuScene*`, `UI/MainMenu*`):**
+  - The scene is client-only, at MENU_ORIGIN (0, -6000, 0).
+  - `UniverseRenderer.setViewOverride` draws the real Earth, Mun and Sol around a viewpoint 10 km up. The view is solved so Earth sits low, Sol top-right and the Mun near the top.
+  - It shows a clone of the player's own avatar in a floating pose (Motor6D.Transform), up to 3 other players, tumbling junk built from game parts, a satellite, shooting stars, Bloom, SunRays and a GUI lens flare.
+  - Play fades through black, about 0.6 s. The builder's Menu button reopens the menu, but not while in flight.
+  - If building the menu fails, the controller unlocks the game instead of leaving input blocked.
+- **Flight HUD (`UI/FlightHUD`, `UI/HudMath`):**
+  - Top centre: an odometer altimeter (SEA LVL / RADAR), an ATMOSPHERE bar and a log VSI needle.
+  - Bottom centre: the navball in a bezel with a Surface / Orbit speed plate, a clickable SAS button, the throttle arc and HDG.
+  - Right: the stage stack.
+  - Bottom left: THR / FUEL gauges and the SAS / LEGS / ENGINES lamps.
+  - Key hints come from Keybinds. F2 hides the HUD.
+- **End Flight (Steamy: no pause menu, only End Flight with a confirmation):** a new remote, `EndFlight`.
+  - **Pilot, or the owner anywhere aboard:** everyone aboard and in the pocket is unseated and placed at their own plot (the server places them, then sends an identity PocketTransfer to base). The craft is removed and the pocket released. The others get "Flight ended by <name>".
+  - **Passenger:** "Leave Flight" sends only them home.
+  - Rolling out never clears the hangar, so the design stays.
+- **Builder:**
+  - The UI is split into `BuildUI` plus `BuildCatalog`, `BuildToolbar`, `BuildStaging`, `BuildSlots`, `BuildHints` and `BuildInfo` (pure, tested).
+  - KSP staging list on the right: stage 1, the launch stage, at the bottom. Each stage shows dV ASL/Vac, TWR (red if the launch stage is below 1), burn time and chips.
+  - A stats card and the ROLL OUT button sit under the list.
+  - Clear, overwrite and load-over-a-craft go through `Kit.confirm`.
+  - Clicks on the UI never place blocks (`isPointerOverUI`).
+
+### D41. Physics feel: visual-scale aero, engines x1.5, 60 km Earth (Steamy: "the rocket feels too slow for its size")
+- **Audit result:** a measured audit found no unit or timing bug.
+  - The cause was D20: 4-stud blocks with KSP 1.25 m masses and thrusts.
+  - Drag on the full 4 m face was about 13x too strong per kg. The starter rocket was stuck near 70-125 m/s while the ground was in view.
+  - Planet size does not change the launch (gravity is 9.81 at any radius); it only sets the orbit speed.
+- **Fix (Steamy chose this, plus the bigger planet):**
+  - `GameConfig.AERO_METERS_PER_STUD = 0.3`. Every aero area (body drag and fin lift) is multiplied by 0.09 in one place, MassProps. Parachute CdA in Phase 2b must use the same factor.
+  - Engines x1.5 with the same Isp: Small Engine 135 kN, Large Engine 600 kN, Solid Booster 292.5 kN (burns for about 22 s).
+  - Bodies back to before D27: Earth 60 km (air top 8 km, scale height 1.1 km), Mun 15 km at 450 km. Low orbit is about 710 m/s.
+  - Map scales halved. Re-entry heat gate is 600/700 m/s. Anti-cheat MAX_ACCEL is 500.
+- **Measured on the sanity rocket:**
+
+  | | Before | After |
+  |---|---|---|
+  | TWR | 1.9 | 2.9 |
+  | Time to 100 m/s | 15.8 s | 5.2 s |
+  | Speed at 1 km | 106 m/s | 201 m/s |
+  | dV to orbit | 1,187 m/s | 1,082 m/s, 39% fuel left |
+
+- **Pods without chutes still crash:** terminal speed is about 105 m/s, against a crash tolerance of 12. Parachutes (Phase 2b) are still to do.
+- **Speed cues:**
+  - a cloud deck (`Render/Clouds`) at a fraction of the atmosphere top;
+  - trees and rocks right up to the site plate;
+  - a vapour cone that can actually trigger (pressure gate 0.005-0.05);
+  - chase zoom fitted to the craft size;
+  - camera shake from thrust and dynamic pressure, with a "Camera shake" setting;
+  - a stronger trail, longer flames;
+  - an 80-stud launch tower with beacons.
+
+### D42. Multiplayer fixes after playtest (Steamy)
+- **Deploying jumped backwards:** other crafts are sampled INTERP_DELAY (0.1 s) in the past but drawn next to our present craft, so they sat velocity x delay behind (50-70 m in orbit).
+  - `StateBuffer.lead` carries the sample to the present with its own velocity, capped at the delay.
+  - Crafts on rails are sampled at the present.
+- **Boarding a craft whose pilot already sat:**
+  - Seats on the cosmetic copy get client ProximityPrompts (`Render/BoardPrompts`).
+  - A new remote, `BoardCraft(craftId, seatBlockId)`. The server checks the base pocket, permission, a free seat, speed below 5 m/s and range within radius + 25 m. It then seats the player in the flight pocket and sends an identity PocketTransfer.
+  - A one-pod rocket has no free seat; add an External Seat.
+- **Seeing players on foot from other pockets:** `Puppets` draws them as animated puppets at their true position (12 nearest, up to 1.5 km, line of sight).
+  - Each frame the hidden real character's Motor6D.Transform values are copied to the puppet.
 
 ## Phase 0 spike results
 

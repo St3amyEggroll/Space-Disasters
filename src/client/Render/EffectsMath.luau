@@ -123,7 +123,7 @@ function EffectsMath.smoothstep(edge0: number, edge1: number, x: number): number
 end
 
 -- How "vacuum-like" a plume is (0 at sea level, 1 in vacuum). The square root spreads the change over the lower
--- few kilometres, where Earth's thin (1 km scale height) air actually changes.
+-- few kilometres, where Earth's thin (1.1 km scale height) air actually changes.
 function EffectsMath.vacuumFactor(pressure: number): number
 	return 1 - math.sqrt(math.clamp(pressure, 0, 1))
 end
