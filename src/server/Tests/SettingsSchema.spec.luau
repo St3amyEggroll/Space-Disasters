@@ -322,4 +322,35 @@ return function(t: TestKit.Context)
 		local fits = '{"uiScale":1.2,"pad":"' .. string.rep("x", 100) .. '"}'
 		t.expectEqual(SettingsSchema.decode(fits).uiScale, 1.2, "a payload under the limit is read")
 	end)
+
+	-- CHANGED (Phase 11 review): a key freed by a rebind (Space after Stage moved) is still captured while piloting
+	t.test("pilotKeys keeps the old flight keys after a rebind", function()
+		local function count(list: { string }, key: string): number
+			local n = 0
+			for _, item in list do
+				if item == key then
+					n += 1
+				end
+			end
+			return n
+		end
+		local defaults = SettingsSchema.pilotKeys(SettingsSchema.defaultKeybinds())
+		for _, action in SettingsSchema.actionsFor("Flight") do
+			t.expectEqual(count(defaults, action.default), 1, `default key of {action.id} once`)
+		end
+		for _, key in SettingsSchema.PILOT_SINK_KEYS do
+			t.expectEqual(count(defaults, key), 1, `sink key {key} once`)
+		end
+		t.expectEqual(count(defaults, "R"), 0, "a Build-only key is not captured")
+
+		local binds = SettingsSchema.defaultKeybinds()
+		binds.Stage = "Return"
+		binds.ThrottleUp = "RightShift"
+		local rebound = SettingsSchema.pilotKeys(SettingsSchema.sanitizeKeybinds(binds))
+		t.expectEqual(count(rebound, "Return"), 1, "the new Stage key")
+		t.expectEqual(count(rebound, "RightShift"), 1, "the new ThrottleUp key")
+		t.expectEqual(count(rebound, "Space"), 1, "Space stays captured (no jump out of the seat)")
+		t.expectEqual(count(rebound, "LeftShift"), 1, "LeftShift stays captured (no shift lock)")
+		t.expectEqual(rebound[1], "W", "Flight action keys come first, in ACTIONS order")
+	end)
 end

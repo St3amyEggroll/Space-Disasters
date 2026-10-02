@@ -8,9 +8,12 @@
 	Flow:
 	  Init    UIState.setMenuOpen(true), so every other UI starts hidden and gameplay ignores input (BuildController
 	          boots earlier, but its Start runs after every Init).
-	  Start   builds the screen (black cover) and opens: takes the camera (MenuScene), disables the character's
-	          controls (PlayerModule), hides the Backpack / Health / PlayerList core GUIs (their previous state is
-	          restored on close), fades in from black.
+	  Start   builds the screen (black cover) and opens: takes the camera (MenuScene), hides the Backpack / Health /
+	          PlayerList core GUIs (their previous state is restored on close), fades in from black. CHANGED (Phase 11
+	          review): the character's controls follow UIState (UI/CharacterControls, started in Init), so they are
+	          off while the menu (or any dialog) is open. If building or opening the menu fails, the menu is
+	          abandoned (scene stopped, core GUIs back, UIState menu closed) so the game stays playable without it;
+	          a failing scene still shows the menu over a plain background.
 	  Play    instant: the menu content and the scene fade to black (CLOSE_FADE_S), the camera goes back to the
 	          character (CameraType Custom, CameraSubject = the Humanoid), controls and core GUIs come back,
 	          UIState.setMenuOpen(false), the scene is parked, and the black fades away (REVEAL_FADE_S). The player is
@@ -32,6 +35,7 @@ local Players = game:GetService("Players")
 local StarterGui = game:GetService("StarterGui")
 local UserInputService = game:GetService("UserInputService")
 
+local CharacterControls = require(script.Parent.Parent.UI.CharacterControls) -- CHANGED (Phase 11 review)
 local FlightController = require(script.Parent.FlightController)
 local MainMenu = require(script.Parent.Parent.UI.MainMenu)
 local MainMenuCredits = require(script.Parent.Parent.UI.MainMenuCredits)
@@ -56,7 +60,6 @@ local PLAY_KEYS = { Enum.KeyCode.Return, Enum.KeyCode.KeypadEnter }
 local HIDDEN_CORE_GUIS = { Enum.CoreGuiType.Backpack, Enum.CoreGuiType.Health, Enum.CoreGuiType.PlayerList }
 local BUSY_TOAST = "The menu is not available during a flight."
 local BASE_POCKET_ID = 0
-local CONTROLS_RETRY_S = 0.5 -- retry disabling the character controls until the PlayerModule exists
 --============================================================================
 
 type State = "Closed" | "Opening" | "Open" | "Closing"
@@ -67,7 +70,6 @@ local player = Players.LocalPlayer
 local state: State = "Closed"
 local view: MainMenu.View? = nil
 local savedCoreGuis: { [Enum.CoreGuiType]: boolean } = {}
-local controlsDisabled = false
 
 -- State test through a typed parameter (comparing the refined local directly confuses the old solver).
 local function is(wanted: State): boolean
@@ -75,52 +77,10 @@ local function is(wanted: State): boolean
 end
 
 --============================================================================
--- Character controls and core GUIs
+-- Core GUIs
+-- CHANGED (Phase 11 review): the character controls moved to UI/CharacterControls (they follow UIState now, so
+-- dialogs outside the menu block them too, and a respawn while Play fades cannot leave them off)
 --============================================================================
-
--- The PlayerModule's ControlModule (nil until the player scripts exist; never yields).
-local function controls(): any
-	local playerScripts = player:FindFirstChildOfClass("PlayerScripts")
-	local module = if playerScripts then playerScripts:FindFirstChild("PlayerModule") else nil
-	if module == nil or not module:IsA("ModuleScript") then
-		return nil
-	end
-	local ok, playerModule = pcall(require, module)
-	if not ok or type(playerModule) ~= "table" then
-		return nil
-	end
-	local getControls = (playerModule :: any).GetControls
-	if type(getControls) ~= "function" then
-		return nil
-	end
-	local gotten, result = pcall(getControls, playerModule)
-	return if gotten then result else nil
-end
-
-local function setControlsEnabled(enabled: boolean)
-	if enabled == not controlsDisabled then
-		return
-	end
-	local control = controls()
-	local ok = control ~= nil
-		and pcall(function()
-			if enabled then
-				control:Enable()
-			else
-				control:Disable()
-			end
-		end)
-	if ok then
-		controlsDisabled = not enabled
-	elseif not enabled then
-		-- the PlayerModule may not have loaded yet: try again while the menu is still showing
-		task.delay(CONTROLS_RETRY_S, function()
-			if is("Opening") or is("Open") then
-				setControlsEnabled(false)
-			end
-		end)
-	end
-end
 
 local function hideCoreGuis()
 	for _, guiType in HIDDEN_CORE_GUIS do
@@ -173,7 +133,13 @@ end
 
 -- Shows the scene and the menu behind the (already black) cover, then fades the cover away.
 local function reveal(v: MainMenu.View, fadeIn: number)
-	MenuScene.start(v.flareLayer)
+	-- CHANGED (Phase 11 review): a failing scene still shows the menu (over a plain background)
+	local ok, err = pcall(function()
+		MenuScene.start(v.flareLayer)
+	end)
+	if not ok then
+		warn(`[MainMenuController] the menu scene failed to start: {err}`)
+	end
 	v.setButtonsEnabled(true)
 	v.fadeContent(true, CONTENT_FADE_S)
 	v.fadeCover(0, fadeIn, function()
@@ -189,8 +155,7 @@ local function openMenu(first: boolean)
 		return
 	end
 	state = "Opening"
-	UIState.setMenuOpen(true)
-	setControlsEnabled(false)
+	UIState.setMenuOpen(true) -- CHANGED (Phase 11 review): also switches the character controls off
 	hideCoreGuis()
 	v.setEnabled(true)
 	v.setButtonsEnabled(false)
@@ -204,6 +169,19 @@ local function openMenu(first: boolean)
 			end
 		end)
 	end
+end
+
+-- CHANGED (Phase 11 review): the menu failed to build or open: drop it so the game stays playable without it.
+local function abandonMenu(err: unknown)
+	warn(`[MainMenuController] the main menu failed; playing without it: {err}`)
+	pcall(MenuScene.stop)
+	restoreCoreGuis()
+	state = "Closed"
+	local v = view
+	if v then
+		pcall(v.setEnabled, false)
+	end
+	UIState.setMenuOpen(false)
 end
 
 function MainMenuController.open()
@@ -227,10 +205,16 @@ function MainMenuController.play()
 		if not is("Closing") then
 			return
 		end
-		MenuScene.stop() -- camera back to the character, scene parked
-		setControlsEnabled(true)
+		-- camera back to the character, scene parked
+		-- CHANGED (Phase 11 review): protected, so a failing stop cannot keep the game blocked
+		local ok, err = pcall(function()
+			MenuScene.stop()
+		end)
+		if not ok then
+			warn(`[MainMenuController] the menu scene failed to stop: {err}`)
+		end
 		restoreCoreGuis()
-		UIState.setMenuOpen(false)
+		UIState.setMenuOpen(false) -- CHANGED (Phase 11 review): also switches the character controls back on
 		v.fadeCover(0, REVEAL_FADE_S, function()
 			if is("Closing") then
 				state = "Closed"
@@ -261,6 +245,7 @@ end
 --============================================================================
 
 function MainMenuController.Init()
+	CharacterControls.start() -- CHANGED (Phase 11 review): character controls off while menus / dialogs are open
 	-- every other UI starts hidden and gameplay ignores input until Play
 	UIState.setMenuOpen(true)
 	UIState.onMenuRequested(function()
@@ -271,12 +256,18 @@ function MainMenuController.Init()
 end
 
 function MainMenuController.Start()
-	local v = MainMenu.build({
-		play = MainMenuController.play,
-		settings = MainMenuController.openSettings,
-		credits = MainMenuController.openCredits,
-	})
-	view = v
+	-- CHANGED (Phase 11 review): building / opening the menu is protected (see the header)
+	local built, err = pcall(function()
+		view = MainMenu.build({
+			play = MainMenuController.play,
+			settings = MainMenuController.openSettings,
+			credits = MainMenuController.openCredits,
+		})
+	end)
+	if not built then
+		abandonMenu(err)
+		return
+	end
 	UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
 		if gameProcessed or not is("Open") or UIState.isModalOpen() then
 			return
@@ -285,15 +276,14 @@ function MainMenuController.Start()
 			MainMenuController.play()
 		end
 	end)
-	-- respawns while the menu shows: keep the new character's controls off
-	player.CharacterAdded:Connect(function()
-		if not is("Closed") then
-			controlsDisabled = false
-			task.defer(setControlsEnabled, false)
-		end
-	end)
 	-- Init already set the menu state open (before the screen existed); show it now
-	openMenu(true)
+	-- CHANGED (Phase 11 review): the respawn handling moved to UI/CharacterControls; opening is protected
+	local opened, openErr = pcall(function()
+		openMenu(true)
+	end)
+	if not opened then
+		abandonMenu(openErr)
+	end
 end
 
 return MainMenuController

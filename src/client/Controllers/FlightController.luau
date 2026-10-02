@@ -33,7 +33,8 @@
 	CHANGED (Phase 11): keys come from Settings/Keybinds (SettingsSchema "Flight" actions; the defaults are the keys
 	above, plus M map view and F2 HUD on / off). While piloting, ONE ContextActionService binding captures every
 	Flight action's key (so none, e.g. a map key moved to Space, can reach the default jump and throw the pilot out of
-	the seat) and is re-bound whenever the keybinds change. While UIState.isInputBlocked() (main menu or a dialog)
+	the seat) and is re-bound whenever the keybinds change. CHANGED (Phase 11 review): it also captures the old flight
+	keys that no action uses any more (Keybinds.pilotKeys), so a freed Space cannot reach the default jump either. While UIState.isInputBlocked() (main menu or a dialog)
 	the binding ignores the keys (still sinking them, for the same reason) and held keys read as released, so the
 	throttle does not move either. The map key is handled here while piloting and by MapViewController otherwise;
 	ToggleHUD (flips Settings hudVisible; the HUD itself reads that setting) works for everyone aboard.
@@ -349,13 +350,16 @@ local function onAction(
 end
 
 -- CHANGED (Phase 11): every Flight action's current key.
+-- CHANGED (Phase 11 review): plus the old flight keys (Keybinds.pilotKeys), so a key freed by a rebind (Space after
+-- Stage moved, LeftShift after ThrottleUp moved) is still sunk (onAction sinks keys without an action) instead of
+-- reaching the default jump (out of the seat) or the shift lock.
 local function bindAction()
 	ContextActionService:BindActionAtPriority(
 		ACTION_NAME,
 		onAction,
 		false,
 		ACTION_PRIORITY,
-		table.unpack(Keybinds.keysFor("Flight"))
+		table.unpack(Keybinds.pilotKeys())
 	)
 end
 

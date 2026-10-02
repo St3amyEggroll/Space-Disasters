@@ -100,6 +100,7 @@ function BuildSlots.create(callbacks: Callbacks): SlotDialog
 	local isOpen = false
 	local removeEscape: () -> () = function() end
 	local view: View? = nil
+	local cancelConfirm: (() -> ())? = nil -- CHANGED (Phase 11 review): the open Overwrite / Load question
 
 	local function firstSlot(filled: boolean): number?
 		for slot = 1, GameConfig.SAVE_SLOTS do
@@ -258,6 +259,12 @@ function BuildSlots.create(callbacks: Callbacks): SlotDialog
 	end
 
 	close = function()
+		-- CHANGED (Phase 11 review): a pending Overwrite / Load question goes with the dialog
+		local cancel = cancelConfirm
+		cancelConfirm = nil
+		if cancel then
+			cancel()
+		end
 		if not isOpen then
 			return
 		end
@@ -286,12 +293,13 @@ function BuildSlots.create(callbacks: Callbacks): SlotDialog
 				close()
 				return
 			end
-			Kit.confirm({
+			cancelConfirm = Kit.confirm({
 				title = `Overwrite slot {slot}?`,
 				body = `"{existing}" in slot {slot} will be replaced by the craft on your plot.`,
 				confirmText = "Overwrite",
 				danger = true,
 			}, function(confirmed: boolean)
+				cancelConfirm = nil -- CHANGED (Phase 11 review)
 				if confirmed then
 					callbacks.onSave(slot, name)
 					close()
@@ -307,11 +315,12 @@ function BuildSlots.create(callbacks: Callbacks): SlotDialog
 			close()
 			return
 		end
-		Kit.confirm({
+		cancelConfirm = Kit.confirm({
 			title = `Load "{existing}"?`,
 			body = "The craft on your plot will be replaced. Save it first if you want to keep it.",
 			confirmText = "Load",
 		}, function(confirmed: boolean)
+			cancelConfirm = nil -- CHANGED (Phase 11 review)
 			if confirmed then
 				callbacks.onLoad(slot)
 				close()

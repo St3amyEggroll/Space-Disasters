@@ -1149,8 +1149,14 @@ function MapViewController.close()
 	local camera = Workspace.CurrentCamera
 	if camera then
 		camera.FieldOfView = savedFieldOfView
-		camera.CameraType = savedCameraType
-		if savedCameraType == Enum.CameraType.Custom then
+		-- CHANGED (Phase 11 review): never back to Scriptable (the chase camera's, saved when the map opened from a
+		-- flight): when the flight ended meanwhile (End Flight in the map) nothing would ever give the camera back.
+		-- Still aboard with the chase camera on, FlightController restarts it (Scriptable) on the next frame.
+		local restored = if savedCameraType == Enum.CameraType.Scriptable
+			then Enum.CameraType.Custom
+			else savedCameraType
+		camera.CameraType = restored
+		if restored == Enum.CameraType.Custom then
 			local character = player.Character
 			local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
 			if humanoid then

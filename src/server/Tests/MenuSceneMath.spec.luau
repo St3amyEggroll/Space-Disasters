@@ -6,6 +6,8 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TestKit = require(script.Parent.TestKit)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
+local Bodies = require(ReplicatedStorage.Shared.Config.Bodies) -- CHANGED (Phase 11 review)
+local Universe = require(ReplicatedStorage.Shared.Sim.Universe) -- CHANGED (Phase 11 review)
 local MenuSceneMath = require(game:GetService("StarterPlayer").StarterPlayerScripts.Client.Render.MenuSceneMath)
 
 --============================================================================
@@ -185,5 +187,58 @@ return function(t: TestKit.Context)
 		t.expectNear(MenuSceneMath.smoothstep(0, 1, 0.5), 0.5, EPSILON)
 		t.expectNear(MenuSceneMath.smoothstep(0, 1, -1), 0, EPSILON)
 		t.expectNear(MenuSceneMath.smoothstep(1, 1, 2), 1, EPSILON)
+	end)
+
+	-- CHANGED (Phase 11 review): the menu's time offset
+	t.test("timeOffset: the first sample inside the band, 0 without one", function()
+		local function linear(offset: number): number
+			return math.rad(10) + offset * math.rad(0.25) -- 10 degrees now, +0.25 degrees per second
+		end
+		t.expectEqual(MenuSceneMath.timeOffset(linear, 400, 5, math.rad(50), math.rad(70)), 160)
+		t.expectEqual(MenuSceneMath.timeOffset(linear, 400, 5, math.rad(5), math.rad(70)), 0, "already inside")
+		t.expectEqual(MenuSceneMath.timeOffset(linear, 100, 5, math.rad(50), math.rad(70)), 0, "out of reach")
+		t.expectEqual(MenuSceneMath.timeOffset(linear, 400, 0, math.rad(50), math.rad(70)), 0, "no step")
+	end)
+
+	-- CHANGED (Phase 11 review): with the real universe and MenuScene's composition, the Mun can always be framed
+	t.test("timeOffset + bestAlpha: the real Mun lands on screen at any starting time", function()
+		local tanY = math.tan(math.rad(30)) -- MenuScene: MENU_FOV 60, 16:9
+		local tanX = tanY * 16 / 9
+		local earth = Bodies.get(Bodies.HOMEWORLD)
+		local distance = earth.Radius + 10000 -- MenuScene VIEW_ALTITUDE
+		local _, limbAngle = MenuSceneMath.screenAngles(0, -0.28, tanX, tanY)
+		local sunAz, sunEl = MenuSceneMath.screenAngles(0.78, 0.72, tanX, tanY)
+		local munAz, munEl = MenuSceneMath.screenAngles(0, 0.45, tanX, tanY)
+		for _, ut in { 0, 250, 700, 1100, 2900, 5000 } do
+			local function separationAt(offset: number): number
+				local at = ut + offset
+				return Vec3d.angle(Universe.sunDirection(at), Universe.bodyOffset(Bodies.MOON, Bodies.HOMEWORLD, at))
+			end
+			local offset = MenuSceneMath.timeOffset(separationAt, 3000, 5, math.rad(50), math.rad(70))
+			local separation = separationAt(offset)
+			t.expectTrue(separation >= math.rad(50) and separation <= math.rad(70), `UT {ut}: separation in the band`)
+			local at = ut + offset
+			local p: MenuSceneMath.ViewParams = {
+				earthRadius = earth.Radius,
+				distance = distance,
+				sunDir = Universe.sunDirection(at),
+				munPos = Universe.bodyOffset(Bodies.MOON, Bodies.HOMEWORLD, at),
+				munRadius = Bodies.get(Bodies.MOON).Radius,
+				pitch = MenuSceneMath.pitchFor(earth.Radius, distance, limbAngle),
+				sunAzimuth = sunAz,
+				sunElevation = sunEl,
+				munAzimuth = munAz,
+				munElevation = munEl,
+			}
+			local view = MenuSceneMath.solveView(p, MenuSceneMath.bestAlpha(p))
+			t.expectTrue(view ~= nil, `UT {ut}: view`)
+			assert(view)
+			local toMun = Vec3d.normalize(Vec3d.sub(p.munPos, view.pos))
+			local depth = Vec3d.dot(toMun, view.forward)
+			t.expectTrue(depth > 0, `UT {ut}: Mun in front`)
+			local x = Vec3d.dot(toMun, view.right) / depth
+			local y = Vec3d.dot(toMun, view.cameraUp) / depth
+			t.expectTrue(math.abs(x) < tanX and math.abs(y) < tanY, `UT {ut}: Mun on screen ({x / tanX}, {y / tanY})`)
+		end
 	end)
 end

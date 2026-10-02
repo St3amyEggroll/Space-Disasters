@@ -42,6 +42,7 @@ local HEADER_HEIGHT = 22
 local HEADER_GAP = 6
 local LIST_PADDING = 6
 local CARD_GAP = 4
+local PIN_TOLERANCE = 2 -- CHANGED (Phase 11 review): px from the bottom that still count as "at the first stage"
 local CARD_HEIGHT = 62
 local CARD_PADDING = 6
 local BADGE_SIZE = 30
@@ -166,6 +167,29 @@ function BuildStaging.create(parent: Instance, callbacks: Callbacks): Staging
 	if listLayout then
 		listLayout.VerticalAlignment = Enum.VerticalAlignment.Bottom -- KSP: the first stage sits at the bottom
 	end
+	-- CHANGED (Phase 11 review): keep the first stage (bottom) in view whenever the list or its window changes size
+	-- (new stages are added at the top, the stats card under the panel grows and shrinks), unless the player has
+	-- scrolled up; scrolling back to the bottom pins it again
+	local pinned = true
+	local pinning = false
+	local function bottomY(): number
+		return math.max(0, list.AbsoluteCanvasSize.Y - list.AbsoluteWindowSize.Y)
+	end
+	local function pin()
+		if not pinned then
+			return
+		end
+		pinning = true
+		list.CanvasPosition = Vector2.new(0, bottomY())
+		pinning = false
+	end
+	list:GetPropertyChangedSignal("AbsoluteCanvasSize"):Connect(pin)
+	list:GetPropertyChangedSignal("AbsoluteWindowSize"):Connect(pin)
+	list:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+		if not pinning then
+			pinned = list.CanvasPosition.Y >= bottomY() - PIN_TOLERANCE
+		end
+	end)
 	local emptyText = Kit.label(stagingPanel, EMPTY_TEXT, {
 		position = UDim2.fromOffset(0, listTop),
 		size = UDim2.new(1, 0, 1, -listTop),
@@ -390,9 +414,9 @@ function BuildStaging.create(parent: Instance, callbacks: Callbacks): Staging
 		if count ~= lastCount then
 			lastCount = count
 			-- show the first stage (bottom) once the layout has settled
-			task.defer(function()
-				list.CanvasPosition = Vector2.new(0, math.max(0, list.AbsoluteCanvasSize.Y - list.AbsoluteWindowSize.Y))
-			end)
+			-- CHANGED (Phase 11 review): and keep it there (pin) while the sizes settle
+			pinned = true
+			task.defer(pin)
 		end
 
 		massValue.Text = Format.mass(stats.mass)

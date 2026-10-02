@@ -4,6 +4,7 @@
 	Which full-screen UI owns the player's input right now: the main menu (open / closed) and the modal dialogs
 	(settings, credits, confirmations). Gameplay input (flight keys, building, camera drag and zoom, the map view)
 	checks isInputBlocked() and ignores the player while the menu or any modal is open.
+	CHANGED (Phase 11 review): UI/CharacterControls switches the character's own controls (walk, jump) off meanwhile.
 
 	The main menu controller owns setMenuOpen (it should open the menu in its Init, before gameplay reads input);
 	anything else that wants the menu (the builder's Menu button) calls requestMenu(), which the main menu

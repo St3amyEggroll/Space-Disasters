@@ -26,9 +26,12 @@
 	  * The real universe around it: UniverseRenderer.setViewOverride(frame) with a frame that maps MENU_ORIGIN to a
 	    viewpoint VIEW_ALTITUDE above Earth (above the air: the SkyCube is black and ScaledSpace in scaled mode).
 	    Each frame MenuSceneMath.solveView turns the view so Earth's limb is at LIMB_NY on screen, Sol at
-	    (SUN_NX, SUN_NY) and the Mun (at its real position for the current UT) drifts around (MUN_NX, MUN_NY); the
-	    targets sway slowly so the whole view drifts. Lighting on the avatar comes from the real sun via
-	    SkyLighting (the workspace axes are the camera's, and the sun is kept above the screen centre so Roblox
+	    (SUN_NX, SUN_NY) and the Mun (at its real position for the menu's UT) drifts around (MUN_NX, MUN_NY); the
+	    targets sway slowly so the whole view drifts. CHANGED (Phase 11 review): the view runs on its own menu time
+	    (UniverseRenderer.setViewOverride's ut), started MenuSceneMath.timeOffset ahead of the real UT so the sun /
+	    Mun angle is MUN_SEPARATION_MIN..MAX (the Mun can be framed and shows a lit crescent) and slowed to
+	    MENU_TIME_RATE; if it ever drifts out of MUN_KEEP_MIN..MAX the offset is picked again (at most every
+	    MUN_REPICK_MIN_S). Lighting on the avatar comes from the real sun via SkyLighting (the workspace axes are the camera's, and the sun is kept above the screen centre so Roblox
 	    lights the scene as day).
 
 	start() takes the camera (Scriptable, MENU_FOV) and binds one render step before UniverseRenderer's; stop()
@@ -54,10 +57,10 @@ local CraftBuilder = require(ReplicatedStorage.Shared.Craft.CraftBuilder)
 local CraftDesign = require(ReplicatedStorage.Shared.Craft.CraftDesign)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
+local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime) -- CHANGED (Phase 11 review): menu time
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local MenuSceneFlare = require(script.Parent.MenuSceneFlare)
 local MenuSceneMath = require(script.Parent.MenuSceneMath)
-local PocketController = require(script.Parent.Parent.Controllers.PocketController)
 local UniverseRenderer = require(script.Parent.Parent.Controllers.UniverseRenderer)
 
 --============================================================================
@@ -83,6 +86,15 @@ local MUN_DRIFT_PERIOD = 170 -- s
 local MUN_TRACK_RATE = math.rad(5) -- rad/s: how fast the viewpoint may slide around the sun cone to follow
 local ALPHA_SAMPLES = 120 -- global search when the scene starts
 local OCCLUSION_SOFT = math.rad(0.8) -- soft edge of Earth / Mun hiding the sun (flare)
+-- CHANGED (Phase 11 review): the menu's own time (header), so the Mun is always where the view can frame it
+local MENU_TIME_RATE = 0.25 -- menu UT seconds per real second (the sun / Mun angle changes ~0.06 deg/s)
+local MUN_SEPARATION_MIN = math.rad(50) -- sun / Mun angle (Earth-centred) picked when the scene starts ...
+local MUN_SEPARATION_MAX = math.rad(70)
+local MUN_KEEP_MIN = math.rad(30) -- ... and kept while it stays in here (beyond it: picked again)
+local MUN_KEEP_MAX = math.rad(90)
+local MUN_SEARCH_SPAN_S = 3000 -- UT seconds searched ahead (about two synodic periods of the Mun)
+local MUN_SEARCH_STEP_S = 5
+local MUN_REPICK_MIN_S = 30 -- real seconds between two searches (none succeeding must not search every frame)
 
 -- The player's avatar
 local AVATAR_DISTANCE = 11 -- studs in front of the camera
@@ -272,6 +284,8 @@ local viewParams: MenuSceneMath.ViewParams = {
 	munElevation = 0,
 }
 local alpha: number? = nil -- position on the sun cone (nil = search again)
+local menuUT = 0 -- CHANGED (Phase 11 review): the UT the menu view shows (header)
+local nextPickAt = 0 -- CHANGED (Phase 11 review): clock before which the menu time is not searched again
 local clock = 0 -- s since start()
 local startedAt = 0 -- clock at the last start (appearance timeout)
 
@@ -361,6 +375,12 @@ local function isHidden(character: Model): boolean
 		end
 	end
 	return false
+end
+
+-- CHANGED (Phase 11 review): a dead character has lost its joints (BreakJointsOnDeath), so a clone would fall apart.
+local function isDead(character: Model): boolean
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	return humanoid ~= nil and (humanoid.Health <= 0 or humanoid:GetState() == Enum.HumanoidStateType.Dead)
 end
 
 local function cloneCharacter(character: Model, pending: boolean): Figure?
@@ -485,7 +505,12 @@ local function updateLocalSource()
 	local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
 	local waited = clock - startedAt >= APPEARANCE_TIMEOUT_S
 	local current = localFigure
-	if character and root then
+	-- CHANGED (Phase 11 review): a dead character is not ready (keep the figure; re-cloned after the respawn)
+	if character and root and isDead(character) then
+		if current == nil and waited then
+			setLocalFigure(standIn())
+		end
+	elseif character and root then
 		local loaded = player:HasAppearanceLoaded()
 		local stale = current == nil or current.source ~= character or (current.pending and (loaded or appearanceDirty))
 		if stale and (loaded or waited or appearanceDirty) and failedSource ~= character then
@@ -546,6 +571,8 @@ local function refreshOthers()
 			or candidate == player
 			or character == nil
 			or character:FindFirstChild("HumanoidRootPart") == nil
+			or character:FindFirstChildOfClass("Humanoid") == nil -- CHANGED (Phase 11 review)
+			or isDead(character) -- CHANGED (Phase 11 review): its limbs would fall away
 			or not candidate:HasAppearanceLoaded()
 			or isHidden(character)
 		then
@@ -961,12 +988,37 @@ local function toVector3(v: Vec3d.Vec3d): Vector3
 	return Vector3.new(v.x, v.y, v.z)
 end
 
+-- CHANGED (Phase 11 review): the Earth-centred sun / Mun angle at a UT.
+local function separationAt(ut: number): number
+	return Vec3d.angle(Universe.sunDirection(ut), Universe.bodyOffset(Bodies.MOON, Bodies.HOMEWORLD, ut))
+end
+
+local function separationIn(ut: number, minAngle: number, maxAngle: number): boolean
+	local angle = separationAt(ut)
+	return angle >= minAngle and angle <= maxAngle
+end
+
+-- CHANGED (Phase 11 review): how far ahead of `ut` the menu time starts (MenuSceneMath.timeOffset).
+local function menuTimeOffset(ut: number): number
+	return MenuSceneMath.timeOffset(function(offset: number): number
+		return separationAt(ut + offset)
+	end, MUN_SEARCH_SPAN_S, MUN_SEARCH_STEP_S, MUN_SEPARATION_MIN, MUN_SEPARATION_MAX)
+end
+
 -- Turns the universe around the camera (header) and returns the solved view, if any.
 local function updateView(dt: number, tanX: number, tanY: number): MenuSceneMath.View?
-	local ut = PocketController.renderUT()
+	-- CHANGED (Phase 11 review): the menu's own time (header), picked again if the Mun drifts out of reach
+	menuUT += dt * MENU_TIME_RATE
 	local p = viewParams
+	if clock >= nextPickAt and not separationIn(menuUT, MUN_KEEP_MIN, MUN_KEEP_MAX) then
+		nextPickAt = clock + MUN_REPICK_MIN_S
+		menuUT += menuTimeOffset(menuUT)
+		alpha = nil
+	end
+	local ut = menuUT
 	p.sunDir = Universe.sunDirection(ut)
 	p.munPos = Universe.bodyOffset(Bodies.MOON, Bodies.HOMEWORLD, ut)
+	UniverseRenderer.setViewOverride(viewFrame, ut)
 	local _, limbAngle = MenuSceneMath.screenAngles(0, LIMB_NY, tanX, tanY)
 	p.pitch = MenuSceneMath.pitchFor(p.earthRadius, p.distance, limbAngle)
 	local sunPhase = 2 * math.pi * clock / SUN_DRIFT_PERIOD
@@ -1064,6 +1116,8 @@ local function step(dt: number)
 	end
 	camera.FieldOfView = MENU_FOV
 	camera.CFrame = base * sway
+	-- CHANGED (Phase 11 review): lighting and detail are prioritised around Focus (else it stays at the character)
+	camera.Focus = base * CFrame.new(0, 0, -AVATAR_DISTANCE)
 
 	local view = updateView(dt, tanX, tanY)
 
@@ -1126,6 +1180,7 @@ function MenuScene.start(flareParent: GuiObject)
 		savedFov = camera.FieldOfView
 		camera.CameraType = Enum.CameraType.Scriptable
 		camera.CFrame = CFrame.new(MENU_ORIGIN)
+		camera.Focus = CFrame.new(MENU_ORIGIN) * CFrame.new(0, 0, -AVATAR_DISTANCE) -- CHANGED (Phase 11 review)
 	end
 	local viewport = if camera then camera.ViewportSize else Vector2.new(16, 9)
 	local tanY = math.tan(math.rad(MENU_FOV / 2))
@@ -1162,7 +1217,11 @@ function MenuScene.start(flareParent: GuiObject)
 	)
 
 	addLightingEffects()
-	UniverseRenderer.setViewOverride(viewFrame)
+	-- CHANGED (Phase 11 review): the menu's own time (header)
+	local now = UniverseTime.now()
+	menuUT = now + menuTimeOffset(now)
+	nextPickAt = MUN_REPICK_MIN_S
+	UniverseRenderer.setViewOverride(viewFrame, menuUT)
 	RunService:BindToRenderStep(RENDER_STEP_NAME, RENDER_PRIORITY, step)
 end
 

@@ -74,6 +74,8 @@
 	                                                  with a dim backdrop; Escape / Cancel = false. Registers
 	                                                  UIState modal "KitConfirm" while open. One at a time: a call
 	                                                  while one is open is answered false at once (warns).
+	                                                  CHANGED (Phase 11 review): returns cancel() (answers false and
+	                                                  closes it if still open; a no-op afterwards)
 	    Kit.isConfirmOpen() -> boolean
 	    Kit.toast(text, kind?)                        "Info" | "Warning" | "Error"; top-centre stack that fades out
 	                                                  (Theme.DisplayOrder.Toast); the same text again refreshes it
@@ -1201,11 +1203,13 @@ function Kit.isConfirmOpen(): boolean
 	return confirmOpen
 end
 
-function Kit.confirm(opts: ConfirmOptions, onResult: (confirmed: boolean) -> ())
+-- CHANGED (Phase 11 review): returns a cancel function (answers no and closes the dialog, if still open), so a
+-- screen that goes away can take its pending question with it.
+function Kit.confirm(opts: ConfirmOptions, onResult: (confirmed: boolean) -> ()): () -> ()
 	if confirmOpen then
 		warn(`[Kit] a confirm dialog is already open; "{opts.title}" was answered no`)
 		task.defer(onResult, false)
-		return
+		return function() end
 	end
 	confirmOpen = true
 
@@ -1262,6 +1266,9 @@ function Kit.confirm(opts: ConfirmOptions, onResult: (confirmed: boolean) -> ())
 	backdrop.BackgroundTransparency = 1
 	Kit.tween(backdrop, { BackgroundTransparency = Theme.Transparency.Backdrop }, Theme.Tween.Normal)
 	Kit.tween(popScale, { Scale = 1 }, Theme.Tween.Normal)
+	return function()
+		finish(false)
+	end
 end
 
 local function getToastHolder(): Frame

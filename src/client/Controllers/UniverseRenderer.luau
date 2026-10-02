@@ -24,12 +24,15 @@
 	RemoteCrafts copies and the Effects folder are hidden like in map mode (effects keep ageing with the pocket's
 	own context). The pocket frame itself is untouched. Layers hidden by the map view and by the override are
 	tracked per reason, so either can end first.
+	CHANGED (Phase 11 review): the override may carry its own UT (the main menu shows the universe at its own time so
+	the Mun can be framed); the override's layers, SkyLighting included, are drawn at that UT.
 
 	API:
 	  UniverseRenderer.setMapMode(enabled, cubeHalfSize?)   MapViewController
 	  UniverseRenderer.isMapMode() -> boolean
 	  UniverseRenderer.drawDistance() -> number
-	  UniverseRenderer.setViewOverride(frame?)              CHANGED (Phase 11): nil restores the normal view
+	  UniverseRenderer.setViewOverride(frame?, ut?)         CHANGED (Phase 11): nil restores the normal view;
+	                                                        ut (Phase 11 review): the override's UT (default: renderUT)
 	  UniverseRenderer.hasViewOverride() -> boolean         CHANGED (Phase 11)
 ]]
 
@@ -98,6 +101,7 @@ local hiddenLayers: { [Instance]: HiddenLayer } = {}
 
 -- CHANGED (Phase 11): main menu view override (setViewOverride)
 local viewOverride: Frames.Frame? = nil
+local viewOverrideUT: number? = nil -- CHANGED (Phase 11 review): the override's own UT (nil = the pocket's)
 
 -- CHANGED (Phase 11): one factory for the pocket context and the menu view context
 local function newContext(): RenderContext
@@ -196,7 +200,7 @@ end
 
 -- CHANGED (Phase 11): the main menu view (header): the universe drawn from the override frame around the camera
 local function stepViewOverride(override: Frames.Frame, camera: Camera, dt: number)
-	fillContext(viewCtx, override, camera.CFrame, ctx.ut, dt)
+	fillContext(viewCtx, override, camera.CFrame, viewOverrideUT or ctx.ut, dt) -- CHANGED (Phase 11 review): own UT
 	timed("ScaledSpace", function()
 		ScaledSpace.update(viewCtx)
 	end)
@@ -311,10 +315,13 @@ end
 	CHANGED (Phase 11): the main menu view (header). `frame` maps the menu camera's surroundings to a viewpoint in
 	space (Render/MenuScene updates it in place every frame, before this renderer's step); nil restores the normal
 	view. While set, the other crafts' copies and the effects are hidden.
+	CHANGED (Phase 11 review): `ut` is the UT the override view is drawn at (nil = the pocket's renderUT); MenuScene
+	calls this every frame with its menu time.
 ]]
-function UniverseRenderer.setViewOverride(frame: Frames.Frame?)
+function UniverseRenderer.setViewOverride(frame: Frames.Frame?, ut: number?)
 	local wasSet = viewOverride ~= nil
 	viewOverride = frame
+	viewOverrideUT = if frame then ut else nil -- CHANGED (Phase 11 review)
 	if frame and not wasSet then
 		hideLayer(Workspace:FindFirstChild("RemoteCrafts"), HIDE_MENU)
 		hideLayer(Effects.folder(), HIDE_MENU)

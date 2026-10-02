@@ -40,6 +40,7 @@
 	  SettingsSchema.CONTEXTS: { Context }
 	  SettingsSchema.ALLOWED_KEYS: { string }                 bindable Enum.KeyCode names
 	  SettingsSchema.RESERVED_KEYS: { string }                never bindable
+	  SettingsSchema.PILOT_SINK_KEYS: { string }              CHANGED (Phase 11 review): always captured while piloting
 	  SettingsSchema.FIELDS: { string }                       every field of Values ("keybinds" last)
 	  SettingsSchema.RANGES: { [string]: Range }              the numeric fields
 	  SettingsSchema.UNITS: { Units }
@@ -48,6 +49,7 @@
 	  SettingsSchema.findAction(id) -> Action?
 	  SettingsSchema.actionsFor(context) -> { Action }        display order
 	  SettingsSchema.defaultKeybinds() -> { [string]: string } fresh table
+	  SettingsSchema.pilotKeys(keybinds) -> { string }        CHANGED (Phase 11 review): Flight keys + PILOT_SINK_KEYS
 	  SettingsSchema.defaults() -> Values                     fresh table
 	  SettingsSchema.sanitize(raw: unknown) -> Values         fresh table, never shares tables with raw
 	  SettingsSchema.sanitizeKeybinds(raw: unknown) -> { [string]: string }
@@ -197,6 +199,25 @@ local ALLOWED_KEYS: { string } = {
 	"Backspace",
 }
 local RESERVED_KEYS: { string } = { "Escape", "Slash", "Backquote", "Tab", "F3", "F9", "F11" }
+-- CHANGED (Phase 11 review): keys the pilot's binding always captures, bound to an action or not: the pre-Phase-11
+-- flight keys. A freed Space would reach the default jump (out of the seat), a freed LeftShift the shift lock.
+local PILOT_SINK_KEYS: { string } = {
+	"W",
+	"A",
+	"S",
+	"D",
+	"Q",
+	"E",
+	"LeftShift",
+	"LeftControl",
+	"Z",
+	"X",
+	"T",
+	"G",
+	"V",
+	"F",
+	"Space",
+}
 --============================================================================
 
 export type Units = "Metric" | "Imperial"
@@ -324,6 +345,24 @@ function SettingsSchema.defaultKeybinds(): { [string]: string }
 		binds[action.id] = action.default
 	end
 	return binds
+end
+
+-- CHANGED (Phase 11 review): the keys the pilot's binding captures: every Flight action's key (ACTIONS order), then
+-- the PILOT_SINK_KEYS not already in it. No duplicates; unknown actions and empty keys are skipped.
+function SettingsSchema.pilotKeys(keybinds: { [string]: string }): { string }
+	local keys: { string } = {}
+	for _, action in ACTIONS do
+		local key = keybinds[action.id]
+		if action.context == "Flight" and type(key) == "string" and key ~= "" and not table.find(keys, key) then
+			table.insert(keys, key)
+		end
+	end
+	for _, key in PILOT_SINK_KEYS do
+		if not table.find(keys, key) then
+			table.insert(keys, key)
+		end
+	end
+	return keys
 end
 
 function SettingsSchema.defaults(): Values
@@ -504,6 +543,7 @@ SettingsSchema.ACTIONS = table.freeze(ACTIONS)
 SettingsSchema.CONTEXTS = table.freeze(CONTEXTS)
 SettingsSchema.ALLOWED_KEYS = table.freeze(ALLOWED_KEYS)
 SettingsSchema.RESERVED_KEYS = table.freeze(RESERVED_KEYS)
+SettingsSchema.PILOT_SINK_KEYS = table.freeze(PILOT_SINK_KEYS) -- CHANGED (Phase 11 review)
 SettingsSchema.FIELDS = table.freeze(FIELDS)
 SettingsSchema.RANGES = table.freeze(RANGES)
 SettingsSchema.UNITS = table.freeze(UNITS)

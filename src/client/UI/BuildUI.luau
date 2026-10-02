@@ -6,6 +6,8 @@
 	  * TOP: a slim toolbar (BuildToolbar): Menu, the Build / Paint / Delete tools with their keys, symmetry, rotate /
 	    tilt and the rotation readout, Undo, Clear (asks first: Kit.confirm "Clear the whole craft?"), Save / Load
 	    (the slot picker dialog, BuildSlots), boarding permission and Settings (SettingsPanel)
+	    CHANGED (Phase 11 review): a boarding change made with the button toasts what the mode means
+	    (BuildInfo.boardingHint), and hiding the builder cancels a pending Clear / Overwrite / Load question
 	  * LEFT: the part catalog (BuildCatalog): category tabs, part tiles with 3D previews, an info card with the
 	    hovered / selected part's stats; the paint palette while the Paint tool is active
 	  * RIGHT: a KSP-style staging list (first stage to fire at the bottom) with delta-v, TWR and what each stage
@@ -67,6 +69,7 @@ local CLEAR_DIALOG: Kit.ConfirmOptions = {
 	danger = true,
 }
 local TOAST_KINDS: { [string]: Kit.ToastKind } = { Error = "Error", Warning = "Warning", Info = "Info" }
+local BOARDING_TOAST = "Boarding: %s. %s." -- CHANGED (Phase 11 review): mode, BuildInfo.boardingHint(mode)
 --============================================================================
 
 export type Tool = BuildInfo.Tool
@@ -121,6 +124,8 @@ function BuildUI.create(callbacks: Callbacks): BuildUI
 	root.Visible = false
 
 	local wanted = false -- the controller's setVisible
+	local cancelClear: (() -> ())? = nil -- CHANGED (Phase 11 review): the open "Clear the whole craft?" question
+	local boardingClicked = false -- CHANGED (Phase 11 review): the next boarding change came from the button
 
 	--========================================================================
 	-- Pieces
@@ -139,7 +144,9 @@ function BuildUI.create(callbacks: Callbacks): BuildUI
 		onAction = callbacks.onAction,
 		onUndo = callbacks.onUndo,
 		onClear = function()
-			Kit.confirm(CLEAR_DIALOG, function(confirmed: boolean)
+			-- CHANGED (Phase 11 review): kept, so hiding the builder can cancel the question
+			cancelClear = Kit.confirm(CLEAR_DIALOG, function(confirmed: boolean)
+				cancelClear = nil
 				if confirmed then
 					callbacks.onClear()
 				end
@@ -151,7 +158,10 @@ function BuildUI.create(callbacks: Callbacks): BuildUI
 		onLoad = function()
 			slots.open("Load")
 		end,
-		onBoarding = callbacks.onBoarding,
+		onBoarding = function(mode: string)
+			boardingClicked = true -- CHANGED (Phase 11 review): say what the new mode means once it is set
+			callbacks.onBoarding(mode)
+		end,
 		onSettings = function()
 			SettingsPanel.open()
 		end,
@@ -205,6 +215,12 @@ function BuildUI.create(callbacks: Callbacks): BuildUI
 		root.Visible = visible
 		catalog.setActive(visible)
 		if not visible then
+			-- CHANGED (Phase 11 review): a pending Clear question goes with the builder (slots.close cancels its own)
+			local cancel = cancelClear
+			cancelClear = nil
+			if cancel then
+				cancel()
+			end
 			slots.close()
 		end
 	end
@@ -246,6 +262,11 @@ function BuildUI.create(callbacks: Callbacks): BuildUI
 		end,
 		setBoarding = function(mode: string)
 			toolbar.setBoarding(mode)
+			-- CHANGED (Phase 11 review): the pre-Phase-11 hint ("Anyone can board" ...) after a click on the button
+			if boardingClicked then
+				boardingClicked = false
+				Kit.toast(string.format(BOARDING_TOAST, mode, BuildInfo.boardingHint(mode)), "Info")
+			end
 		end,
 		toast = function(text: string, kind: string?)
 			Kit.toast(text, TOAST_KINDS[kind or "Info"] or "Info")

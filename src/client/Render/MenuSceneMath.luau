@@ -37,6 +37,8 @@
 	  MenuSceneMath.edgeFade(x, y, width, height, margin) -> number   1 inside, fading to 0 at the screen edges
 	  MenuSceneMath.flarePoint(sunX, sunY, centreX, centreY, t) -> (x, y)   along the line sun -> centre
 	  MenuSceneMath.smoothstep(edge0, edge1, x) -> number
+	  MenuSceneMath.timeOffset(separationAt, span, step, minAngle, maxAngle) -> number
+	      CHANGED (Phase 11 review): the menu's own time offset, so the Mun can be on screen (see the function)
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -84,6 +86,33 @@ function MenuSceneMath.smoothstep(edge0: number, edge1: number, x: number): numb
 	end
 	local t = math.clamp((x - edge0) / (edge1 - edge0), 0, 1)
 	return t * t * (3 - 2 * t)
+end
+
+--[[
+	CHANGED (Phase 11 review): alpha never changes the sun / Mun angle, and with the sun pinned at the top right only
+	about half of every synodic cycle puts the Mun where the screen can show it (and near new Mun it is dark). The
+	menu therefore shows the universe at its own time: `separationAt(offset)` gives the Earth-centred sun / Mun angle
+	(radians) `offset` seconds from now; the result is the first offset 0, step, 2 step, ... (up to span) whose angle
+	lies in [minAngle, maxAngle], or 0 when none does (or step <= 0).
+]]
+function MenuSceneMath.timeOffset(
+	separationAt: (offset: number) -> number,
+	span: number,
+	step: number,
+	minAngle: number,
+	maxAngle: number
+): number
+	if step <= 0 then
+		return 0
+	end
+	for index = 0, math.floor(math.max(span, 0) / step) do
+		local offset = index * step
+		local angle = separationAt(offset)
+		if angle >= minAngle and angle <= maxAngle then
+			return offset
+		end
+	end
+	return 0
 end
 
 function MenuSceneMath.screenAngles(nx: number, ny: number, tanHalfX: number, tanHalfY: number): (number, number)

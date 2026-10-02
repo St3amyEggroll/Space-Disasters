@@ -15,6 +15,8 @@
 	  Keybinds.keyLabel(key) -> string
 	  Keybinds.isDown(action) -> boolean
 	  Keybinds.keysFor(context) -> { Enum.KeyCode }  the keys of that context's actions (ACTIONS order)
+	  Keybinds.pilotKeys() -> { Enum.KeyCode }       CHANGED (Phase 11 review): Flight keys + SettingsSchema
+	                                                 PILOT_SINK_KEYS (what the pilot's binding captures)
 	  Keybinds.actionFor(context, key) -> string?    the action bound to that key in that context
 	  Keybinds.onChanged(fn()) -> RBXScriptConnection  after any keybind change (rebind, reset, saved values loaded)
 ]]
@@ -121,6 +123,19 @@ function Keybinds.keysFor(context: SettingsSchema.Context): { Enum.KeyCode }
 			if key ~= UNBOUND then
 				table.insert(keys, key)
 			end
+		end
+	end
+	return keys
+end
+
+-- CHANGED (Phase 11 review): the keys the pilot's binding captures (SettingsSchema.pilotKeys: every Flight action's
+-- key plus the old flight keys, so a key freed by a rebind, e.g. Space, never reaches the default jump).
+function Keybinds.pilotKeys(): { Enum.KeyCode }
+	local keys: { Enum.KeyCode } = {}
+	for _, name in SettingsSchema.pilotKeys(Settings.current().keybinds) do
+		local key = keyByName[name]
+		if key and key ~= UNBOUND then
+			table.insert(keys, key)
 		end
 	end
 	return keys
