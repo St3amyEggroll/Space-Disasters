@@ -37,6 +37,9 @@
 	CHANGED (Night review): mobile / quality pass. Automatic graphics quality on a phone / tablet assumes
 	MOBILE_AUTOMATIC_DRAW_DISTANCE (Roblox draws much less far there than on a desktop's Automatic), and the real
 	base's lights follow the Quality tier (Render/SiteLights.watchBase, started here).
+	CHANGED (Night review): the main menu view is always drawn in scaled mode (ScaledSpace.update's forceScaled) with
+	no surface: at quality 1 the proxy handover altitude (~10.4 km) is above the menu's 10 km viewpoint, which put
+	the view in surface mode (no Earth) and made the view and the base prebuild drive the terrain with two cameras.
 
 	API:
 	  UniverseRenderer.setMapMode(enabled, cubeHalfSize?)   MapViewController
@@ -221,13 +224,17 @@ end
 local function stepViewOverride(override: Frames.Frame, camera: Camera, dt: number)
 	fillContext(viewCtx, override, camera.CFrame, viewOverrideUT or ctx.ut, dt) -- CHANGED (Phase 11 review): own UT
 	timed("ScaledSpace", function()
-		ScaledSpace.update(viewCtx)
+		-- CHANGED (Night review): always scaled here. At quality 1 the handover altitude (~10.4 km) is above the
+		-- view's 10 km, so the menu lost Earth and the terrain was driven by two cameras (this view and the base's
+		-- prebuild below), rebuilding forever.
+		ScaledSpace.update(viewCtx, true)
 	end)
 	timed("Surface", function()
-		Surface.update(viewCtx, ScaledSpace.isSurfaceMode(), nil, false) -- CHANGED (Phase 8): never prebuilds here
+		-- CHANGED (Night review): no surface in the menu view (surfaceMode false): only the prebuild drives the terrain
+		Surface.update(viewCtx, false, nil, false) -- CHANGED (Phase 8): never prebuilds here
 		Surface.prebuild(ctx) -- CHANGED (Phase 8): the ground the player returns to (the base) is ready after Play
 	end)
-	SkyCube.update(viewCtx, ScaledSpace.isSurfaceMode(), ScaledSpace.proxyMinAltitude(viewCtx.dominantBodyId))
+	SkyCube.update(viewCtx, false, ScaledSpace.proxyMinAltitude(viewCtx.dominantBodyId)) -- CHANGED (Night review)
 	timed("SkyLighting", function()
 		SkyLighting.update(viewCtx)
 	end)

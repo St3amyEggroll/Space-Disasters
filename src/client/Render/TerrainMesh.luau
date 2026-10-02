@@ -28,10 +28,48 @@
 
 	Positions are kept in doubles relative to the body and converted only after subtracting the camera (I1).
 
+	CHANGED (Night review): terrain review fixes.
+	  * True-scale objects (other crafts, dropped stages, puppets, explosions, the smoke trail) are hidden by ground
+	    drawn scaled down about the camera (nearer than it is) behind them. The finest-level band was a
+	    quadtree-aligned patch with the camera often near its edge (true-scale ground only ~0.3-0.6 km away on some
+	    side), and at altitude no band was at true scale at all. Now band 0 is the near band: every leaf whose centre
+	    lies in a +-NEAR_HALF square around the ground under the camera (TerrainMath.assignBands), split down to
+	    NEAR_MAX_LEAF by select() (so it also exists below a climbing camera: a smoke trail or a falling stage seen
+	    from above), one part of at most ~2 km at true scale while its centre is within the draw budget; the other
+	    leaves keep one band per level. The square follows the camera with NEAR_RECENTRE of slack, and keeps the
+	    launch site inside while the camera is near it (keepNear). Offline ray audit (objects the engine draws at
+	    the tier, 3 places x 5 heights): objects wrongly covered at 150 / 300 / 500 / 800 m: 72 / 91 / 167 / 392
+	    before, 0 / 2 / 17 / 260 now. Beyond ~1 km (High only: the engine culls small parts within ~300-650 m on
+	    Low / Medium) objects over scaled ground can still be covered. Why not 4 true-scale 2 km quadrant pieces
+	    (with far levels merged): with 6 meshes the far ground would be 2 bands, the far one drawn ~50 m from the
+	    camera (scale ~0.02-0.03), covering anything farther seen against it. The remaining fix is object-side:
+	    drawing such objects scaled like the ground under them (scaleAt), as Surface does for the launch-site copy.
+	  * Every band is stored in a tangent frame at the camera's nadir (TerrainMath.bestAxes: the lattice-aligned
+	    one, rotated in steps, or the universe axes, whichever gives the smallest box), so its box is close to the
+	    ground's real extent (in universe axes a tangent square is up to 1.41x wider: bands were scaled down more
+	    than needed). The mesh origin is the exact vertex box (TerrainMath.frameBounds, sunk union leaves
+	    included), so CreateMeshPartAsync has nothing to recentre.
+	  * Mesh budget: a plan never builds while more than bandCount bands are alive (TerrainMath.planStep retires a
+	    band that goes away first, plates fill in), so it needs at most bandCount + 1 meshes; a camera jump (End
+	    Flight from altitude: two new band ids before any old one could go) no longer hits the budget and loses a
+	    band for the session. A plan that starts while
+	    the meshes do not cover the camera at all (a jump) skips the hole-free ordering ("fresh": plates show
+	    anyway). After a real refusal (another script holds meshes) bandCount drops as before, but it comes back:
+	    every RECOVER_INTERVAL the spare capacity is probed and one band is added back when it is there.
+	  * While a plan catches up with a fast, low camera, the displayed meshes stay on screen up to
+	    STALE_PLAN_FACTOR x the usual distance (was: plates as soon as the camera left it, swapping back and forth).
+	  * scaleAt(): the scale factor the ground under a point is drawn at (Surface draws the launch-site copy with it);
+	    version(): bumped whenever the displayed bands change (SurfaceProps re-checks which props stand on
+	    true-scale ground).
+
 	API (driven by Surface):
 		TerrainMesh.init(parent)
 		TerrainMesh.update(ctx, show, prebuild)   show: draw this frame (surface mode); prebuild: build but keep hidden
 		TerrainMesh.isTrueScaleAt(pos, margin)     is body-relative `pos` (dominant body) drawn at true scale?
+		TerrainMesh.scaleAt(pos, margin): number?  CHANGED (Night review): smallest scale factor of the ground drawn
+		                                           there (1: true scale or plates; nil: no band holds it)
+		TerrainMesh.version(): number              CHANGED (Night review): changes whenever the displayed bands change
+		TerrainMesh.keepNear(bodyId, pos, half)    CHANGED (Night review): keep that square in the near band when near
 		TerrainMesh.summary(): string              F3 debug line
 ]]
 
@@ -52,6 +90,8 @@ type Node = TerrainMath.Node
 type Chunk = TerrainMath.Chunk
 type Config = TerrainMath.Config
 type Selection = TerrainMath.Selection
+type Axes = TerrainMath.Axes -- CHANGED (Night review)
+type Near = TerrainMath.Near -- CHANGED (Night review)
 
 --============================================================================
 -- Tunables
@@ -83,6 +123,15 @@ local TRUE_SCALE = 0.9999 -- a band with k at or above this counts as true scale
 local MESH_MATERIAL = Enum.Material.SmoothPlastic
 local MERGE_FACTOR = 1.15 -- hysteresis: split nodes merge back only this much farther out
 local MIN_BAND_RADIUS = 1 -- m
+-- CHANGED (Night review): the near band (TerrainMath.assignBands), mesh budget recovery, stale meshes
+local NEAR_HALF = 760 -- m: half-size of the near square (its box, ~2 x (NEAR_HALF + NEAR_MAX_LEAF / 2) plus the
+-- lattice's skew near cube-face corners, must stay under PART_LIMIT: ~1960 at most over 960 sampled views)
+local NEAR_MAX_LEAF = 400 -- m: largest leaf inside the near square (level 1 on Earth and the Mun)
+local NEAR_RECENTRE = 100 -- m (tangent x / z) the camera's nadir may move from the square's origin before it moves
+local KEEP_RANGE = 400 -- m (tangent): a keepNear square stays in the near band while the camera's nadir is at most
+-- this far outside the square's room (the nadir then stays >= NEAR_HALF - KEEP_RANGE inside the near band)
+local RECOVER_INTERVAL = 30 -- s between probes for room to add a band back after a budget refusal
+local STALE_PLAN_FACTOR = 2 -- x the stale distance the meshes stay on screen while a plan catches up
 
 -- Detail per Quality tier: splitK (LOD distance in node sizes), leaf cap, build time per frame (s), and whether the
 -- finest band casts shadows.
@@ -127,6 +176,8 @@ type BandMesh = {
 	mesh: EditableMesh,
 	part: MeshPart,
 	origin: Vec3d, -- body-relative centre of the mesh's box
+	rot: CFrame, -- CHANGED (Night review): the band frame's axes (body axes); the box is in this frame
+	shadow: boolean, -- CHANGED (Night review): casts shadows when the tier allows (the near band)
 	size: Vector3, -- box size (m)
 	radius: number, -- bounding-sphere radius (m)
 	maxExtent: number,
@@ -156,6 +207,10 @@ type Plan = {
 	current: string, -- what is being built (debug)
 	buildingMesh: EditableMesh?, -- the mesh being built (released if the plan stops)
 	buildingPart: MeshPart?,
+	-- CHANGED (Night review)
+	near: Near?, -- the near square (band 0), or nil (one band per level: bandCount < 2)
+	axes: Axes, -- the frame every band of this plan is stored in
+	fresh: boolean, -- the meshes did not cover the camera when it started: no hole-free ordering (plates show)
 }
 
 type Plate = {
@@ -190,6 +245,14 @@ local lastSelectTime = -math.huge
 local lastSelectCam: Vec3d? = nil
 local forceSelect = true
 local hiddenSince: number? = nil
+-- CHANGED (Night review)
+local nearSquare: Near? = nil -- the current near square (band 0)
+local nearBodyId: number? = nil
+local keepBody: number? = nil -- keepNear: a square kept inside the near band while the camera is near it
+local keepPos: Vec3d? = nil
+local keepHalf = 0
+local recoverAt = math.huge -- when to probe for room to add a band back (after a budget refusal)
+local bandsVersion = 0 -- bumped whenever the displayed bands change
 
 local chunkCache: { [number]: Chunk } = {}
 local chunkStamp: { [number]: number } = {}
@@ -244,6 +307,7 @@ local function destroyBand(bm: BandMesh)
 	bm.part:Destroy()
 	bm.mesh:Destroy()
 	liveMeshes -= 1
+	bandsVersion += 1 -- CHANGED (Night review)
 end
 
 -- Drops the mesh a plan's builder was working on.
@@ -312,33 +376,47 @@ end
 --============================================================================
 
 --[[
-	Adds a chunk to an EditableMesh: vertices offset by (offX, offY, offZ), sunk `drop` m along (dx, dy, dz), then
-	divided by `store` (meshes are stored about MESH_STORE_EXTENT units across; the part's Size scales them back).
+	Adds a chunk to an EditableMesh: vertices sunk `drop` m along the node's direction, expressed in the band frame
+	`axes` relative to the box centre (fx, fy, fz) (frame coordinates), then divided by `store` (meshes are stored
+	about MESH_STORE_EXTENT units across; the part's Size scales them back).
+	CHANGED (Night review): in the band's tangent frame (was universe axes), normals rotated along.
 ]]
 local function addChunk(
 	mesh: EditableMesh,
 	c: Chunk,
-	offX: number,
-	offY: number,
-	offZ: number,
+	node: Node,
 	drop: number,
-	dx: number,
-	dy: number,
-	dz: number,
+	axes: Axes,
+	fx: number,
+	fy: number,
+	fz: number,
 	store: number
 )
 	local count = c.vertexCount
 	local vids: { number } = table.create(count, 0)
 	local nids: { number } = table.create(count, 0)
 	local cids: { number } = table.create(count, 0)
-	offX -= dx * drop
-	offY -= dy * drop
-	offZ -= dz * drop
+	local xx, xy, xz = axes.x.x, axes.x.y, axes.x.z
+	local yx, yy, yz = axes.y.x, axes.y.y, axes.y.z
+	local zx, zy, zz = axes.z.x, axes.z.y, axes.z.z
+	-- the chunk origin relative to the box centre, in frame coordinates (doubles)
+	local ox, oy, oz = c.ox - node.dx * drop, c.oy - node.dy * drop, c.oz - node.dz * drop
+	local bx = ox * xx + oy * xy + oz * xz - fx
+	local by = ox * yx + oy * yy + oz * yz - fy
+	local bz = ox * zx + oy * zy + oz * zz - fz
 	local inv = 1 / store
 	for v = 1, count do
 		local px, py, pz, nx, ny, nz, r, g, b = TerrainMath.chunkVertex(c, v)
-		vids[v] = mesh:AddVertex(Vector3.new((px + offX) * inv, (py + offY) * inv, (pz + offZ) * inv))
-		nids[v] = mesh:AddNormal(Vector3.new(nx, ny, nz))
+		vids[v] = mesh:AddVertex(
+			Vector3.new(
+				(bx + px * xx + py * xy + pz * xz) * inv,
+				(by + px * yx + py * yy + pz * yz) * inv,
+				(bz + px * zx + py * zy + pz * zz) * inv
+			)
+		)
+		nids[v] = mesh:AddNormal(
+			Vector3.new(nx * xx + ny * xy + nz * xz, nx * yx + ny * yy + nz * yz, nx * zx + ny * zy + nz * zz)
+		)
 		cids[v] = mesh:AddColor(Color3.new(r, g, b), 1)
 	end
 	local tris = c.tris
@@ -350,7 +428,7 @@ local function addChunk(
 	end
 end
 
-local function configureBandPart(part: MeshPart, id: number)
+local function configureBandPart(part: MeshPart, id: number, shadow: boolean)
 	part.Name = "TerrainBand" .. id
 	part.Anchored = true
 	part.CanCollide = false
@@ -358,7 +436,7 @@ local function configureBandPart(part: MeshPart, id: number)
 	part.CanTouch = false
 	part.Massless = true
 	part.Locked = true
-	part.CastShadow = id == 0 and tier.shadows
+	part.CastShadow = shadow and tier.shadows -- CHANGED (Night review): the near band (was id 0, the finest level)
 	part.Material = MESH_MATERIAL
 	part.Color = Color3.new(1, 1, 1) -- vertex colours carry the biome
 	part.Transparency = 0
@@ -396,8 +474,28 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 		table.insert(chunks, chunk :: Chunk)
 		table.insert(nodes, node)
 	end
-	-- 2. the mesh
-	local origin, size, radius = TerrainMath.bandBounds(chunks)
+	-- 2. the exact vertex box in the plan's band frame, sunk union leaves included
+	-- CHANGED (Night review): was the chunks' universe-axes boxes (sink left out: the engine's box could differ)
+	local drops: { number } = table.create(#nodes, 0)
+	if sunk then
+		for index, node in nodes do
+			if sunk[node.key] then
+				drops[index] = UNION_DROP + UNION_DROP_PER_SPACING * node.stride * p.config.cellArc
+			end
+		end
+	end
+	local axes = TerrainMath.bestAxes(chunks, p.axes)
+	local fx, fy, fz, size = TerrainMath.frameBounds(chunks, nodes, drops, axes, function()
+		due()
+	end)
+	if p.aborted then
+		return nil
+	end
+	local origin = Vec3d.add(Vec3d.add(Vec3d.scale(axes.x, fx), Vec3d.scale(axes.y, fy)), Vec3d.scale(axes.z, fz))
+	local rot =
+		CFrame.fromMatrix(Vector3.zero, Vec3d.toVector3(axes.x), Vec3d.toVector3(axes.y), Vec3d.toVector3(axes.z))
+	local radius = size.Magnitude / 2
+	-- 3. the mesh
 	local store = math.max(size.X, size.Y, size.Z, 1) / MESH_STORE_EXTENT
 	local created, mesh = pcall(function(): EditableMesh
 		return AssetService:CreateEditableMesh()
@@ -412,12 +510,9 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 	local triangles = 0
 	for index, c in chunks do
 		local node = nodes[index]
-		local drop = 0
-		if sunk and sunk[node.key] then
-			drop = UNION_DROP + UNION_DROP_PER_SPACING * node.stride * p.config.cellArc
-		end
+		local drop = drops[index]
 		local ok, err = pcall(function()
-			addChunk(mesh, c, c.ox - origin.x, c.oy - origin.y, c.oz - origin.z, drop, node.dx, node.dy, node.dz, store)
+			addChunk(mesh, c, node, drop, axes, fx, fy, fz, store)
 		end)
 		if not ok then
 			p.failed = true
@@ -450,10 +545,12 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 		releaseBuilding(p)
 		return nil
 	end
-	configureBandPart(part, id)
+	-- CHANGED (Night review): the near band (or, without one, the finest level's) casts shadows
+	local shadow = id == TerrainMath.NEAR_BAND
+	configureBandPart(part, id, shadow)
 	p.buildingMesh = nil
 	p.buildingPart = nil
-	-- the engine's own idea of the mesh's box (union meshes have sunk vertices below the chunks' boxes)
+	-- the engine's own idea of the mesh's box (the same box: it is centred on the exact vertex box)
 	local okSize, meshSize = pcall(function(): Vector3
 		return part.MeshSize
 	end)
@@ -469,6 +566,8 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 		mesh = mesh,
 		part = part,
 		origin = origin,
+		rot = rot,
+		shadow = shadow,
 		size = size,
 		radius = math.max(radius, MIN_BAND_RADIUS),
 		maxExtent = math.max(size.X, size.Y, size.Z),
@@ -491,6 +590,7 @@ local function swapIn(bm: BandMesh?, id: number)
 	if bm then
 		bands[id] = bm -- parented by placeBands once it has its first pose
 	end
+	bandsVersion += 1 -- CHANGED (Night review)
 end
 
 -- Builds band `id` from `leaves` (sunk: outgoing leaves of a union) and swaps it in. False when the plan stopped.
@@ -522,33 +622,43 @@ local function buildAndSwap(p: Plan, id: number, leaves: { [number]: Node }, sun
 end
 
 -- Runs a plan: builds and swaps the changed bands one at a time, in an order that never leaves holes.
+-- CHANGED (Night review): the order comes from TerrainMath.planStep, which never builds while more than bandCount
+-- bands are alive (it retires a band that goes away first: plates fill in until the plan is done).
 local function runPlan(p: Plan)
+	local alive: { [number]: boolean } = {}
+	local empty: { [number]: boolean } = {}
 	while next(p.pending) ~= nil do
 		if p.aborted then
 			releaseBuilding(p)
 			return
 		end
-		-- a band whose replacements are all on screen gets its final mesh; bands that go away first, then bands
-		-- that are replaced, new bands last (fewest meshes alive at once)
-		local chosen: number? = nil
-		local rank = math.huge
-		for id in p.pending do
-			local ready = true
-			for dep in p.deps[id] do
-				if not p.covered[dep] then
-					ready = false
-					break
-				end
-			end
-			if ready then
-				local r = if next(p.target[id]) == nil then 1 elseif bands[id] then 2 else 3
-				if r < rank then
-					chosen, rank = id, r
-				end
-			end
+		table.clear(alive)
+		table.clear(empty)
+		local live = 0
+		for id in bands do
+			alive[id] = true
+			live += 1
 		end
-		if chosen then
-			local id = chosen :: number
+		for id in p.pending do
+			empty[id] = next(p.target[id]) == nil
+		end
+		local kind, chosen = TerrainMath.planStep(p.pending, p.covered, p.deps, alive, empty, live, bandCount)
+		if kind == nil or chosen == nil then
+			break -- nothing can make progress (should not happen): keep what is on screen
+		end
+		local id = chosen :: number
+		if kind == "retire" then
+			local doomed = bands[id]
+			if doomed then
+				destroyBand(doomed)
+				bands[id] = nil
+			end
+			coverageBroken = true
+			p.covered[id] = true
+			p.pending[id] = nil
+			continue
+		elseif kind == "build" then
+			-- a band whose replacements are all on screen gets its final mesh
 			if not buildAndSwap(p, id, p.target[id], nil) then
 				return
 			end
@@ -557,16 +667,6 @@ local function runPlan(p: Plan)
 			continue
 		end
 		-- bands waiting on each other: show one band's new leaves first, keeping its outgoing ones (sunk)
-		local unionId: number? = nil
-		for id in p.pending do
-			if not p.covered[id] and (unionId == nil or bands[id] ~= nil) then
-				unionId = id
-			end
-		end
-		if unionId == nil then
-			break -- nothing can make progress (should not happen): keep what is on screen
-		end
-		local id = unionId :: number
 		local old = bands[id]
 		local leaves: { [number]: Node } = {}
 		local sunk: { [number]: boolean } = {}
@@ -648,12 +748,13 @@ end
 -- Works out which bands change for `selection` and what each one waits for (fills the plan).
 local function preparePlan(p: Plan, selection: Selection)
 	local config = p.config
-	local mergeLevel = TerrainMath.mergeLevel(config, selection.leaves, bandCount)
+	-- CHANGED (Night review): the near band + one band per level (TerrainMath.assignBands)
+	local assigned = TerrainMath.assignBands(config, selection.leaves, bandCount, p.near)
 	local target: { [number]: { [number]: Node } } = {}
 	local targetBand: { [number]: number } = {}
 	local underBands: { [number]: { [number]: boolean } } = {}
 	for _, node in selection.leaves do
-		local id = TerrainMath.bandOf(config, node, mergeLevel)
+		local id = assigned[node.key]
 		local set = target[id]
 		if set == nil then
 			local fresh: { [number]: Node } = {}
@@ -705,11 +806,13 @@ local function preparePlan(p: Plan, selection: Selection)
 			for key, node in old.leaves do
 				if new[key] == nil then
 					removed = true
-					replacementBands(config, node, targetBand, underBands, dep)
+					if not p.fresh then
+						replacementBands(config, node, targetBand, underBands, dep)
+					end
 				end
 			end
 		end
-		dep[id] = nil
+		dep[id] = nil -- CHANGED (Night review): a fresh plan (plates on screen) waits for nothing
 		if added or removed then
 			pending[id] = true
 			covered[id] = not added
@@ -730,6 +833,7 @@ local function selectAndRun(p: Plan)
 	local sliceStart = os.clock()
 	local selectParams = params()
 	selectParams.bandCount = bandCount
+	selectParams.near = p.near -- CHANGED (Night review)
 	selectParams.horizonLead = math.max(HORIZON_LEAD_MIN, HORIZON_LEAD_FRACTION * heightAboveGround(p.config, p.cam))
 	selectParams.pause = function()
 		if os.clock() - sliceStart >= tier.budgetS then
@@ -766,10 +870,12 @@ local function finishPlan()
 			disableMeshes(p.error or "unknown error")
 		else
 			-- probably the experience-wide mesh budget: hold fewer bands and start over (plates meanwhile)
+			-- (a plan itself never needs more than bandCount + 1 meshes: TerrainMath.planStep)
 			bandCount -= 1
 			failures = 0
 			releaseAllBands()
 			table.clear(split)
+			recoverAt = os.clock() + RECOVER_INTERVAL -- CHANGED (Night review): the band comes back when there is room
 		end
 		return
 	end
@@ -790,6 +896,80 @@ local function finishPlan()
 		end
 	end
 	trimChunkCache(keep)
+end
+
+--[[
+	How far (m) the camera may be from where the displayed meshes were chosen while they still stand for the view.
+	CHANGED (Night review): `catchingUp` (a plan is rebuilding them) allows STALE_PLAN_FACTOR x more: a fast, low
+	camera kept swapping the ground between meshes and plates while the plans ran behind.
+]]
+local function staleDistance(config: Config, cam: Vec3d, catchingUp: boolean): number
+	local allowed = math.max(STALE_MIN, STALE_HEIGHT_FRACTION * heightAboveGround(config, cam))
+	return if catchingUp then allowed * STALE_PLAN_FACTOR else allowed
+end
+
+local function meshCoverage(config: Config, cam: Vec3d): boolean
+	local at = displayedCam
+	if at == nil or coverageBroken or next(bands) == nil then
+		return false
+	end
+	local p = plan
+	return Vec3d.distance(cam, at) <= staleDistance(config, cam, p ~= nil and not p.fresh)
+end
+
+-- CHANGED (Night review): the near square for a plan, kept until its wanted centre moves by NEAR_RECENTRE.
+local function nearFor(config: Config, cam: Vec3d): Near?
+	if bandCount < 2 then
+		nearSquare = nil
+		return nil
+	end
+	local keep = if keepBody == config.bodyId then keepPos else nil
+	local target = TerrainMath.nearTarget(config, cam, keep, keepHalf, NEAR_HALF, KEEP_RANGE)
+	local current = nearSquare
+	if current and nearBodyId == config.bodyId then
+		local u, v = TerrainMath.nearOffset(current, target)
+		if math.max(math.abs(u), math.abs(v)) <= NEAR_RECENTRE then
+			return current
+		end
+	end
+	local fresh = TerrainMath.newNear(config, target, NEAR_HALF, NEAR_MAX_LEAF)
+	nearSquare = fresh
+	nearBodyId = config.bodyId
+	return fresh
+end
+
+--[[
+	CHANGED (Night review): after a budget refusal, probes every RECOVER_INTERVAL (while idle) whether the meshes for
+	one more band and the plan's spare are free, and adds the band back if so (the probe meshes are released at once).
+]]
+local function tryRecover()
+	if bandCount >= MAX_BANDS or plan ~= nil or os.clock() < recoverAt then
+		return
+	end
+	recoverAt = os.clock() + RECOVER_INTERVAL
+	local wanted = bandCount + 2 - liveMeshes -- bandCount + 1 bands and a spare, minus what is held
+	local probes: { EditableMesh } = {}
+	local ok = true
+	for _ = 1, math.max(wanted, 1) do
+		local created, mesh = pcall(function(): EditableMesh
+			return AssetService:CreateEditableMesh()
+		end)
+		if not created or (mesh :: any) == nil then
+			ok = false
+			break
+		end
+		table.insert(probes, mesh)
+	end
+	for _, mesh in probes do
+		mesh:Destroy()
+	end
+	if ok then
+		bandCount += 1
+		forceSelect = true
+		if bandCount >= MAX_BANDS then
+			recoverAt = math.huge
+		end
+	end
 end
 
 -- Re-selects the quadtree when the camera moved enough; starts a plan when the leaves changed.
@@ -813,6 +993,13 @@ local function maybeSelect(config: Config, cam: Vec3d)
 	forceSelect = false
 	lastSelectTime = now
 	lastSelectCam = Vec3d.clone(cam)
+	-- CHANGED (Night review): layout, band frame, and whether the meshes on screen still stand for the view at all
+	local near = nearFor(config, cam)
+	local at = displayedCam
+	local fresh = at == nil
+		or coverageBroken
+		or next(bands) == nil
+		or Vec3d.distance(cam, at) > staleDistance(config, cam, true)
 	local p: Plan = {
 		bodyId = config.bodyId,
 		config = config,
@@ -831,18 +1018,12 @@ local function maybeSelect(config: Config, cam: Vec3d)
 		current = "selecting",
 		buildingMesh = nil,
 		buildingPart = nil,
+		near = near,
+		axes = if near then near.axes else TerrainMath.tangentAxes(config, cam),
+		fresh = fresh,
 	}
 	plan = p
 	task.spawn(selectAndRun, p)
-end
-
-local function meshCoverage(config: Config, cam: Vec3d): boolean
-	local at = displayedCam
-	if at == nil or coverageBroken or next(bands) == nil then
-		return false
-	end
-	local allowed = math.max(STALE_MIN, STALE_HEIGHT_FRACTION * heightAboveGround(config, cam))
-	return Vec3d.distance(cam, at) <= allowed
 end
 
 local function setMeshesShown(shown: boolean)
@@ -850,6 +1031,7 @@ local function setMeshesShown(shown: boolean)
 		return
 	end
 	meshesShown = shown
+	bandsVersion += 1 -- CHANGED (Night review): what is drawn at true scale changed (version)
 	if not shown then
 		for _, bm in bands do
 			bm.part.Parent = nil
@@ -890,7 +1072,8 @@ local function placeBands(ctx: RenderContext.RenderContext)
 		end
 		local v = Frames.vectorToWorkspace(frame, scratch)
 		table.insert(moveParts, bm.part)
-		table.insert(moveCFrames, CFrame.new(camWs + v * bm.appliedScale) * rotWs)
+		-- CHANGED (Night review): * the band frame (bands are stored in a tangent frame, not universe axes)
+		table.insert(moveCFrames, CFrame.new(camWs + v * bm.appliedScale) * rotWs * bm.rot)
 	end
 	if #moveParts > 0 then
 		Workspace:BulkMoveTo(moveParts, moveCFrames, BULK_MOVE_MODE)
@@ -1131,7 +1314,7 @@ function TerrainMesh.init(parent: Folder)
 			tierName = name
 			forceSelect = true
 			for _, bm in bands do
-				bm.part.CastShadow = bm.id == 0 and tier.shadows
+				bm.part.CastShadow = bm.shadow and tier.shadows -- CHANGED (Night review): bm.shadow (was id == 0)
 			end
 		end
 	end
@@ -1166,11 +1349,13 @@ function TerrainMesh.update(ctx: RenderContext.RenderContext, show: boolean, pre
 		table.clear(split)
 		bodyId = config.bodyId
 		forceSelect = true
+		nearSquare = nil -- CHANGED (Night review)
 	end
 	local cam = ctx.cameraDominant
 	if meshEnabled then
 		finishPlan()
 		if meshEnabled then
+			tryRecover() -- CHANGED (Night review): a band dropped after a budget refusal comes back when there is room
 			maybeSelect(config, cam)
 		end
 	end
@@ -1211,34 +1396,60 @@ local function bandAt(config: Config, pos: Vec3d): BandMesh?
 end
 
 --[[
-	Is body-relative `pos` (the dominant body) drawn at true scale this frame, `margin` m around it included? Plates
-	are always true scale; meshes only where the band under every checked point is unscaled.
+	CHANGED (Night review): the smallest scale factor of the bands drawing the ground at body-relative `pos` (the
+	dominant body) and at `margin` m around it (4 points in its tangent plane): 1 when plates (true scale) or nothing
+	is drawn, nil when meshes are drawn but no band holds one of the points.
 ]]
-function TerrainMesh.isTrueScaleAt(pos: Vec3d, margin: number): boolean
+function TerrainMesh.scaleAt(pos: Vec3d, margin: number): number?
 	if not meshesShown then
-		return true
+		return 1
 	end
 	local id = bodyId
 	local config = if id then TerrainMath.config(id) else nil
 	if config == nil then
-		return true
+		return 1
 	end
 	local up = Vec3d.normalize(pos)
 	local ref = if math.abs(up.y) < 0.9 then Vec3d.new(0, 1, 0) else Vec3d.new(1, 0, 0)
 	local e1 = Vec3d.normalize(Vec3d.cross(ref, up))
 	local e2 = Vec3d.cross(up, e1)
-	for index = 0, 4 do
+	local scale = math.huge
+	for index = 0, if margin > 0 then 4 else 0 do
 		local p = pos
-		if index > 0 and margin > 0 then
+		if index > 0 then
 			local axis = if index <= 2 then e1 else e2
 			p = Vec3d.add(pos, Vec3d.scale(axis, if index % 2 == 0 then margin else -margin))
 		end
 		local bm = bandAt(config, p)
-		if bm == nil or bm.scale < TRUE_SCALE then
-			return false
+		if bm == nil then
+			return nil
 		end
+		scale = math.min(scale, bm.scale)
 	end
-	return true
+	return math.min(scale, 1)
+end
+
+--[[
+	Is body-relative `pos` (the dominant body) drawn at true scale this frame, `margin` m around it included? Plates
+	are always true scale; meshes only where the band under every checked point is unscaled.
+]]
+function TerrainMesh.isTrueScaleAt(pos: Vec3d, margin: number): boolean
+	local scale = TerrainMesh.scaleAt(pos, margin) -- CHANGED (Night review): shared with scaleAt
+	return scale ~= nil and scale >= TRUE_SCALE
+end
+
+-- CHANGED (Night review): changes whenever the displayed bands change (a swap, a release).
+function TerrainMesh.version(): number
+	return bandsVersion
+end
+
+--[[
+	CHANGED (Night review): keeps a square of +-half m (tangent) around body-relative `pos` on `keepBodyId` inside the
+	near band while the camera's nadir is within KEEP_RANGE of fitting it (Surface: the launch site, so the copy and
+	a craft on its pad are at true scale together on the pad and in the climb).
+]]
+function TerrainMesh.keepNear(keepBodyId: number, pos: Vec3d, half: number)
+	keepBody, keepPos, keepHalf = keepBodyId, Vec3d.clone(pos), half
 end
 
 -- F3 debug line.

@@ -24,6 +24,29 @@
 	  * Collision: the lattice triangles near a point (collisionTriangles) and the two WedgeParts that fill a triangle
 	    (wedgePair), solid below it.
 
+	CHANGED (Night review): the band layout and band boxes.
+	  * Band frames (tangentAxes, bestAxes): a band's mesh is stored in a tangent frame at the camera's nadir (Y up,
+	    X along the face lattice or rotated in steps, whichever gives the smallest box; the universe axes are a
+	    candidate too), so its box is close to the ground's real extent (a tangent square seen in universe axes is
+	    up to 1.41x wider: lower scale factors, smaller true-scale area). frameBounds is the exact
+	    vertex box in such a frame, sunk union leaves included (the mesh origin is the box centre, so the engine has
+	    nothing to recentre).
+	  * Near band (assignBands with a Near): true-scale objects (other crafts, dropped stages, puppets, explosions,
+	    the smoke trail) are hidden by ground that is drawn scaled down about the camera (nearer than it is). The
+	    finest-level band was a quadtree-aligned patch, so the camera often sat near its edge (true-scale ground
+	    only ~0.4-0.6 km away on some side), and at altitude no band was at true scale at all. With a Near, the
+	    leaves whose centre lies inside a square of +-half around the ground under the camera form band 0 (one
+	    part of at most ~2 km: true scale while its centre is within the draw budget, also below a climbing
+	    camera), every other leaf a band per level as before. select() splits every node over the square down to
+	    near.maxLeaf, and grades the sizes around it (at most 4x per step) so the skirts still close the seams.
+	    (Why not 4 true-scale quadrant pieces of 2 km: with 6 meshes the rest of the ground would be 2 bands, the
+	    far one spanning ~2 km to the horizon at a scale of ~0.02-0.03, i.e. drawn ~50 m from the camera: anything
+	    farther than that, seen against it, would be covered. One band per level keeps that distance at ~250-450 m.)
+	  * planStep: the order in which a plan builds, retires and unions bands; nothing is built while more than
+	    `bandCount` bands are alive (a plan needs at most bandCount + 1 meshes: the experience-wide budget; it used
+	    to build two new bands in a row after a camera jump).
+	  * collisionCells / cellTriangles: the collision cells around a point (TerrainCollision updates cell by cell).
+
 	All positions are body-relative metres (body axes = universe axes) in doubles.
 ]]
 
@@ -63,6 +86,13 @@ local SITE_PLATE_HALF = BaseLayout.SITE_HALF_EXTENT -- m, in the site's tangent 
 local NODE_CACHE_MAX = 6000 -- cached quadtree nodes before the cache is cleared (a selection visits ~1000)
 local MIN_SCALE = 1e-4 -- smallest band scale factor
 local VERTEX_BYTES = 36 -- chunk vertex record: position, normal, colour (9 f32)
+-- CHANGED (Night review): the near band (assignBands / select with a Near)
+local NEAR_BAND = 0 -- band id of the near square's leaves (the other bands are 1 + level)
+local NEAR_GRADE = 4 -- around the near square, node sizes grow at most this much per step (skirts close 4x seams)
+local NEAR_SIZE_PAD = 1.1 -- a node's footprint is taken this much larger than its size (cube-sphere distortion)
+local NEAR_MIN_COS = 0.5 -- only nodes within 60 deg of the near origin count (never the far side of the body)
+local SIZE_TOLERANCE = 1.01 -- leaf sizes compared with near.maxLeaf
+local FRAME_CANDIDATES = 4 -- band frame orientations tried about the up axis (bestAxes), plus the universe axes
 --============================================================================
 
 export type Config = {
@@ -105,7 +135,26 @@ export type Params = {
 	pause: (() -> ())?, -- called for every node visited (a caller in a thread may yield there)
 	bandCount: number?, -- bands the leaves will be drawn in (TerrainMath.bandOf): none may exceed MAX_BAND_LEAVES
 	horizonLead: number?, -- m: the horizon is taken this much higher than the camera (it climbs while meshes build)
+	near: Near?, -- CHANGED (Night review): near band (assignBands): nodes over the square split to near.maxLeaf
 }
+
+-- CHANGED (Night review): a right-handed tangent frame (body axes): x along the face lattice, y up, z = x cross y.
+export type Axes = {
+	x: Vec3d,
+	y: Vec3d,
+	z: Vec3d,
+}
+
+-- CHANGED (Night review): the near square: leaves whose centre is within +-half (tangent x / z) of the origin.
+export type Near = {
+	origin: Vec3d, -- body-relative point on the body's sphere under the camera
+	axes: Axes, -- tangent frame at the origin
+	half: number, -- m
+	maxLeaf: number, -- m: largest leaf inside the square
+}
+
+-- CHANGED (Night review): what a plan does next (planStep).
+export type StepKind = "build" | "retire" | "union"
 
 export type Selection = {
 	leaves: { Node },
@@ -138,6 +187,9 @@ local TerrainMath = {}
 
 TerrainMath.CHUNK = CHUNK
 TerrainMath.MAX_BAND_LEAVES = MAX_BAND_LEAVES
+
+-- CHANGED (Night review): vertex indices of a chunk's four ground corners (bestAxes)
+local CORNER_VERTICES = { 1, CHUNK + 1, CHUNK * (CHUNK + 1) + 1, (CHUNK + 1) * (CHUNK + 1) }
 TerrainMath.RENDER_DROP = RENDER_DROP
 
 local function smoothstep(e0: number, e1: number, v: number): number
@@ -283,6 +335,41 @@ function TerrainMath.horizonAngle(config: Config, cameraRadius: number, top: num
 	return fromCamera + math.acos(math.min(low / high, 1)) + HORIZON_MARGIN
 end
 
+-- CHANGED (Night review): tangent coordinates (along axes.x, axes.z) of body-relative point (x, y, z) about the
+-- near origin, and whether it lies within NEAR_MIN_COS of the origin's direction.
+local function nearCoords(near: Near, x: number, y: number, z: number): (number, number, boolean)
+	local o, ax, az, up = near.origin, near.axes.x, near.axes.z, near.axes.y
+	local rx, ry, rz = x - o.x, y - o.y, z - o.z
+	local len = math.sqrt(x * x + y * y + z * z)
+	local facing = len > 0 and (x * up.x + y * up.y + z * up.z) / len > NEAR_MIN_COS
+	return rx * ax.x + ry * ax.y + rz * ax.z, rx * az.x + ry * az.y + rz * az.z, facing
+end
+
+--[[
+	CHANGED (Night review): largest node size allowed at `node` around the near square: near.maxLeaf over it, then
+	NEAR_GRADE times more per ring of that width outward (two rings), unlimited beyond.
+]]
+local function nearSizeLimit(near: Near, node: Node): number
+	local u, v, facing = nearCoords(near, node.cx, node.cy, node.cz)
+	if not facing then
+		return math.huge
+	end
+	local gap = math.max(math.abs(u), math.abs(v)) - node.size * NEAR_SIZE_PAD / 2 - near.half
+	local step = near.maxLeaf
+	if gap <= 0 then
+		return step
+	end
+	local reach = 0
+	for _ = 1, 2 do
+		step *= NEAR_GRADE
+		reach += step
+		if gap < reach then
+			return step
+		end
+	end
+	return math.huge
+end
+
 local function selectOnce(
 	config: Config,
 	cam: Vec3d,
@@ -303,6 +390,7 @@ local function selectOnce(
 	local maxLeafSize = params.maxLeafSize or math.huge
 	local maxDistance = params.maxDistance or math.huge
 	local pause = params.pause
+	local near = params.near -- CHANGED (Night review)
 	local function visit(face: number, depth: number, x: number, y: number)
 		if pause then
 			pause()
@@ -331,7 +419,11 @@ local function selectOnce(
 		if node.flat then
 			k *= FLAT_SPLIT_FACTOR
 		end
-		if depth < maxDepth and (dist < k * node.size or node.size > maxLeafSize) then
+		-- CHANGED (Night review): + nodes over (or graded around) the near square split down to its leaf size
+		local forced = near ~= nil
+			and node.size > near.maxLeaf * SIZE_TOLERANCE
+			and node.size > nearSizeLimit(near, node)
+		if depth < maxDepth and (dist < k * node.size or node.size > maxLeafSize or forced) then
 			split[node.key] = true
 			local cx, cy = 2 * x, 2 * y
 			visit(face, depth + 1, cx, cy)
@@ -348,13 +440,11 @@ local function selectOnce(
 	return leaves, split
 end
 
--- Is any level over MAX_BAND_LEAVES?
--- Would any band (one per level, levels from the finest + bandCount - 1 up merged) hold over MAX_BAND_LEAVES?
-local function crowded(config: Config, leaves: { Node }, bandCount: number): boolean
-	local merge = TerrainMath.mergeLevel(config, leaves, bandCount)
+-- Would any band hold over MAX_BAND_LEAVES?
+-- CHANGED (Night review): bands as assignBands lays them out (the near band too), not only one per level.
+local function crowded(config: Config, leaves: { Node }, bandCount: number, near: Near?): boolean
 	local perBand: { [number]: number } = {}
-	for _, node in leaves do
-		local band = math.min(config.maxDepth - node.depth, merge)
+	for _, band in TerrainMath.assignBands(config, leaves, bandCount, near) do
 		local count = (perBand[band] or 0) + 1
 		if count > MAX_BAND_LEAVES then
 			return true
@@ -374,7 +464,10 @@ function TerrainMath.select(config: Config, cam: Vec3d, params: Params, prevSpli
 	local leaves, split = selectOnce(config, cam, params, splitK, prevSplit)
 	local tries = 1
 	local bandCount = params.bandCount or math.huge
-	while (#leaves > params.maxLeaves or crowded(config, leaves, bandCount)) and tries < MAX_SELECT_RETRIES do
+	while
+		(#leaves > params.maxLeaves or crowded(config, leaves, bandCount, params.near))
+		and tries < MAX_SELECT_RETRIES
+	do
 		splitK *= RETRY_FACTOR
 		leaves, split = selectOnce(config, cam, params, splitK, prevSplit)
 		tries += 1
@@ -408,6 +501,184 @@ end
 -- Band id of a leaf: its level, or mergeLevel for every coarser level.
 function TerrainMath.bandOf(config: Config, node: Node, mergeLevel: number): number
 	return math.min(config.maxDepth - node.depth, mergeLevel)
+end
+
+--[[
+	CHANGED (Night review): the tangent frame at body-relative `pos` (any height): y = the radial up, x = the face
+	lattice's u direction projected into the tangent plane, z = x cross y (right-handed, CFrame.fromMatrix order).
+	Leaves near `pos` are squares along x and z, so a band stored in this frame has a tight box.
+]]
+function TerrainMath.tangentAxes(config: Config, pos: Vec3d): Axes
+	local up = Vec3d.normalize(pos)
+	local face = SurfaceHeight.latticeCoords(config.bodyId, pos)
+	local _, u = SurfaceHeight.faceFrame(face)
+	local x = Vec3d.sub(u, Vec3d.scale(up, Vec3d.dot(u, up)))
+	if Vec3d.lengthSq(x) < 1e-12 then
+		local _, _, v = SurfaceHeight.faceFrame(face)
+		x = Vec3d.sub(v, Vec3d.scale(up, Vec3d.dot(v, up)))
+	end
+	x = Vec3d.normalize(x)
+	return { x = x, y = up, z = Vec3d.cross(x, up) }
+end
+
+-- CHANGED (Night review): a near square of +-half m (leaves up to maxLeaf m) around the ground under `pos`.
+function TerrainMath.newNear(config: Config, pos: Vec3d, half: number, maxLeaf: number): Near
+	local axes = TerrainMath.tangentAxes(config, pos)
+	return { origin = Vec3d.scale(axes.y, config.radius), axes = axes, half = half, maxLeaf = maxLeaf }
+end
+
+--[[
+	CHANGED (Night review): where to centre a near square of +-nearHalf for a camera at `cam`: the ground under it,
+	except that a square of +-keepHalf around `keep` (the launch site) is kept inside it while the camera's nadir
+	is within `range` (tangent, per axis) of the positions that do that. Body-relative, on the body's sphere.
+]]
+function TerrainMath.nearTarget(
+	config: Config,
+	cam: Vec3d,
+	keep: Vec3d?,
+	keepHalf: number,
+	nearHalf: number,
+	range: number
+): Vec3d
+	local nadir = Vec3d.scale(Vec3d.normalize(cam), config.radius)
+	local room = nearHalf - keepHalf
+	if keep == nil or room < 0 then
+		return nadir
+	end
+	local frame = TerrainMath.newNear(config, keep, keepHalf, 0)
+	local u, v, facing = nearCoords(frame, nadir.x, nadir.y, nadir.z)
+	if not facing or math.max(math.abs(u), math.abs(v)) > room + range then
+		return nadir
+	end
+	local cu, cv = math.clamp(u, -room, room), math.clamp(v, -room, room)
+	local p = Vec3d.add(frame.origin, Vec3d.add(Vec3d.scale(frame.axes.x, cu), Vec3d.scale(frame.axes.z, cv)))
+	return Vec3d.scale(Vec3d.normalize(p), config.radius)
+end
+
+-- CHANGED (Night review): tangent coordinates (x, z) of body-relative `pos` about the near origin.
+function TerrainMath.nearOffset(near: Near, pos: Vec3d): (number, number)
+	local u, v = nearCoords(near, pos.x, pos.y, pos.z)
+	return u, v
+end
+
+--[[
+	CHANGED (Night review): band id of every leaf (by key) when drawn with `bandCount` bands.
+	Without `near`: one band per level (id = the level), every level from mergeLevel up shares the last one.
+	With `near` (bandCount >= 2): the leaves up to near.maxLeaf whose centre lies in the near square go to band 0
+	(one part, at true scale while its centre is within the draw budget), every other leaf to a band per level as
+	above, shifted by one (id = 1 + level; the levels from the finest leaf of the selection + bandCount - 2 up share
+	the last one).
+]]
+function TerrainMath.assignBands(config: Config, leaves: { Node }, bandCount: number, near: Near?): { [number]: number }
+	local result: { [number]: number } = {}
+	if near == nil or bandCount < 2 then
+		local merge = TerrainMath.mergeLevel(config, leaves, bandCount)
+		for _, node in leaves do
+			result[node.key] = TerrainMath.bandOf(config, node, merge)
+		end
+		return result
+	end
+	local limit = near.maxLeaf * SIZE_TOLERANCE
+	local half = near.half
+	local ring: { Node } = {}
+	for _, node in leaves do
+		local inside = false
+		if node.size <= limit then
+			local u, v, facing = nearCoords(near, node.cx, node.cy, node.cz)
+			inside = facing and math.abs(u) <= half and math.abs(v) <= half
+		end
+		if inside then
+			result[node.key] = NEAR_BAND
+		else
+			table.insert(ring, node)
+		end
+	end
+	-- the levels are counted from the finest of ALL leaves (not just these), so a few finest leaves crossing the
+	-- square's edge do not shift every band id by one (a plan would rebuild them all)
+	local merge = TerrainMath.mergeLevel(config, leaves, bandCount - 1)
+	for _, node in ring do
+		result[node.key] = NEAR_BAND + 1 + TerrainMath.bandOf(config, node, merge)
+	end
+	return result
+end
+
+TerrainMath.NEAR_BAND = NEAR_BAND
+
+--[[
+	CHANGED (Night review): the next step of a plan that swaps bands (pure; TerrainMesh runs it).
+	  pending   band ids that still need their final mesh       covered  band ids whose new leaves are on screen
+	  deps      id -> ids holding the replacements of its outgoing leaves
+	  alive     id -> whether a mesh is on screen for it         empty    id -> whether its target is empty
+	  liveCount meshes on screen; bandCount the bands the budget allows
+	Returns ("build", id): build its final mesh (ready: every dependency covered; bands that go away first, then
+	replaced ones, new ones last, lowest id first); ("union", id): bands wait on each other, show its new leaves
+	while keeping its outgoing ones (an existing band first); ("retire", id): drop a band that goes away BEFORE its
+	replacements are up, because a mesh must be built next and more than bandCount bands are alive (a new band was
+	added while the one it replaces still waits; the caller marks the coverage broken: plates fill in until the plan
+	is done); nil: nothing can make progress.
+]]
+function TerrainMath.planStep(
+	pending: { [number]: boolean },
+	covered: { [number]: boolean },
+	deps: { [number]: { [number]: boolean } },
+	alive: { [number]: boolean },
+	empty: { [number]: boolean },
+	liveCount: number,
+	bandCount: number
+): (StepKind?, number?)
+	local chosen: number? = nil
+	local rank = math.huge
+	for id in pending do
+		local ready = true
+		local waits = deps[id]
+		if waits then
+			for dep in waits do
+				if not covered[dep] then
+					ready = false
+					break
+				end
+			end
+		end
+		if ready then
+			local r = if empty[id] then 1 elseif alive[id] then 2 else 3
+			if r < rank or (r == rank and id < (chosen :: number)) then
+				chosen, rank = id, r
+			end
+		end
+	end
+	local kind: StepKind = "build"
+	if chosen == nil then
+		-- bands waiting on each other: a union, on an existing band if any
+		for id in pending do
+			if not covered[id] then
+				local better = chosen == nil
+					or (alive[id] and not alive[chosen :: number])
+					or (alive[id] == alive[chosen :: number] and id < (chosen :: number))
+				if better then
+					chosen = id
+				end
+			end
+		end
+		if chosen == nil then
+			return nil, nil
+		end
+		kind = "union"
+	end
+	local id = chosen :: number
+	if not empty[id] and liveCount > bandCount then
+		-- a build needs a mesh on top of the live ones (bandCount + 1 at most): free one first (a new band was
+		-- just added while one going away still waits for it) - the band going away with the highest id
+		local doomed: number? = nil
+		for other in pending do
+			if empty[other] and alive[other] and (doomed == nil or other > (doomed :: number)) then
+				doomed = other
+			end
+		end
+		if doomed then
+			return "retire", doomed
+		end
+	end
+	return kind, id
 end
 
 -- Key of the parent of node (face, depth, x, y) (nil at depth 0).
@@ -446,6 +717,23 @@ function TerrainMath.bandScale(
 		k = MIN_SCALE
 	end
 	return k
+end
+
+--[[
+	CHANGED (Night review): the scale to apply to an object drawn at `applied` when `wanted` is needed, on the
+	ladder ratio^n (ratio < 1): always at or below `wanted` (an object drawn like the ground under it stays at or in
+	front of it, never behind it); it only grows back once `wanted` is two steps above `applied` (no flicker between
+	neighbouring steps), or to 1 (true scale) as soon as the ground is.
+]]
+function TerrainMath.scaleStep(wanted: number, applied: number, ratio: number): number
+	if wanted >= 1 then
+		return 1
+	end
+	if wanted < applied or wanted > applied / (ratio * ratio) then
+		local n = math.ceil(math.log(math.max(wanted, MIN_SCALE)) / math.log(ratio) - 1e-9)
+		return ratio ^ n
+	end
+	return applied
 end
 
 --============================================================================
@@ -817,6 +1105,108 @@ function TerrainMath.bandBounds(chunks: { Chunk }): (Vec3d, Vector3, number)
 	return centre, size, radius
 end
 
+--[[
+	CHANGED (Night review): the frame (of FRAME_CANDIDATES rotations of `base` about its up axis, and the universe
+	axes) in which the chunks' ground corners span the smallest box (largest side): near cube-face corners the
+	lattice is skewed, so no single orientation is always the tightest.
+]]
+function TerrainMath.bestAxes(chunks: { Chunk }, base: Axes): Axes
+	local candidates: { Axes } = {}
+	for index = 0, FRAME_CANDIDATES - 1 do
+		local angle = index * (math.pi / 2) / FRAME_CANDIDATES
+		local c, s = math.cos(angle), math.sin(angle)
+		local x = Vec3d.add(Vec3d.scale(base.x, c), Vec3d.scale(base.z, s))
+		table.insert(candidates, { x = x, y = base.y, z = Vec3d.cross(x, base.y) })
+	end
+	table.insert(candidates, { x = Vec3d.new(1, 0, 0), y = Vec3d.new(0, 1, 0), z = Vec3d.new(0, 0, 1) })
+	local best, bestSize = candidates[1], math.huge
+	for _, axes in candidates do
+		local ax, ay, az = axes.x, axes.y, axes.z
+		local minX, minY, minZ = math.huge, math.huge, math.huge
+		local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
+		for _, c in chunks do
+			for _, v in CORNER_VERTICES do
+				local o = (v - 1) * VERTEX_BYTES
+				local data = c.data
+				local px = c.ox + buffer.readf32(data, o)
+				local py = c.oy + buffer.readf32(data, o + 4)
+				local pz = c.oz + buffer.readf32(data, o + 8)
+				local fx = px * ax.x + py * ax.y + pz * ax.z
+				local fy = px * ay.x + py * ay.y + pz * ay.z
+				local fz = px * az.x + py * az.y + pz * az.z
+				minX, maxX = math.min(minX, fx), math.max(maxX, fx)
+				minY, maxY = math.min(minY, fy), math.max(maxY, fy)
+				minZ, maxZ = math.min(minZ, fz), math.max(maxZ, fz)
+			end
+		end
+		local size = math.max(maxX - minX, maxY - minY, maxZ - minZ)
+		if size < bestSize then
+			best, bestSize = axes, size
+		end
+	end
+	return best
+end
+
+--[[
+	CHANGED (Night review): the exact box of a band's vertices in the frame `axes`: chunk i's vertices lowered by
+	drops[i] m along its node's direction (union meshes sink their outgoing leaves; nil / 0: not sunk). Returns
+	the box centre in frame coordinates (fx, fy, fz) and its size. `pause` is called after every chunk (a caller
+	in a thread may yield there).
+]]
+function TerrainMath.frameBounds(
+	chunks: { Chunk },
+	nodes: { Node },
+	drops: { number }?,
+	axes: Axes,
+	pause: (() -> ())?
+): (number, number, number, Vector3)
+	local ax, ay, az = axes.x, axes.y, axes.z
+	local minX, minY, minZ = math.huge, math.huge, math.huge
+	local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
+	for index, c in chunks do
+		local node = nodes[index]
+		local drop = if drops then drops[index] or 0 else 0
+		local ox, oy, oz = c.ox - node.dx * drop, c.oy - node.dy * drop, c.oz - node.dz * drop
+		-- the chunk origin in frame coordinates (doubles), then the small per-vertex offsets
+		local bx = ox * ax.x + oy * ax.y + oz * ax.z
+		local by = ox * ay.x + oy * ay.y + oz * ay.z
+		local bz = ox * az.x + oy * az.y + oz * az.z
+		local data = c.data
+		for v = 1, c.vertexCount do
+			local o = (v - 1) * VERTEX_BYTES
+			local px, py, pz = buffer.readf32(data, o), buffer.readf32(data, o + 4), buffer.readf32(data, o + 8)
+			local fx = bx + px * ax.x + py * ax.y + pz * ax.z
+			local fy = by + px * ay.x + py * ay.y + pz * ay.z
+			local fz = bz + px * az.x + py * az.y + pz * az.z
+			if fx < minX then
+				minX = fx
+			end
+			if fx > maxX then
+				maxX = fx
+			end
+			if fy < minY then
+				minY = fy
+			end
+			if fy > maxY then
+				maxY = fy
+			end
+			if fz < minZ then
+				minZ = fz
+			end
+			if fz > maxZ then
+				maxZ = fz
+			end
+		end
+		if pause then
+			pause()
+		end
+	end
+	if minX > maxX then
+		return 0, 0, 0, Vector3.zero
+	end
+	return (minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2, Vector3.new(maxX - minX, maxY - minY, maxZ - minZ)
+end
+
 --============================================================================
 -- Collision
 --============================================================================
@@ -827,27 +1217,59 @@ end
 ]]
 function TerrainMath.collisionTriangles(config: Config, pos: Vec3d, radius: number, out: { Triangle }): { Triangle }
 	table.clear(out)
-	local bodyId = config.bodyId
-	local face, fi, fj = SurfaceHeight.latticeCoords(bodyId, pos)
+	-- CHANGED (Night review): built from collisionCells / cellTriangles (TerrainCollision uses them cell by cell)
+	for _, key in TerrainMath.collisionCells(config, pos, radius, {}) do
+		local face, i, j = TerrainMath.cellOf(key)
+		local first, second = TerrainMath.cellTriangles(config, face, i, j)
+		table.insert(out, first)
+		table.insert(out, second)
+	end
+	return out
+end
+
+-- CHANGED (Night review): a stable number for lattice cell (face, i, j) of one body (i, j < 2^24).
+function TerrainMath.cellKey(face: number, i: number, j: number): number
+	return (face * 16777216 + i) * 16777216 + j
+end
+
+-- CHANGED (Night review): the cell (face, i, j) of a cellKey.
+function TerrainMath.cellOf(key: number): (number, number, number)
+	local j = key % 16777216
+	local rest = (key - j) / 16777216
+	local i = rest % 16777216
+	return (rest - i) / 16777216, i, j
+end
+
+--[[
+	CHANGED (Night review): keys (cellKey) of the lattice cells within `radius` m of body-relative `pos`, on the
+	face under it (the cells collisionTriangles fills). Appends to `out` (cleared first) and returns it.
+]]
+function TerrainMath.collisionCells(config: Config, pos: Vec3d, radius: number, out: { number }): { number }
+	table.clear(out)
+	local face, fi, fj = SurfaceHeight.latticeCoords(config.bodyId, pos)
 	local n = config.n
 	local reach = math.ceil(radius / config.cellArc)
 	local ci, cj = math.floor(fi), math.floor(fj)
-	local r = config.radius
 	for i = math.max(ci - reach, 0), math.min(ci + reach, n - 1) do
 		for j = math.max(cj - reach, 0), math.min(cj + reach, n - 1) do
 			local di, dj = (i + 0.5 - fi) * config.cellArc, (j + 0.5 - fj) * config.cellArc
 			if di * di + dj * dj > (radius + config.cellArc) ^ 2 then
 				continue
 			end
-			local ax, ay, az = groundPoint(bodyId, r, face, i, j)
-			local bx, by, bz = groundPoint(bodyId, r, face, i + 1, j)
-			local cx, cy, cz = groundPoint(bodyId, r, face, i + 1, j + 1)
-			local dx, dy, dz = groundPoint(bodyId, r, face, i, j + 1)
-			table.insert(out, { ax, ay, az, bx, by, bz, cx, cy, cz })
-			table.insert(out, { ax, ay, az, cx, cy, cz, dx, dy, dz })
+			table.insert(out, TerrainMath.cellKey(face, i, j))
 		end
 	end
 	return out
+end
+
+-- CHANGED (Night review): the two lattice triangles of cell (face, i, j) (the physics ground's split).
+function TerrainMath.cellTriangles(config: Config, face: number, i: number, j: number): (Triangle, Triangle)
+	local bodyId, r = config.bodyId, config.radius
+	local ax, ay, az = groundPoint(bodyId, r, face, i, j)
+	local bx, by, bz = groundPoint(bodyId, r, face, i + 1, j)
+	local cx, cy, cz = groundPoint(bodyId, r, face, i + 1, j + 1)
+	local dx, dy, dz = groundPoint(bodyId, r, face, i, j + 1)
+	return { ax, ay, az, bx, by, bz, cx, cy, cz }, { ax, ay, az, cx, cy, cz, dx, dy, dz }
 end
 
 --[[

@@ -28,6 +28,18 @@
 	change rebuilds the copy the next time it is shown. Props get a shadow radius and a smaller radius / part cap while
 	the pocket frame moves, per tier (PROPS_BY_TIER, SurfaceProps.setDetail).
 
+	CHANGED (Night review): terrain review fixes.
+	  * The site copy is no longer hidden over scaled terrain (it vanished 400-600 m into every launch and blinked on
+	    Medium). It is drawn like the terrain under it: scaled about the camera by that terrain's factor
+	    (TerrainMesh.scaleAt; same place and size on screen, only nearer), rounded down on a ladder of
+	    SITE_SCALE_RATIO steps (TerrainMath.scaleStep) so it is rebuilt about once per 6% of change: part sizes, weld
+	    offsets, light ranges and SurfaceGui resolutions (records taken when the copy is built). TerrainMesh keeps the
+	    whole site inside its true-scale near band while the camera is near it (keepNear), so on the pad and in the
+	    climb the copy and the craft standing on it are both at true scale. It shows up to SITE_VIEW_DISTANCE again,
+	    as before Phase 8.
+	  * Props: only chunks over true-scale ground are drawn (SurfaceProps' ground filter, TerrainMesh.isTrueScaleAt),
+	    re-checked whenever the displayed terrain bands change (TerrainMesh.version).
+
 	Positions are kept in doubles relative to their body and converted with Frames only after the reference is
 	subtracted (invariant I1).
 
@@ -51,6 +63,7 @@ local RenderContext = require(script.Parent.RenderContext)
 local SiteLights = require(script.Parent.SiteLights) -- CHANGED (Night review)
 local SurfaceProps = require(script.Parent.SurfaceProps)
 local TerrainCollision = require(script.Parent.TerrainCollision) -- CHANGED (Phase 8)
+local TerrainMath = require(script.Parent.TerrainMath) -- CHANGED (Night review)
 local TerrainMesh = require(script.Parent.TerrainMesh) -- CHANGED (Phase 8)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
@@ -65,8 +78,11 @@ local BASE_POCKET_ID = 0
 local SITE_LATITUDE = 0 -- rad, the base pocket's surface point (PocketService)
 local SITE_LONGITUDE = 0
 local SITE_VIEW_DISTANCE = 25000 -- m, true camera distance to the site below which the copy is shown
-local SITE_MARGIN = 600 -- m, the site copy needs true-scale terrain this far around the site centre (plate +-420)
+local SITE_MARGIN = 600 -- m, terrain this far around the site centre must be drawn for the copy (plate +-420)
 local PREBUILD_FACTOR = 1.4 -- CHANGED (Phase 8): build the terrain below this x the proxy handover altitude
+-- CHANGED (Night review): the copy drawn scaled like the terrain under it
+local SITE_SCALE_RATIO = 0.94 -- rescale steps (TerrainMath.scaleStep)
+local SITE_KEEP_HALF = 600 -- m: TerrainMesh keeps this square around the site inside its near band while it can
 
 -- CHANGED (Phase 8): props per Quality tier: draw radius (m; at most ~0.7 x TerrainMesh's near-disc radius, so props
 -- only stand on true-scale terrain), part cap and density (share of Biome's props per hectare)
@@ -139,6 +155,21 @@ local siteRoot: BasePart? = nil
 local siteRootBase: CFrame = CFrame.identity -- the root's base-pocket CFrame
 local siteLastTransform: CFrame? = nil
 local siteUntrackLights: (() -> ())? = nil
+-- CHANGED (Night review): what scaling the copy rewrites (taken at build time, at scale 1)
+type SiteScaleRecords = {
+	parts: { BasePart },
+	sizes: { Vector3 },
+	welds: { Weld },
+	offsets: { CFrame }, -- C0
+	backs: { CFrame }, -- C1
+	lights: { PointLight },
+	ranges: { number },
+	guis: { SurfaceGui },
+	pixels: { number },
+}
+local siteRecords: SiteScaleRecords? = nil
+local siteScale = 1 -- the scale the copy is built at now
+local siteLastCamera: Vector3? = nil
 
 --============================================================================
 -- Launch site copy
@@ -192,6 +223,56 @@ local function buildSiteCopy(tier: string): (Model, BasePart)
 	return model, rootPart
 end
 
+-- CHANGED (Night review): the scale-1 values scaling the copy rewrites (call before SiteLights unparents lights).
+local function collectScaleRecords(model: Model): SiteScaleRecords
+	local records: SiteScaleRecords = {
+		parts = {},
+		sizes = {},
+		welds = {},
+		offsets = {},
+		backs = {},
+		lights = {},
+		ranges = {},
+		guis = {},
+		pixels = {},
+	}
+	for _, d in model:GetDescendants() do
+		if d:IsA("BasePart") then
+			table.insert(records.parts, d)
+			table.insert(records.sizes, d.Size)
+		elseif d:IsA("Weld") then
+			table.insert(records.welds, d)
+			table.insert(records.offsets, d.C0)
+			table.insert(records.backs, d.C1)
+		elseif d:IsA("PointLight") then
+			table.insert(records.lights, d)
+			table.insert(records.ranges, d.Range)
+		elseif d:IsA("SurfaceGui") then
+			table.insert(records.guis, d)
+			table.insert(records.pixels, d.PixelsPerStud)
+		end
+	end
+	return records
+end
+
+-- CHANGED (Night review): rebuilds the copy at scale `s` (about its root; updateSite places the root).
+local function applySiteScale(records: SiteScaleRecords, s: number)
+	for index, part in records.parts do
+		part.Size = records.sizes[index] * s
+	end
+	for index, weld in records.welds do
+		local c0, c1 = records.offsets[index], records.backs[index]
+		weld.C0 = CFrame.new(c0.Position * s) * c0.Rotation
+		weld.C1 = CFrame.new(c1.Position * s) * c1.Rotation
+	end
+	for index, light in records.lights do
+		light.Range = records.ranges[index] * s
+	end
+	for index, gui in records.guis do
+		gui.PixelsPerStud = records.pixels[index] / s -- the same canvas on a smaller part
+	end
+end
+
 local function hideSite()
 	local model = siteModel
 	if model and model.Parent ~= nil then
@@ -215,17 +296,21 @@ local function destroySite()
 	siteModel = nil
 	siteRoot = nil
 	siteLastTransform = nil
+	siteRecords = nil -- CHANGED (Night review)
+	siteScale = 1
 end
 
 local function updateSite(ctx: RenderContext.RenderContext, surfaceMode: boolean)
 	local parent = root
+	-- CHANGED (Night review): shown over scaled terrain too (drawn scaled like it, below); the terrain under it only
+	-- has to be drawn at all (scaleAt nil: no band holds it, e.g. beyond the horizon)
 	local wanted = parent ~= nil
 		and surfaceMode
 		and ctx.pocketId ~= BASE_POCKET_ID
 		and ctx.dominantBodyId == Bodies.HOMEWORLD
 		and Vec3d.distanceSq(ctx.cameraDominant, SITE_POS) <= SITE_VIEW_DISTANCE * SITE_VIEW_DISTANCE
-		and TerrainMesh.isTrueScaleAt(SITE_POS, SITE_MARGIN) -- CHANGED (Phase 8)
-	if not wanted or parent == nil then
+	local terrainScale = if wanted then TerrainMesh.scaleAt(SITE_POS, SITE_MARGIN) else nil
+	if not wanted or parent == nil or terrainScale == nil then
 		hideSite()
 		return
 	end
@@ -235,18 +320,35 @@ local function updateSite(ctx: RenderContext.RenderContext, surfaceMode: boolean
 		model, rootPart = built, builtRoot
 		siteModel, siteRoot = built, builtRoot
 		siteRootBase = builtRoot.CFrame
+		siteRecords = collectScaleRecords(built) -- CHANGED (Night review): before SiteLights unparents lights
+		siteScale = 1
 		siteUntrackLights = SiteLights.track(built) -- CHANGED (Night review): lights on High only
 	end
 	assert(model and rootPart)
+	-- CHANGED (Night review): drawn like the terrain under it (at or a step in front of its scale factor)
+	local scale = TerrainMath.scaleStep(terrainScale, siteScale, SITE_SCALE_RATIO)
+	local records = siteRecords
+	if scale ~= siteScale and records then
+		applySiteScale(records, scale)
+		siteScale = scale
+		siteLastTransform = nil
+	end
 	local m = siteTransform(ctx.frame, ctx.ut)
 	if model.Parent ~= parent then
 		model.Parent = parent
 		siteLastTransform = nil
 	end
-	if siteLastTransform ~= m then
+	local camera = ctx.camera.Position
+	if siteLastTransform ~= m or (siteScale < 1 and siteLastCamera ~= camera) then
 		-- CHANGED (Night review): only the root moves; the welded parts follow (was 1004 CFrames + BulkMoveTo)
-		rootPart.CFrame = m * siteRootBase
+		-- CHANGED (Night review): scaled about the camera when the copy is scaled (same image, nearer)
+		local pose = m * siteRootBase
+		if siteScale < 1 then
+			pose = CFrame.new(camera + (pose.Position - camera) * siteScale) * pose.Rotation
+		end
+		rootPart.CFrame = pose
 		siteLastTransform = m
+		siteLastCamera = camera
 	end
 end
 
@@ -272,8 +374,10 @@ function Surface.init(parent: Folder)
 	root = parent
 	-- CHANGED (Phase 8): terrain meshes / plates, collision near the character, props
 	TerrainMesh.init(parent)
+	TerrainMesh.keepNear(Bodies.HOMEWORLD, SITE_POS, SITE_KEEP_HALF) -- CHANGED (Night review): the site at true scale
 	TerrainCollision.init(parent)
 	SurfaceProps.init(parent)
+	SurfaceProps.setGroundFilter(TerrainMesh.isTrueScaleAt) -- CHANGED (Night review): props on true-scale ground only
 	applyPropTier(Quality.tier())
 	Quality.onChanged(function(tier: Quality.Tier)
 		applyPropTier(tier)
@@ -297,8 +401,9 @@ function Surface.update(
 	TerrainMesh.update(ctx, surfaceMode, prebuild)
 	TerrainCollision.update(ctx)
 	updateSite(ctx, surfaceMode)
-	-- props only while the terrain around the camera is drawn at true scale (their radius stays inside the near disc)
-	SurfaceProps.update(ctx, surfaceMode and TerrainMesh.isTrueScaleAt(ctx.cameraDominant, 0))
+	-- props only while the terrain around the camera is drawn at true scale
+	-- CHANGED (Night review): and only on chunks over true-scale ground (the ground filter), re-checked on changes
+	SurfaceProps.update(ctx, surfaceMode and TerrainMesh.isTrueScaleAt(ctx.cameraDominant, 0), TerrainMesh.version())
 end
 
 -- CHANGED (Phase 8): builds (without drawing) the ground around ctx's camera; the main menu calls this for the base.
