@@ -37,6 +37,10 @@
 	    SHAKE_Q_AMPLITUDE x clamp(dynamicPressure / SHAKE_Q_FULL, 0, 1) rad. It is applied on top of the computed
 	    camera CFrame every frame (the orbit state never sees it, so it cannot drift) and is off when Settings
 	    cameraShake is false.
+
+	CHANGED (Phase 8): the ground has hills now. A Target may carry groundHeight(point): the height (studs) of a
+	workspace point above the terrain; the camera is lifted along "up" to stay GROUND_CLEARANCE above it (the orbit
+	itself is untouched, so it drops back when the ground falls away).
 ]]
 
 local Players = game:GetService("Players")
@@ -83,6 +87,7 @@ local SHAKE_HIGH_WEIGHT = 0.35 -- share of the fast component
 local SHAKE_ROLL_SHARE = 0.5 -- roll shake relative to pitch / yaw
 local SHAKE_NOISE_GAIN = 2 -- math.noise is about +-0.5: scale to about +-1
 local SHAKE_RESPONSE = 12 -- 1/s, how fast the shake amplitude follows its inputs (no hard pops)
+local GROUND_CLEARANCE = 3 -- CHANGED (Phase 8): studs the camera keeps above the terrain
 --============================================================================
 
 export type Target = {
@@ -95,6 +100,7 @@ export type Target = {
 	thrustFraction: number?, -- 0..1 of the craft's active engine thrust being produced now
 	nearGround: number?, -- 0..1, 1 = on the ground, 0 = high enough that the ground no longer adds shake
 	dynamicPressure: number?, -- Pa
+	groundHeight: ((point: Vector3) -> number)?, -- CHANGED (Phase 8): studs above the terrain of a workspace point
 }
 
 local ChaseCamera = {}
@@ -336,7 +342,16 @@ local function step(dt: number)
 
 	local offset = lastToWorkspace:VectorToWorldSpace(back * math.cos(pitch) + up * math.sin(pitch))
 	local upWorkspace = lastToWorkspace:VectorToWorldSpace(up)
-	local cameraCFrame = CFrame.lookAt(current + offset * zoom, current, upWorkspace)
+	local eye = current + offset * zoom
+	-- CHANGED (Phase 8): never inside a hill
+	local groundHeight = if t then t.groundHeight else nil
+	if groundHeight then
+		local h = groundHeight(eye)
+		if h < GROUND_CLEARANCE then
+			eye += upWorkspace * (GROUND_CLEARANCE - h)
+		end
+	end
+	local cameraCFrame = CFrame.lookAt(eye, current, upWorkspace)
 
 	-- CHANGED (Physics feel): shake on top of the computed view (never fed back into the orbit)
 	local wanted = if values.cameraShake then shakeFor(t) else 0

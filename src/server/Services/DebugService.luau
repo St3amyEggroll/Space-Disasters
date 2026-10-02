@@ -6,6 +6,8 @@
 	  /fuel                   refill your craft
 	  /base                   go back to your plot
 	  /time <hour>            set the time of day at the base (0..24, 12 = noon; everyone sees it)
+	  /hover <m> [body]       CHANGED (Phase 8): put your craft upright and still, <m> metres above the terrain under
+	                          it (or above a hilly spot of another body) to test landings on slopes
 	"Your craft" = the craft you pilot, else the craft whose pocket you are in.
 ]]
 
@@ -14,12 +16,14 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
+local Frames = require(ReplicatedStorage.Shared.Math.Frames) -- CHANGED (Phase 8)
 local FlightModel = require(ReplicatedStorage.Shared.Sim.FlightModel)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 local Protocol = require(ReplicatedStorage.Shared.Net.Protocol)
 local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime)
+local SurfaceHeight = require(ReplicatedStorage.Shared.Sim.SurfaceHeight) -- CHANGED (Phase 8)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local CraftService = require(script.Parent.CraftService)
 local PlotService = require(script.Parent.PlotService)
@@ -29,6 +33,8 @@ local RailsService = require(script.Parent.RailsService) -- CHANGED (Phase 5)
 -- Tunables
 --============================================================================
 local PREFIX = "/"
+local HOVER_OTHER_BODY_DIR = Vec3d.normalize(Vec3d.new(-1, 0.25, 0.15)) -- CHANGED (Phase 8): /hover spot on another body
+local HOVER_MAX_M = 20000
 --============================================================================
 
 local DebugService = {}
@@ -102,6 +108,36 @@ local function orbit(player: Player, args: { string })
 	notify:FireClient(player, `Orbit set: {altKm} km around {body.DisplayName}`)
 end
 
+-- CHANGED (Phase 8): /hover <m> [body]: upright and at rest, <m> metres (plus the craft's radius) above the terrain.
+local function hover(player: Player, args: { string })
+	local record = craftOf(player)
+	local metres = tonumber(args[2])
+	if record == nil or metres == nil or metres < 0 or metres > HOVER_MAX_M then
+		notify:FireClient(player, "Usage: /hover <metres 0-20000> [body] while in a flying craft", "Error")
+		return
+	end
+	local sim = record.sim :: FlightModel.Craft
+	local bodyId = sim.state.bodyId
+	if args[3] then
+		local body = Bodies.findByName(args[3])
+		if body == nil or body.VisualOnly then
+			notify:FireClient(player, `Unknown body {args[3]}`, "Error")
+			return
+		end
+		bodyId = body.Id
+	end
+	local up = if bodyId == sim.state.bodyId then Vec3d.normalize(sim.state.pos) else HOVER_OTHER_BODY_DIR
+	local ground = SurfaceHeight.groundPoint(bodyId, up)
+	local state = FlightModel.copyState(sim.state)
+	state.bodyId = bodyId
+	state.pos = Vec3d.add(ground, Vec3d.scale(up, metres + sim.physics.boundingRadius))
+	state.vel = Vec3d.zero()
+	state.rot = Frames.surfaceRotation(up)
+	state.angVel = Vector3.zero
+	setState(record, state)
+	notify:FireClient(player, `Hovering {metres} m above {Bodies.get(bodyId).DisplayName}'s ground`)
+end
+
 local function refuel(player: Player)
 	local record = craftOf(player)
 	if record == nil then
@@ -169,6 +205,8 @@ local function onChatted(player: Player, message: string)
 		toBase(player)
 	elseif command == "time" then
 		setTime(player, args)
+	elseif command == "hover" then
+		hover(player, args) -- CHANGED (Phase 8)
 	end
 end
 

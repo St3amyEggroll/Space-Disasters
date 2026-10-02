@@ -75,6 +75,7 @@ local PlotService = require(script.Parent.PlotService) -- CHANGED (Phase 11): En
 local PocketService = require(script.Parent.PocketService)
 local RailsService = require(script.Parent.RailsService) -- CHANGED (Phase 5)
 local Rails = require(ReplicatedStorage.Shared.Sim.Rails) -- CHANGED (Phase 5)
+local SurfaceHeight = require(ReplicatedStorage.Shared.Sim.SurfaceHeight) -- CHANGED (Phase 8)
 local Boarding = require(ReplicatedStorage.Shared.Craft.Boarding) -- CHANGED (Boarding)
 
 type CraftRecord = CraftService.CraftRecord
@@ -698,7 +699,8 @@ local function onReportDestroyed(player: Player, craftId: unknown, ids: unknown,
 		return
 	end
 	-- plausibility: the craft must be near the ground
-	local altitude = Vec3d.length(sim.state.pos) - Bodies.get(sim.state.bodyId).Radius
+	-- CHANGED (Phase 8): height above the heightmap ground (hills, mountains, craters), not sea level
+	local altitude = SurfaceHeight.height(sim.state.bodyId, sim.state.pos)
 	if altitude > sim.physics.boundingRadius + CRASH_ALTITUDE_SLACK then
 		return
 	end

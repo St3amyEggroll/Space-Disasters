@@ -86,10 +86,13 @@ local GameConfig = {
 	LOG_D_MIN = math.log(1e3), -- ln(1 km)
 	LOG_D_MAX = math.log(1e11), -- ln(1e11 m)
 	PROXY_HANDOVER_HYSTERESIS = 0.1, -- +/-10% around PROXY_MIN_ALT
-	NEAR_CAP_RADIUS = 8000, -- m; true-scale surface tile cap radius
+	-- CHANGED (Phase 8): the heightmap terrain (Render/TerrainMesh) replaced the v1 tile cap; NEAR_CAP_RADIUS,
+	-- TILE_THICKNESS and TILE_COLLIDE_RADIUS are no longer read. TILE_SIZE still sizes SurfaceHeight's tile grid,
+	-- which SurfaceProps cuts into prop cells.
+	NEAR_CAP_RADIUS = 8000, -- m; v1 true-scale surface tile cap radius (unused since Phase 8)
 	TILE_SIZE = 2048, -- m; tile edge length (max part size)
-	TILE_THICKNESS = 20,
-	TILE_COLLIDE_RADIUS = 1000, -- studs; tiles closer than this to the local player collide
+	TILE_THICKNESS = 20, -- unused since Phase 8
+	TILE_COLLIDE_RADIUS = 1000, -- studs; v1 tile collision radius (unused since Phase 8: Render/TerrainCollision)
 	STAR_SHELL_RADIUS = 1950,
 	STAR_COUNT = 600,
 	CRAFT_MARKER_ANGLE_DEG = 0.15, -- below this angular size a craft becomes a marker
