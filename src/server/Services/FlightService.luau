@@ -39,6 +39,17 @@
 	    still on its pad (Prelaunch, base pocket: no transfer needed) or not yet ignited. The design in the
 	    owner's hangar is untouched (Roll Out never clears it).
 	  * Anyone else (a passenger) only leaves: they alone go back to their plot; the craft flies on.
+
+	CHANGED (Boarding): cross-pocket boarding (remote BoardCraft, rules in Shared/Craft/Boarding). Once its pilot
+	sat down a craft lives in its flight pocket, and players in the base only see a cosmetic copy without seats, so
+	nobody could board it, not even on the pad. The client now puts seat prompts on the copy; the server checks the
+	request (rate limit, player alive, on foot and in the base pocket, craft flying and not debris, boarding
+	permission, a free Seat in the real model, the player within the craft's radius + BOARD_RANGE of its state and
+	the craft slower than BOARD_MAX_SPEED), takes a server craft off rails, seats the player with CrewService.sitIn
+	(the SitPrompt seat entry: it moves the character into the flight pocket) and sends an identity PocketTransfer
+	base -> flight pocket (the server placed the character, so the client must not move it again). Pilot seat: the
+	usual onSeated path applies (handBack hands a server-simulated craft to the new pilot). Leaving is unchanged:
+	the boarded player is an ordinary passenger (or pilot) of the craft.
 ]]
 
 local Players = game:GetService("Players")
@@ -64,6 +75,7 @@ local PlotService = require(script.Parent.PlotService) -- CHANGED (Phase 11): En
 local PocketService = require(script.Parent.PocketService)
 local RailsService = require(script.Parent.RailsService) -- CHANGED (Phase 5)
 local Rails = require(ReplicatedStorage.Shared.Sim.Rails) -- CHANGED (Phase 5)
+local Boarding = require(ReplicatedStorage.Shared.Craft.Boarding) -- CHANGED (Boarding)
 
 type CraftRecord = CraftService.CraftRecord
 
@@ -84,6 +96,7 @@ local SEATED_START_DELAY_S = 0.3 -- s between a pilot sitting down and the fligh
 local PAD_STEP_OFF = 6 -- studs beyond the pad edge where a pilot who leaves the seat on the pad is put
 local RAILS_HANDOFF_DT = 0.05 -- CHANGED (Phase 5): s before a pilot's first off-rails state the rail is validated at
 local END_FLIGHT_COOLDOWN_S = 1 -- CHANGED (Phase 11): EndFlight requests closer together than this are ignored
+local BOARD_COOLDOWN_S = 1 -- CHANGED (Boarding): BoardCraft requests closer together than this are ignored
 --============================================================================
 
 local FlightService = {}
@@ -95,6 +108,7 @@ local launching: { [number]: boolean } = {}
 local returning: { [number]: boolean } = {} -- CHANGED (Phase 3): re-entrancy guard for returnToPad
 local ending: { [number]: boolean } = {} -- CHANGED (Phase 11): re-entrancy guard for endFlight
 local lastEndFlight: { [Player]: number } = {} -- CHANGED (Phase 11): EndFlight rate limit
+local lastBoard: { [Player]: number } = {} -- CHANGED (Boarding): BoardCraft rate limit
 local lastValid: { [number]: { state: FlightModel.CraftState, fuel: number } } = {}
 local strikes: { [number]: Strikes } = {}
 local pendingTransfers: { [number]: PendingTransfer } = {}
@@ -837,6 +851,144 @@ local function releasePilot(player: Player, gone: boolean)
 end
 
 --============================================================================
+-- CHANGED (Boarding): boarding a craft in another pocket from the base
+--============================================================================
+
+-- The craft's state now: the server copy, or its rail sampled now while it coasts on rails.
+local function currentState(record: CraftRecord): FlightModel.CraftState?
+	if record.state == "OnRails" then
+		local rails = record.rails
+		return if rails then Rails.stateAt(rails, UniverseTime.now()) else nil
+	end
+	local sim = record.sim
+	return if sim then sim.state else nil
+end
+
+-- The Seat of a block of a real craft model (every seat part has exactly one seat), or nil.
+local function seatOfBlock(model: Model, blockId: number): Seat?
+	local block = CraftBuilder.findBlockModel(model, blockId)
+	if block == nil then
+		return nil
+	end
+	for _, descendant in block:GetDescendants() do
+		if descendant:IsA("Seat") then
+			return descendant
+		end
+	end
+	return nil
+end
+
+local function onBoardCraft(player: Player, craftIdArg: unknown, seatBlockIdArg: unknown)
+	local now = os.clock()
+	if not Boarding.cooldownOver(lastBoard[player], now, BOARD_COOLDOWN_S) then
+		return
+	end
+	lastBoard[player] = now
+	local craftId, seatBlockId = Boarding.validId(craftIdArg), Boarding.validId(seatBlockIdArg)
+	if craftId == nil or seatBlockId == nil then
+		return
+	end
+
+	-- the player: alive, on foot, in the base pocket
+	local humanoid = humanoidOf(player)
+	local character = player.Character
+	local rootPart = if character then character:FindFirstChild("HumanoidRootPart") else nil
+	if humanoid == nil or character == nil or rootPart == nil or not rootPart:IsA("BasePart") then
+		return
+	end
+	local root = rootPart :: BasePart
+	if humanoid.SeatPart ~= nil or PocketService.pocketAt(root.Position) ~= PocketService.BASE_POCKET_ID then
+		return
+	end
+
+	-- the craft: flying in its own flight pocket with its real model, not debris, not mid-transition
+	local record = CraftService.get(craftId)
+	if record == nil or record.isDebris or not Boarding.boardableState(record.state) then
+		return
+	end
+	if launching[craftId] or returning[craftId] or ending[craftId] then
+		return
+	end
+	local model, pocketId, sim = record.model, record.pocketId, record.sim
+	if
+		model == nil
+		or pocketId == nil
+		or sim == nil
+		or PocketService.flightPocket(pocketId) == nil
+		or model:GetAttribute("FlightPocket") ~= pocketId
+	then
+		return
+	end
+
+	-- the seat: a free Seat of the real model
+	local seat = seatOfBlock(model, seatBlockId)
+	if seat == nil then
+		return
+	end
+	if seat.Occupant ~= nil then
+		remotes.Notify:FireClient(player, "That seat is taken", "Error")
+		return
+	end
+
+	-- slow, and close enough (universe positions relative to the base pocket's body)
+	local state = currentState(record)
+	local baseFrame = PocketService.baseFrame()
+	if state == nil or state.bodyId ~= baseFrame.refBodyId then
+		return
+	end
+	if not Boarding.slowEnough(Vec3d.length(state.vel)) then
+		remotes.Notify:FireClient(player, "The craft is moving too fast to board", "Error")
+		return
+	end
+	local here = Frames.pointFromWorkspace(baseFrame, root.Position)
+	if not Boarding.inRange(Vec3d.distance(here, state.pos), sim.physics.boundingRadius) then
+		remotes.Notify:FireClient(player, "You are too far from the craft to board it", "Error")
+		return
+	end
+
+	-- permission (may yield on the friend check: everything that can change is checked again below)
+	if not CrewService.canBoard(player, seat) then
+		remotes.Notify:FireClient(player, "The owner hasn't allowed you to board this craft", "Error")
+		return
+	end
+	if
+		CraftService.get(craftId) ~= record
+		or record.model ~= model
+		or record.pocketId ~= pocketId
+		or seat.Parent == nil
+		or seat.Occupant ~= nil
+		or humanoid.SeatPart ~= nil
+		or humanoidOf(player) ~= humanoid
+	then
+		return
+	end
+
+	-- a server craft coasting on rails leaves them first (as in handBack); a pilot's rails stay theirs
+	if record.state == "OnRails" and record.pilot == nil then
+		RailsService.takeOffRails(record)
+	end
+
+	-- the SitPrompt seat entry: the character is moved onto the seat in the flight pocket and sits down (a pilot
+	-- seat then goes through onSeated: handBack hands a server-simulated craft to this player)
+	local before = character:GetPivot()
+	if not CrewService.sitIn(player, seat) then
+		-- the seat was taken at the last moment: put the character back where it stood if it was already moved
+		if humanoid.SeatPart == nil and PocketService.pocketAt(root.Position) ~= PocketService.BASE_POCKET_ID then
+			character:PivotTo(before)
+		end
+		remotes.Notify:FireClient(player, "That seat is taken", "Error")
+		return
+	end
+	-- the server placed the character itself: identity transform, so the client does not move it a second time
+	sendTransfer(player, PocketService.BASE_POCKET_ID, pocketId, CFrame.identity, 0)
+
+	local owner = Players:GetPlayerByUserId(record.ownerUserId)
+	if owner and owner ~= player then
+		remotes.Notify:FireClient(owner, `{player.DisplayName} boarded your craft`, "Info")
+	end
+end
+
+--============================================================================
 -- Lifecycle
 --============================================================================
 
@@ -855,6 +1007,7 @@ function FlightService.Init()
 			"Notify",
 			"FlightEnd", -- CHANGED (Phase 3)
 			"EndFlight", -- CHANGED (Phase 11)
+			"BoardCraft", -- CHANGED (Boarding)
 		}
 	do
 		remotes[name] = Remotes.event(name)
@@ -868,11 +1021,13 @@ function FlightService.Start()
 	remotes.LeaveSeat.OnServerEvent:Connect(onLeaveSeat)
 	remotes.PocketTransferAck.OnServerEvent:Connect(onTransferAck)
 	remotes.EndFlight.OnServerEvent:Connect(onEndFlight) -- CHANGED (Phase 11)
+	remotes.BoardCraft.OnServerEvent:Connect(onBoardCraft) -- CHANGED (Boarding)
 	Remotes.unreliable("PilotState").OnServerEvent:Connect(onPilotState)
 
 	Players.PlayerRemoving:Connect(function(player: Player)
 		releasePilot(player, true)
 		lastEndFlight[player] = nil -- CHANGED (Phase 11)
+		lastBoard[player] = nil -- CHANGED (Boarding)
 	end)
 	local function watchCharacter(player: Player, character: Model)
 		local humanoid = character:WaitForChild("Humanoid", 10)

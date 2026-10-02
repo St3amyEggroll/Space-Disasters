@@ -72,6 +72,11 @@ local DEFINITIONS: { [string]: Kind } = {
 	EndFlight = "Reliable", -- client -> server () no arguments; the craft is the one whose seat the player sits in.
 	--   Its pilot (or its owner aboard) ends the flight for everyone: the craft is removed and everyone aboard goes
 	--   back to their plot. Anyone else only leaves: they go back to their plot and the craft flies on.
+	-- CHANGED (Boarding): boarding a craft in another pocket from the base (Shared/Craft/Boarding)
+	BoardCraft = "Reliable", -- client -> server (craftId: number, seatBlockId: number) a player on foot in the base
+	--   pocket triggered a seat prompt on the cosmetic copy of a craft flying in another pocket; seatBlockId is the
+	--   id of the block holding the seat (one seat per block). The server checks everything, seats the player in the
+	--   real model and sends them an identity PocketTransfer base -> flight pocket (it placed the character itself).
 }
 
 local Remotes = {}
