@@ -69,6 +69,10 @@ local SMOOTHING_SMOOTH_FACTOR = 4 / 15
 local SNAP_DISTANCE = 500 -- studs; a target jump larger than this is snapped to instead of smoothed
 -- CHANGED (Physics feel): zoom fitted to the craft and camera shake (header)
 local FIT_RADIUS_MULT = 2.5 -- default zoom = this x the craft's bounding radius (about 1.25 x its length)
+-- CHANGED (Ship vanish fix): scaled-space planets are drawn at least NEAR_RENDER_RADIUS studs from the camera, so a
+-- craft farther than that (zoomed out) can end up behind the planet's proxy: a dark "shadow" swallowed the ship.
+-- The zoom is kept so the whole craft stays inside that zone, with this margin.
+local ZOOM_CLEAR_MARGIN = 20 -- studs
 local SHAKE_THRUST_AMPLITUDE = 0.004 -- rad at full thrust, high up
 local SHAKE_GROUND_BOOST = 2 -- x extra thrust shake right at the ground (rumble off the pad)
 local SHAKE_Q_AMPLITUDE = 0.003 -- rad at SHAKE_Q_FULL dynamic pressure and above
@@ -120,8 +124,13 @@ local stick = Vector2.zero -- right stick, deadzoned
 local zoomIn = false -- DPad up held
 local zoomOut = false -- DPad down held
 
+local craftRadius = 0 -- CHANGED (Ship vanish fix): studs, from the latest Target with a size
+
 local function clampZoom(value: number): number
-	return math.clamp(value, GameConfig.CHASE_ZOOM_MIN, GameConfig.CHASE_ZOOM_MAX)
+	-- CHANGED (Ship vanish fix): never so far out that the craft leaves the true-scale zone (see ZOOM_CLEAR_MARGIN)
+	local clearMax = GameConfig.NEAR_RENDER_RADIUS - craftRadius - ZOOM_CLEAR_MARGIN
+	local maxZoom = math.max(GameConfig.CHASE_ZOOM_MIN, math.min(GameConfig.CHASE_ZOOM_MAX, clearMax))
+	return math.clamp(value, GameConfig.CHASE_ZOOM_MIN, maxZoom)
 end
 
 local function setDragging(on: boolean)
@@ -274,6 +283,11 @@ local function step(dt: number)
 		lastTarget = t.position
 		lastUp = t.up
 		lastToWorkspace = t.toWorkspace
+		local size = t.size
+		if size and size > 0 and size ~= craftRadius then -- CHANGED (Ship vanish fix)
+			craftRadius = size
+			targetZoom = clampZoom(targetZoom)
+		end
 		if fitPending then
 			applyFit(t) -- CHANGED (Physics feel)
 		end
