@@ -5,6 +5,7 @@
 	RenderContext and hand it to every render layer in order:
 	  ScaledSpace          sun, planets and moons as scaled proxies (and the surface-mode handover)
 	  Surface              the tile cap under the camera and the cosmetic Space Disasters Inc. copy
+	  Clouds               CHANGED (Physics feel): the cloud deck near the camera (Render/Clouds)
 	  SkyCube              black starry space in front of Roblox's sky above the air (CHANGED Phase 2a playtest 4)
 	  SkyLighting          sun direction, shadow side and planet shadow
 	  RemoteCraftRenderer  other crafts in this pocket (interpolated stream)
@@ -27,6 +28,9 @@
 	CHANGED (Phase 11 review): the override may carry its own UT (the main menu shows the universe at its own time so
 	the Mun can be framed); the override's layers, SkyLighting included, are drawn at that UT.
 
+	CHANGED (Physics feel): the Clouds layer (workspace.ClientUniverse.Clouds) is drawn in the normal view only: the
+	map view and the main menu view hide its folder (reasons "Map" and "Menu") and skip its update.
+
 	API:
 	  UniverseRenderer.setMapMode(enabled, cubeHalfSize?)   MapViewController
 	  UniverseRenderer.isMapMode() -> boolean
@@ -41,6 +45,7 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
+local Clouds = require(script.Parent.Parent.Render.Clouds) -- CHANGED (Physics feel)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
@@ -267,6 +272,9 @@ local function step(dt: number)
 	timed("Surface", function()
 		Surface.update(ctx, ScaledSpace.isSurfaceMode())
 	end)
+	timed("Clouds", function() -- CHANGED (Physics feel)
+		Clouds.update(ctx, ScaledSpace.isSurfaceMode())
+	end)
 	-- CHANGED (Phase 2a playtest 4): black starry space in front of Roblox's sky
 	SkyCube.update(ctx, ScaledSpace.isSurfaceMode(), ScaledSpace.proxyMinAltitude(ctx.dominantBodyId))
 	timed("SkyLighting", function()
@@ -302,6 +310,7 @@ function UniverseRenderer.setMapMode(enabled: boolean, cubeHalfSize: number?)
 		-- CHANGED (Phase 11): hidden per reason (hideLayer / showLayers), so the menu view can overlap
 		hideLayer(if layerRoot then layerRoot:FindFirstChild("ScaledSpace") else nil, HIDE_MAP)
 		hideLayer(if layerRoot then layerRoot:FindFirstChild("Surface") else nil, HIDE_MAP)
+		hideLayer(if layerRoot then layerRoot:FindFirstChild("Clouds") else nil, HIDE_MAP) -- CHANGED (Physics feel)
 		hideLayer(Workspace:FindFirstChild("RemoteCrafts"), HIDE_MAP)
 		hideLayer(Effects.folder(), HIDE_MAP) -- CHANGED (Phase 10)
 		SkyCube.setOverride(1, cubeHalfSize)
@@ -325,6 +334,7 @@ function UniverseRenderer.setViewOverride(frame: Frames.Frame?, ut: number?)
 	if frame and not wasSet then
 		hideLayer(Workspace:FindFirstChild("RemoteCrafts"), HIDE_MENU)
 		hideLayer(Effects.folder(), HIDE_MENU)
+		hideLayer(if layerRoot then layerRoot:FindFirstChild("Clouds") else nil, HIDE_MENU) -- CHANGED (Physics feel)
 	elseif frame == nil and wasSet then
 		showLayers(HIDE_MENU)
 	end
@@ -361,11 +371,15 @@ function UniverseRenderer.Init()
 	local surfaceFolder = Instance.new("Folder")
 	surfaceFolder.Name = "Surface"
 	surfaceFolder.Parent = root
+	local cloudsFolder = Instance.new("Folder") -- CHANGED (Physics feel)
+	cloudsFolder.Name = "Clouds"
+	cloudsFolder.Parent = root
 	root.Parent = Workspace
 	layerRoot = root -- CHANGED (Phase 5)
 
 	SkyLighting.init()
 	Surface.init(surfaceFolder)
+	Clouds.init(cloudsFolder) -- CHANGED (Physics feel)
 	Effects.init(root) -- CHANGED (Phase 10)
 	task.spawn(SkyCube.init, root) -- paints star images (EditableImage)
 	-- EditableMesh creation can yield; the update is a no-op until init finishes.

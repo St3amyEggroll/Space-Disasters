@@ -108,6 +108,8 @@ local ACTION_PRIORITY = Enum.ContextActionPriority.High.Value + 10
 local CAMERA_GRAVITY_UP_MIN_ALT = 2000 -- m; gravity up below max(this, atmosphere top)
 local CAMERA_UP_BLEND_HEIGHT = 3000 -- m above that over which up blends to the solar-plane normal
 local SOLAR_PLANE_NORMAL = Vector3.yAxis -- universe axes: every orbit lies in the XZ plane
+-- CHANGED (Physics feel): camera speed cues (ChaseCamera zoom fit and shake)
+local CAMERA_SHAKE_GROUND_HEIGHT = 120 -- m above the ground where the extra near-ground shake has faded out
 -- CHANGED (Phase 5): rails
 local RAILS_IDLE_TIME = GameConfig.RAILS_IDLE_TIME
 local RAILS_RETRY_S = GameConfig.RAILS_RETRY_S
@@ -819,6 +821,60 @@ local function cameraUp(frame: Frames.Frame): Vector3
 	return up.Unit
 end
 
+-- CHANGED (Physics feel): bounding radius (studs) of the seat's craft, from its design (cached per model).
+local cameraSizeModel: Model? = nil
+local cameraSizeValue = 0
+local function cameraCraftSize(seatInfo: SeatInfo): number
+	local model = seatInfo.craftModel
+	if model ~= cameraSizeModel then
+		local design = if sim and craftId == seatInfo.craftId
+			then (sim :: Craft).physics.design
+			else CraftBuilder.readDesign(model)
+		local minV, maxV = CraftDesign.bounds(design)
+		cameraSizeModel = model
+		cameraSizeValue = (maxV - minV).Magnitude * CraftDesign.GRID / 2
+	end
+	return cameraSizeValue
+end
+
+--[[
+	CHANGED (Physics feel): ChaseCamera shake inputs for the seat's craft: (thrust fraction 0..1, near-ground
+	factor 0..1, dynamic pressure Pa). The pilot uses the local simulation (thrust of the burning engines over that
+	of every active engine); passengers use the streamed state (burning flag and throttle; a burning craft at
+	zero throttle runs solid boosters, which burn at full).
+]]
+local function cameraShakeInputs(seatInfo: SeatInfo): (number, number, number)
+	local craft = if sim and craftId == seatInfo.craftId then sim :: Craft else nil
+	local state: Protocol.State? = if craft
+		then craft.state
+		else RemoteCraftRenderer.sampleState(seatInfo.craftId, UniverseTime.now() - GameConfig.INTERP_DELAY)
+	if state == nil then
+		return 0, 0, 0
+	end
+	local thrustFraction = 0
+	if craft then
+		local produced, available = 0, 0
+		for _, engine in craft.physics.engines do
+			if craft.active[engine.blockId] then
+				available += engine.stats.ThrustVac
+				if FlightModel.engineBurning(craft, engine) then
+					produced += engine.stats.ThrustVac * FlightModel.engineThrottle(craft, engine)
+				end
+			end
+		end
+		thrustFraction = if available > 0 then produced / available else 0
+	elseif bit32.band(state.flags, FlightModel.FLAG_BURNING) ~= 0 then
+		thrustFraction = if state.throttle > 0 then state.throttle else 1
+	end
+	local body = Bodies.get(state.bodyId)
+	local altitude = Vec3d.length(state.pos) - body.Radius
+	local height = SurfaceHeight.height(state.bodyId, state.pos)
+	local nearGround = 1 - math.clamp(height / CAMERA_SHAKE_GROUND_HEIGHT, 0, 1)
+	local speed = Vec3d.length(state.vel)
+	local dynamicPressure = 0.5 * Atmosphere.density(state.bodyId, altitude) * speed * speed
+	return thrustFraction, nearGround, dynamicPressure
+end
+
 local function cameraTarget(): ChaseCamera.Target?
 	local seatInfo = currentSeat()
 	if seatInfo == nil then
@@ -839,7 +895,18 @@ local function cameraTarget(): ChaseCamera.Target?
 		position = if bounds then (bounds :: BasePart).Position else model:GetBoundingBox().Position
 	end
 	local frame = PocketController.frame()
-	return { position = position, up = cameraUp(frame), toWorkspace = frame.refRotInv }
+	-- CHANGED (Physics feel): craft size for the zoom fit, thrust / air / ground for the shake
+	local thrustFraction, nearGround, dynamicPressure = cameraShakeInputs(seatInfo)
+	return {
+		position = position,
+		up = cameraUp(frame),
+		toWorkspace = frame.refRotInv,
+		key = seatInfo.craftId,
+		size = cameraCraftSize(seatInfo),
+		thrustFraction = thrustFraction,
+		nearGround = nearGround,
+		dynamicPressure = dynamicPressure,
+	}
 end
 
 -- CHANGED (Phase 2a feedback): each engine's flame follows exactly what the simulation does with that engine,
