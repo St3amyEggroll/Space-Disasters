@@ -150,7 +150,9 @@ local TEST = {
 	SIZE = 90, -- studs across
 	MESH = "rbxasset://fonts/sword.mesh", -- a plain mesh shipped with Roblox (the classic sword)
 	TINT = Color3.fromRGB(255, 0, 255), -- the panels' background in test mode ...
-	TINT_TRANSPARENCY = 0.85, -- ... nearly clear: the panel shows even if its ViewportFrame draws nothing
+	-- CHANGED (Far layer probe): opaque (was 0.85): Steamy's probe showed a mostly clear SurfaceGui frame drawing dark
+	TINT_TRANSPARENCY = 0.3, -- ... the panel shows even if its ViewportFrame draws nothing
+	STATE_INTERVAL = 3, -- s between [FarLayer] panel state lines in test mode
 	LABEL_INTERVAL = 0.5, -- s between label rewrites
 }
 --============================================================================
@@ -288,7 +290,7 @@ local function newPanel(parent: Folder, face: FarLayerMath.Face, name: string): 
 	label.TextScaled = true
 	label.Font = Enum.Font.GothamBold
 	label.Size = UDim2.fromScale(0.6, 0.06)
-	label.Position = UDim2.fromScale(0.2, 0.02)
+	label.Position = UDim2.fromScale(0.2, 0.3) -- CHANGED (Far layer probe): lower, in view near the horizon
 	label.ZIndex = 2
 	label.Visible = false
 	label.Text = name
@@ -768,7 +770,41 @@ local function setTestLook(on: boolean)
 end
 
 -- the labels in test mode: face, copies made / with a mesh / loading
+-- CHANGED (Far layer probe): in test mode, where each panel really is (Steamy saw none of them while /farground
+-- probe's panels of the same size drew): its place in the tree, distance from the camera, size, facing, Enabled
+local stateAt = 0
+local function printPanelState()
+	local now = os.clock()
+	if now < stateAt then
+		return
+	end
+	stateAt = now + TEST.STATE_INTERVAL
+	local camera = Workspace.CurrentCamera
+	local eye = if camera then camera.CFrame.Position else Vector3.zero
+	for _, panel in panels do
+		local part = panel.part
+		local toEye = eye - part.Position
+		local facing = if toEye.Magnitude > 0 then part.CFrame.LookVector:Dot(toEye.Unit) else 0
+		print(
+			string.format(
+				"[FarLayer] panel %s: in workspace %s, parent %s, %.0f studs from the camera, size %.0f, facing %.2f, gui %s, shown %s, view %dx%d",
+				panel.name,
+				tostring(part:IsDescendantOf(Workspace)),
+				if part.Parent then part.Parent:GetFullName() else "nil",
+				toEye.Magnitude,
+				part.Size.X,
+				facing,
+				if panel.gui.Enabled then "on" else "off",
+				tostring(panel.shown),
+				math.floor(panel.view.AbsoluteSize.X),
+				math.floor(panel.view.AbsoluteSize.Y)
+			)
+		)
+	end
+end
+
 local function updateLabels()
+	printPanelState()
 	local now = os.clock()
 	if now < diag.labelAt then
 		return
