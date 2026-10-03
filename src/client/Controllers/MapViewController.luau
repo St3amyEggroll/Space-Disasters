@@ -1165,6 +1165,11 @@ local function onInputBegan(input: InputObject, processed: boolean)
 		MapViewController.close()
 		return
 	end
+	-- CHANGED (Solar system): Tab cycles the focus (it may arrive processed: Roblox's player list uses it too)
+	if input.KeyCode == FOCUS_KEY and isOpen then
+		cycleFocus()
+		return
+	end
 	if processed then
 		return
 	end
@@ -1177,10 +1182,6 @@ local function onInputBegan(input: InputObject, processed: boolean)
 		return
 	end
 	if not isOpen then
-		return
-	end
-	if input.KeyCode == FOCUS_KEY then
-		cycleFocus() -- CHANGED (Solar system)
 		return
 	end
 	local kind = input.UserInputType

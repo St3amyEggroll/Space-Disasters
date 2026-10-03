@@ -4,7 +4,7 @@
 	Celestial body definitions. Ids are stable and used on the wire; names are for code, DisplayName is for players.
 
 	Universe frame: origin at Homeworld's center, +Y = Homeworld north pole axis, the Moon orbits in the XZ plane.
-	Planets do not rotate in v1.
+	Planets do not rotate in v1 (CHANGED (Solar system): each body's axes turn with its Spin, see below).
 
 	Scale (CHANGED (Physics feel)): KSP-like sizes divided by 10 (Earth 60 km, Mun 15 km at 450 km), so low Earth
 	orbit is ~710 m/s at 10 km. Distances are true metres (1 stud = 1 m) for gravity, orbits and the ground tiles;

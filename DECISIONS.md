@@ -671,6 +671,71 @@ Steamy asked for "an effects phase, to update effects of rockets and everything"
   - `/bands` chat command: tints each band (band 1 blue, band 2 red, band 3 yellow, further bands magenta; plates white, site copy cyan) so screenshots show which band is on top.
 - **Audit (High, 3000 draw distance, a climb):** far-over-near pixels went from 0.23% to 0.15% on average. The screenshot-like view went from 0.6-1.0% to 0.1-0.3%. No holes. Thin slivers remain along ridge lines and the horizon. Medium and Low were not re-audited.
 
+### D51. Solar system and Mars (Steamy, 2026-10-03)
+Steamy: "make the solar system and mars", and instead of time warp for now "do a admin panel for now to spawn in orbit with a ship of what ever planet or landed with a ship". This builds Phase 7b without time warp.
+
+- **Bodies (`Config/Bodies`):**
+
+  | Body | Id | Orbits | Radius | Surface g | Orbit radius | Period | SOI |
+  |---|---|---|---|---|---|---|---|
+  | Sol | 0 | (root) | 100 km | 114 g (mu 1.117e13) | - | - | infinite |
+  | Earth | 1 | Sol | 60 km | 9.81 | 10,000 km | 59,460 s (16.5 h) | 1,000 km |
+  | Mun | 2 | Earth | 15 km | 1.62 | 450 km | 10,090 s | 72 km |
+  | Mars | 3 (new) | Sol | 30 km | 3.73 (0.38 g) | 15,000 km | 109,230 s (30.3 h) | 585 km |
+
+  - Sol's mu is derived so Earth's Laplace SOI is exactly 1,000 km (2.2x the Mun's orbit). Everything about the Earth-Mun system is unchanged (sizes, Mun orbit, air, the launch site, day length).
+  - Earth -> Mars Hohmann transfer: 41,550 s (11.5 h). That is **13.9 minutes at 50x warp** (3.5 min at 200x). "A few minutes at 50x" (the D39 plan) is impossible while the Mun stays at 450 km: the Mun's 2.8 h month needs an Earth year many times longer to stay inside Earth's SOI. Time warp should therefore offer 100x-1000x.
+  - Burns: low Earth orbit -> Mars transfer about 300 m/s (101 m/s heliocentric), Mars capture about 140 m/s into a low orbit. Synodic period 130,500 s (36 h). At UT 0 Mars leads Earth by the Hohmann phase angle (43 degrees), so a window is open when a server starts.
+  - Sol: 0.57 degrees across from Earth (about the disc the sky always drew), 0.38 from Mars. Not landable: a craft closer than 2.5 Sol radii (250 km from its centre) burns up (FlightService, every 0.5 s: every block destroyed, seated crew killed, the owner gets a toast).
+  - Mars: half Earth's radius, 0.38 g, thin low air (2% of Earth's density at the ground, 1 km scale height, 5 km top), 1230 s day (Earth's is 1200 s).
+- **Body axes (how day and night still work):** planets never had a real spin; Earth's day was the sun circling it. Now every body with a `Spin` turns its own axes (`Universe.axes`): seen from its centre the sun sits at a fixed declination (`TiltDeg`) and moves through the hour angle once per `DayLengthS`.
+  - Earth's spin is built so the direction to Sol's REAL position from Earth's centre equals the old visual sun exactly (30 degrees at UT 0, 15 degrees above the equator, 20 minute days, `/time` still works). Earth's day and night are unchanged; a spec checks this to 1e-9.
+  - The Mun uses Earth's axes (as before). Mars has its own (20 degree declination, 1230 s day).
+  - Physics inside a SOI treats the body's axes as inertial, exactly as Earth always did (no Coriolis). On an SOI change (`Universe.transferState`) position, velocity, attitude, angular velocity and the SAS target are re-expressed: `p_to = M_to^T (M_from p + P_from - P_to)`, `v_to = M_to^T (M_from v + V_from - V_to)`. The relative speed is kept exactly. FlightModel, Rails (advance and predict), Eva and BubbleService all use it. Doubles everywhere (heliocentric distances up to 25,000 km).
+  - `Universe.bodyOffset(from, to)` is now the centre of `from` in `to`'s axes. It is a pure translation only inside one axes group (`sameAxes`: the Earth-Mun system). Cross-group helpers: `toBody`, `vectorToBody`, `velocityToBody`, `axesRotation`, `frameTransform`, `cframeInFrame`, `pointInFrame`. Used by: PocketController, RemoteCraftRenderer, Effects, EvaController, BubbleService, RailsService, FlightRelayService, ScaledSpace, SkyLighting, SkyCube and the map. Puppets are not drawn across axes groups (only possible at an SOI edge).
+  - The universe frame (`bodyPosition`, Bubbles' absolute positions) is still Earth's centre and axes, so every Earth number is unchanged.
+- **Lighting:** the sun direction of every view is from the camera to Sol's real position (`Universe.sunDirectionFrom`). ScaledSpace draws Sol at its true direction and distance, with its true size (at least 0.3 degrees), so planets in front hide it. Planet shadows are tested for every body except stars. Around Sol a pocket's up is simply toward Sol.
+- **Mars (`Sim/BiomeMars`, registered in Biome and Relief):**
+  - Rust-orange dust, butterscotch highlands, large dark regions and wind streaks.
+  - Polar ice caps (the northern one larger) on low domes.
+  - Craters at three sizes, duller than the Mun's.
+  - The **Big Canyon** (about 50 km long, 2.7 km wide, 1.9 km deep, layered walls) and the **Big Volcano** (12 km wide, about 4 km high, with a caldera).
+  - Heights -2.6..+4.6 km, under the 5 km rails floor.
+  - Reddish boulders (prop `RedBoulder`).
+  - Terrain, collision and props use the existing per-body path. TerrainMath, TerrainMesh and Surface are unchanged (Mars' haze comes from its AtmosphereColor).
+  - Air: the engines' pressure ratio is now rho / Earth's sea-level rho (Earth unchanged; Mars about 0.02, so engines run near vacuum Isp). The re-entry glow's speed gate scales by `Atmosphere.HeatSpeedScale` (Mars 0.44), so Mars entries glow faintly.
+  - Sky: Mars' air has a `SkyColor` (butterscotch). On Mars the SkyCube paints the whole sky: butterscotch by day, fading to black space with stars at night and with height. The daylight ambient is tinted toward it. Risk: the cube (0.9 x draw distance) could cover the farthest terrain at the horizon there.
+  - Stars are fixed to Sol's axes, so they turn slowly across Earth's and Mars' night skies.
+- **Rendering:**
+  - Mars gets a ScaledSpace proxy like Earth and the Mun: base images 64 px on every tier (a reddish dot from Earth), detail slots 2 x 256 (Medium) / 2 x 512 (High) while it is the dominant body, and thin butterscotch atmosphere shells (`PlanetDetail.atmosphereLayersFor`).
+  - Memory: Low 3.4 MB, Medium 5.4 MB, High 13.4 MB of images. All go through EditableBudget.
+  - Every proxy is turned by its body's axes.
+- **Map view:**
+  - Drawn in the focus body's frame. Focused on Earth it is exactly as before. Focused on Sol the planets' orbits stand still. Lines and markers of other bodies are turned at their anchor time.
+  - Earth's and Mars' orbits and SOI spheres are drawn like the Mun's. It zooms out to `MAP_SCALE_MIN` 0.00002 (Mars' orbit is 300 studs).
+  - Focus buttons (Sol, Earth, Mun, Mars, Craft) and zoom buttons (- / +) work with touch. Tab cycles the focus; a button or Tab frames the body's SOI.
+  - Patched conics show through Earth -> Sol -> Mars (3 patches; the horizon around Sol is 150,000 s).
+- **Admin panel:**
+  - Opened with F7 (fixed, like F3; not rebindable, because the panel works in every context and the keybind contexts would clash) or the green ADMIN button in the Roblox top bar.
+  - Who can use it: everyone in Studio. In live servers: the place's creator (or a group game's group owner, via GroupService) plus `GameConfig.ADMIN_USER_IDS` (empty by default). The server sets the `IsAdmin` attribute and re-checks its own flag on every request.
+  - The panel (`UI/AdminPanel`, Kit/Theme look) has Planet (Sol / Earth / Mun / Mars) and Mode (Orbit / Landed).
+    - Orbit: a log-scale altitude slider. The ranges (`AdminSpawn.altitudeRange`) are above the air or rails floor and inside 90% of the SOI: Earth 9-840 km (default 20), Mun 2-49 km (10), Mars 6-496 km (20), Sol 400-23,900 km (6,000, at least 2 burn-up radii).
+    - Landed: spots. Earth: "Launch pad" (a normal roll out) or "Random". Mun: "Random". Mars: "Random", "Big Volcano", "Big Canyon", "North Ice Cap". Sol cannot be landed on.
+  - Remote `AdminSpawn`. The server checks admin, a 3 s cooldown, one spawn at a time, and the types and ranges (`AdminSpawn.validate`: out-of-range altitudes are refused, not clamped). Then:
+    1. The player's current flight ends (`FlightService.leaveFlight`).
+    2. His ship rolls out (`CraftService.rollOut`): the plot's design, or the Starter Rocket (`Craft/StarterCraft`, the sanity rocket) if the plot holds nothing flyable. CrewService seats him and FlightService starts the flight, as for every launch.
+    3. The ship is moved with the exact `/orbit` / `/hover` implementations (`DebugService.placeInOrbit` / `placeHovering`, now exported). Orbit: circular, equatorial, prograde, over the day side (around Sol: opposite Earth). Landed: upright with its lowest hull point 1 m over the flattest dry ground (Random prefers daylight and stays below 55 degrees latitude; landmarks take the flattest spot within 1.5 km).
+    4. Its pad is freed.
+  - It is a normal flight, so other players see it like any craft (CraftSpawned, bubbles).
+  - `/orbit` and `/hover` accept `mars` and `sol` too.
+- **Tests:** `SolarSystem.spec` (13 tests): body numbers and SOIs, the transfer time, Earth's sun equals the old one, Mars' days, axes round trips, rails LEO -> Sol continuity (position, velocity, attitude) and a FlightModel crossing, a Hohmann transfer that predict and rails both take into Mars' SOI, admin rules and validation, placements, Mars' heights, landmarks, look and air.
+- **Not done / known limits:**
+  - No time warp: the trip to Mars takes 11.5 hours of real time, so use the admin panel.
+  - The physics ignores the frame's spin (as Earth always did). Seen from Sol's frame, an orbit around Earth turns once per Earth day; the map focused on Sol shows that.
+  - Focused on a planet, heliocentric lines turn slowly with its day.
+  - Interest and puppets across axes groups are approximate or off (only at SOI edges).
+  - Astronauts on EVA near Sol do not burn up (crafts do).
+
 ## Phase 0 spike results
 
 Steamy ran all ten spikes in Studio on 2026-09-30. The raw `[SPIKE ...]` output is summarized here.

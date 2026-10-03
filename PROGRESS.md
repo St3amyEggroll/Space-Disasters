@@ -10,14 +10,53 @@
 | 4: Scaled space and visuals | Started early: scaled-space bodies, sky and lighting came with 2a (D26) |
 | 5: Orbits, rails, map, navball | **Built. Waiting for Steamy's playtest** (D36) |
 | 6: EVA, bubbles, boarding | **Built. Waiting for Steamy's playtest** (D44) |
-| 7: Time warp | Not started (Steamy: wait) |
-| 7b: Solar system: Mars (Steamy) | Not started (Steamy: wait, decide tomorrow). Earth (with the Mun) and Mars both orbit Sol; fly Earth to Mars with transfer orbits. Comes after time warp, because the trip is long |
+| 7: Time warp | Not started (Steamy: an admin panel for now). Needs 100x-1000x for Mars trips (D51) |
+| 7b: Solar system: Mars (Steamy) | **Built (D51). Waiting for Steamy's playtest.** Sol is the real centre; Earth (with the Mun) and Mars orbit it. Without time warp you get to Mars with the admin panel's spawn (F7) |
 | 8: Surface terrain | **Built. Waiting for Steamy's playtest** (D45) |
 | 9: Polish and backlog | Not started |
 | 10: Effects (Steamy) | **Built, then reworked (Effects v2, D43). Waiting for Steamy's playtest** |
 | 11: UI renovation (Steamy) | **Built. Waiting for Steamy's playtest** (D40). Also the physics feel change (D41) and multiplayer fixes (D42) |
 
 Phase 2 is split into 2a/2b so you can playtest halfway through (agreed with Steamy).
+
+---
+
+## 2026-10-03: the solar system and Mars (see D51)
+- **Sol is a real sun now.** Earth (with the Mun) and Mars go around it. Earth is 10,000 km from Sol, Mars 15,000 km.
+- **Mars:** half as big as Earth, gravity about a third, thin air (parachutes and air brakes barely work, engines work almost like in space).
+  - Red-orange dust, dark patches, white ice at the poles, craters.
+  - The **Big Canyon** (2 km deep) and the **Big Volcano** (4 km high).
+  - Butterscotch sky in the day, black with stars at night. Days are 20.5 minutes.
+- **Day and night on Earth work exactly like before.** The sun is now Sol's real position.
+- **Admin panel:** press **F7** (or click the green **ADMIN** button at the top of the screen, next to Roblox's buttons). Pick a planet (Sol, Earth, Mun, Mars) and Orbit or Landed, then Spawn. It spawns the rocket on your plot (or a Starter Rocket if your plot has none) with you as the pilot.
+  - Works in Studio for everyone. In the live game only for the game's owner and the ids in `GameConfig.ADMIN_USER_IDS`.
+  - Orbit: choose the height with the slider.
+  - Landed: Earth has "Launch pad" and "Random"; Mars has "Random", "Big Volcano", "Big Canyon" and "North Ice Cap".
+  - You can't land on Sol. If you fly too close to it, your rocket burns up.
+- **Map (M):** you can now zoom out to see the whole solar system.
+  - Buttons at the top left: Sol, Earth, Mun, Mars, Craft, and - / + to zoom (they work on phones too).
+  - Tab also jumps to the next planet.
+  - Your path shows going from Earth to Sol to Mars.
+- **Getting to Mars by flying:** leave low Earth orbit with about 300 m/s at the right moment. Without time warp the trip takes 11.5 hours, so it is not practical yet. Time warp comes later.
+
+## 2026-10-03: how to test (Solar system)
+1. **Earth still works:** launch from the pad as usual. Day and night should look the same as before. Try `/time 18` for a sunset.
+2. **Admin panel:**
+   - Press F7. The panel opens.
+   - Pick Mars, Orbit, 20 km, and press Spawn. You should be in orbit around a red planet, sitting in your rocket.
+   - Open the map (M) and press the Sol button: you see the Sun, Earth's and Mars' orbits.
+3. **Land on Mars:**
+   - F7, Mars, Landed, Big Volcano, Spawn. You stand on top of the volcano.
+   - The sky should be butterscotch (if it is daytime there), the ground red with rocks.
+   - Press F to get out and walk around (low gravity hops with Space).
+   - Try Big Canyon and North Ice Cap too.
+4. **Fly on Mars:** from the ground, launch and get to orbit (about 290 m/s at 10 km is enough). Then land again with the engines: the air is too thin to slow you down much.
+5. **Sol:** F7, Sol, Orbit. Look around: Earth and Mars are small dots, Sol is big and bright. In the map, try the Craft button.
+6. **Earth and the Mun:** F7, Mun, Landed, Random. F7, Earth, Landed, Launch pad: you are back on a pad, ready to launch.
+7. **End Flight / Return to plot** work from any planet: you go back to your plot.
+8. **Two players:** both spawn at Mars (or one flies there). You should see each other's rockets like on Earth, and you can board each other's rockets.
+9. **Phones:** the ADMIN button and the panel work with touch. The map has buttons for zoom and planets.
+10. **Not an admin:** in a live server, a normal player sees no ADMIN button, and F7 does nothing.
 
 ---
 
