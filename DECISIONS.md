@@ -844,6 +844,10 @@ Steamy ran all ten spikes in Studio on 2026-09-30. The raw `[SPIKE ...]` output 
 | S9 | A seated Humanoid in a Seat moved with PivotTo: does it follow on all clients? | **Anchored Seat: follows perfectly on server and both clients.** **Unanchored Seat welded to an anchored root: the character gets thrown out of the seat** during smooth moves and rotations (SeatWeld lost, 10-stud drift). | **Craft parts, seats included, are all individually Anchored.** Of the spec's "anchored, or welded to an anchored root" (I3), we take the anchored option. |
 | S10 | Jitter at 12,000 studs? | **None**, at 12,000 or 24,000: zero measured jitter and "None" to every visual check. | The pocket lattice is safe, with 2× headroom. |
 
+- **Studio probes (2026-10-03):** `/farground probe` (Render/LayerProbe) found the cause of "no far ground at all":
+  - In Steamy's Studio, a SurfaceGui parented to its part draws Frames and labels, at any size up to 2040 studs and any distance. But it never draws its ViewportFrame, not even the background.
+  - The same SurfaceGui parented to the PlayerGui, with Adornee = the part, draws its ViewportFrame at 80 and at 1000 studs, depth-tested behind nearer ground.
+  - FarLayer's panel SurfaceGuis now live in the PlayerGui, adorned to their panels.
 ### Follow-up spike results (S11, S12), 2026-09-30
 
 **S11, the distance at which a part stops being drawn** (distance measured to the part's centre, by scene triangle counts):

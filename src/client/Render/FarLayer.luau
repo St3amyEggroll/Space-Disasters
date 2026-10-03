@@ -95,6 +95,7 @@
 
 local AssetService = game:GetService("AssetService")
 local Lighting = game:GetService("Lighting")
+local Players = game:GetService("Players") -- CHANGED (Far layer probe): the panels' SurfaceGuis live in the PlayerGui
 local Workspace = game:GetService("Workspace")
 
 local EditableBudget = require(script.Parent.EditableBudget) -- CHANGED (Far layer fix): the white texture
@@ -254,7 +255,18 @@ local function newPanel(parent: Folder, face: FarLayerMath.Face, name: string): 
 	gui.ClipsDescendants = true
 	gui.Enabled = false -- commit draws only the faces that can show
 	gui.Adornee = part
-	gui.Parent = part
+	-- CHANGED (Far layer probe): in the PlayerGui, adorned to the panel. Steamy's /farground probe in Studio: a
+	-- SurfaceGui parented to its part draws Frames and labels but never its ViewportFrame (not even its background),
+	-- at any distance; the same SurfaceGui in the PlayerGui with Adornee = the part draws it, 80 and 1000 studs away
+	local player = Players.LocalPlayer
+	local playerGui = if player then player:FindFirstChildOfClass("PlayerGui") else nil
+	if playerGui then
+		gui.ResetOnSpawn = false
+		gui.Name = "FarLayer" .. name
+		gui.Parent = playerGui
+	else
+		gui.Parent = part
+	end
 
 	local view = Instance.new("ViewportFrame")
 	view.Name = "Ground"
