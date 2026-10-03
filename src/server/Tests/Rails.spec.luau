@@ -177,7 +177,8 @@ return function(t: TestKit.Context)
 		-- CHANGED (Physics feel): full-size Mun: escape speed at 15 km altitude is ~156 m/s
 		local s = state(Bodies.MOON, Vec3d.new(r, 0, 0), Vec3d.new(0, 0, 220), 1000) -- above Mun's escape speed
 		local rails = Rails.fromState(s, Vector3.zero, true)
-		local left = Rails.advance(rails, 1000, 1000 + 5000)
+		-- CHANGED (Solar system): 1500 s (Earth's SOI ends at 1,000 km now: 5000 s would carry it on to Sol)
+		local left = Rails.advance(rails, 1000, 1000 + 1500)
 		t.expectTrue(left ~= nil, "escaped")
 		local out = left :: Rails.Rails
 		t.expectEqual(out.bodyId, Bodies.HOMEWORLD)

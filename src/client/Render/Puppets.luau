@@ -593,6 +593,11 @@ local function pocketView(id: number, ctx: RenderContext.RenderContext, renderUT
 		return nil
 	end
 	local mine = ctx.frame
+	-- CHANGED (Solar system): no puppets across bodies with other axes (Sol / Earth / Mars): only at an SOI edge,
+	-- far from everyone else
+	if not Universe.sameAxes(v.frame.refBodyId, mine.refBodyId) then
+		return nil
+	end
 	v.rotation = PuppetMath.rotationBetween(v.frame, mine)
 	v.bodyOffset = if v.frame.refBodyId ~= mine.refBodyId
 		then Universe.bodyOffset(v.frame.refBodyId, mine.refBodyId, ctx.ut)

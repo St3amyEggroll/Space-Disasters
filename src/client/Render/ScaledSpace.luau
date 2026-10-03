@@ -77,6 +77,14 @@
 	    screen competes with the base's ground at join
 	  * a patch without an image shows its own average colour (sampled from Biome: maria darker, highlands lighter)
 	    instead of the body's single average grey
+
+	CHANGED (Solar system): Sol is a real body. Its proxy (the Neon ball and its glow) sits at Sol's true direction
+	and distance from the camera (Universe.bodyOffset), with its true angular size (at least
+	SUN_MIN_APPARENT_RADIUS_DEG), so it takes part in the depth order (a planet in front hides it). The lighting's
+	sun direction (RenderContext.sunDirection) comes from the same position. Every body's proxy is turned by its own
+	axes (Universe.axesRotation: Earth, Mars and Sol each turn their own way; the Mun shares Earth's), and the
+	detail slots follow the camera in that body's axes. Mars is textured like Earth and the Mun (Biome / BiomeMars,
+	its own sizes and thin butterscotch shells in PlanetDetail); from Earth it is a small reddish dot.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -112,7 +120,9 @@ local MIN_PROXY_RADIUS = 20 -- studs; floor for the largest proxy radius on absu
 local DEPTH_ORDER_GAP = 1.01 -- a farther body's nearest surface stays 1% behind nearer bodies' centres
 local MAX_SIN_RADIUS = 0.9999 -- R / D at or above this means the camera is (almost) inside the body: hidden
 
-local SUN_MIN_APPARENT_RADIUS_DEG = 0.6 -- the real 0.27 deg sun is too small to read on screen
+-- CHANGED (Solar system): was 0.6 for a 0.27 deg visual sun; Sol's true size from Earth is ~0.57 deg now (0.38 from
+-- Mars), so this is only a floor for far away
+local SUN_MIN_APPARENT_RADIUS_DEG = 0.3
 local SUN_GLOW_DIAMETERS = 7 -- glow billboard size in sun diameters
 -- Concentric glow discs (size as a fraction of the billboard, transparency), outermost first.
 local SUN_GLOW_LAYERS: { { size: number, transparency: number } } = {
@@ -606,7 +616,7 @@ end
 
 -- CHANGED (Planet detail): the tier's atmosphere layers on a body's shells (extra shells hidden).
 local function applyAtmosphere(visual: Visual)
-	local layers = PlanetDetail.atmosphereLayers(tier)
+	local layers = PlanetDetail.atmosphereLayersFor(tier, visual.id) -- CHANGED (Solar system): per body
 	for k, indices in visual.atmosphereIndex do
 		local layer = layers[k]
 		for _, index in indices do
@@ -716,9 +726,9 @@ local function createSunVisual(body: Bodies.Body, parent: Folder): Visual
 	glow.Parent = part
 	part.Parent = parent
 
-	local visual = newVisual(body.Id, 0, "Sun", { part }, glow)
-	local angularDeg = math.max(body.AngularRadiusDeg or 0, SUN_MIN_APPARENT_RADIUS_DEG)
-	visual.entry.s = math.sin(math.rad(angularDeg))
+	-- CHANGED (Solar system): Sol's true radius; its angular size is set every frame from its distance
+	local visual = newVisual(body.Id, body.Radius, "Sun", { part }, glow)
+	visual.entry.s = math.sin(math.rad(SUN_MIN_APPARENT_RADIUS_DEG))
 	return visual
 end
 
@@ -1494,16 +1504,24 @@ function ScaledSpace.update(ctx: RenderContext.RenderContext, forceScaled: boole
 	-- 2. true directions and distances (doubles)
 	for _, visual in visuals do
 		local entry = visual.entry
+		local offset = scratchOffset
 		if visual.kind == "Sun" then
-			entry.D = math.huge
+			-- CHANGED (Solar system): Sol's true position (was a fixed direction at infinity)
+			local sunOffset = Universe.bodyOffset(visual.id, frame.refBodyId, ctx.ut)
+			Vec3d.subInto(offset, sunOffset, ctx.cameraAbs)
+			local D = Vec3d.length(offset)
+			local floor = math.sin(math.rad(SUN_MIN_APPARENT_RADIUS_DEG))
+			entry.D = D
+			entry.s = if D > 0 then math.max(visual.radius / D, floor) else math.huge
 			entry.dominant = false
-			visual.dirPocket = ctx.sunDirection
-			Frames.vectorFromWorkspace(frame, ctx.sunDirection, visual.dirUni)
-			entry.active = true
+			entry.active = entry.s < MAX_SIN_RADIUS
+			if D > 0 then
+				Vec3d.scaleInto(visual.dirUni, offset, 1 / D)
+				visual.dirPocket = Frames.vectorToWorkspace(frame, visual.dirUni)
+			end
 			continue
 		end
-		local offset = scratchOffset
-		if visual.id == dominantId then
+		if visual.id == dominantId and Universe.sameAxes(dominantId, frame.refBodyId) then
 			Vec3d.scaleInto(offset, ctx.cameraDominant, -1)
 		else
 			local bodyOffset = Universe.bodyOffset(visual.id, frame.refBodyId, ctx.ut)
@@ -1520,6 +1538,10 @@ function ScaledSpace.update(ctx: RenderContext.RenderContext, forceScaled: boole
 			visual.dirPocket = Frames.vectorToWorkspace(frame, visual.dirUni)
 			-- CHANGED (Planet detail): where the camera is over this body (detail slots, paint order, cloud fade)
 			Vec3d.scaleInto(visual.camDir, visual.dirUni, -1)
+			if not Universe.sameAxes(visual.id, frame.refBodyId) then
+				-- CHANGED (Solar system): the camera's direction in the body's own axes (detail slots, paint order)
+				Universe.vectorToBody(frame.refBodyId, visual.id, ctx.ut, visual.camDir, visual.camDir)
+			end
 			visual.camKnown = true
 			visual.altitude = D - visual.radius
 			if next(visual.cloudIndex) ~= nil then
@@ -1568,7 +1590,8 @@ function ScaledSpace.update(ctx: RenderContext.RenderContext, forceScaled: boole
 		local d = if entry.s > 0 then r / entry.s else entry.d
 		local centre = camPos + visual.dirPocket * d
 		if visual.kind == "Patches" then
-			local bodyRot = frame.refRotInv
+			-- CHANGED (Solar system): turned by the body's own axes (identity inside the Earth-Mun system)
+			local bodyRot = frame.refRotInv * Universe.axesRotation(visual.id, frame.refBodyId, ctx.ut)
 			local centreCFrame = CFrame.new(centre)
 			local patchIndex = visual.partPatch
 			local scales = visual.partScale

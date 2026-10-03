@@ -100,6 +100,7 @@ local SNOW = Color3.fromRGB(236, 243, 252)
 local CACTUS = Color3.fromRGB(78, 140, 72)
 local STONE = Color3.fromRGB(118, 112, 104)
 local MOON_STONE = Color3.fromRGB(132, 128, 122)
+local MARS_STONE = Color3.fromRGB(122, 64, 40) -- CHANGED (Solar system): Mars' dark red rocks
 --============================================================================
 
 type Shape = "Block" | "Ball" | "Cylinder"
@@ -286,6 +287,18 @@ local PROP_SPECS: { [string]: { PartSpec } } = {
 		spec("Ball", Vector3.one * 2, CFrame.new(2.6, 0.4, 0.8), MOON_STONE, Enum.Material.Slate, true),
 	},
 	CraterRim = craterRimSpecs(),
+	-- CHANGED (Solar system): Mars' boulders (Biome's Mars kinds)
+	RedBoulder = {
+		spec("Ball", Vector3.one * 3.6, CFrame.new(0, 1, 0), MARS_STONE, Enum.Material.Slate, true),
+		spec(
+			"Block",
+			Vector3.new(2.2, 1.4, 1.8),
+			CFrame.new(2.4, 0.4, 0.6) * CFrame.Angles(0.4, 0.8, 0.2),
+			MARS_STONE,
+			Enum.Material.Slate,
+			true
+		),
+	},
 }
 
 --============================================================================
@@ -295,7 +308,7 @@ local PROP_SPECS: { [string]: { PartSpec } } = {
 local CHUNK_SIZE = CELL_SIZE * CHUNK_CELLS
 local COS_TREE_SLOPE = math.cos(math.rad(MAX_TREE_SLOPE_DEG)) -- CHANGED (Phase 8)
 local COS_ROCK_SLOPE = math.cos(math.rad(MAX_ROCK_SLOPE_DEG))
-local ROCKY: { [string]: boolean } = { Rock = true, Boulder = true, CraterRim = true }
+local ROCKY: { [string]: boolean } = { Rock = true, Boulder = true, CraterRim = true, RedBoulder = true }
 local CELL_AREA_HA = CELL_SIZE * CELL_SIZE / 10000
 local MAX_CELL_CHANCE = Biome.propDensity("Forest") * CELL_AREA_HA -- densest biome: skip the Biome sample above it
 

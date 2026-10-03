@@ -198,14 +198,15 @@ function BubbleService.frameOf(pocketId: number, ut: number): (Frames.Frame?, Ve
 end
 
 -- The rigid transform taking workspace coordinates of `from` to `to` (same true point), body offsets in doubles.
+-- CHANGED (Solar system): Universe.frameTransform (frames on bodies with other axes, e.g. Earth and Sol)
 local function transformBetween(from: Frames.Frame, to: Frames.Frame, ut: number): CFrame
-	local offset = if from.refBodyId ~= to.refBodyId then Universe.bodyOffset(from.refBodyId, to.refBodyId, ut) else nil
-	return Frames.relativeTransform(from, to, offset)
+	return Universe.frameTransform(from, to, ut)
 end
 
 -- Absolute (universe-frame) position of a body-relative point.
+-- CHANGED (Solar system): Universe.toUniverse (Sol and Mars turn their own axes; distances are kept exactly)
 local function absolute(bodyId: number, pos: Vec3d, ut: number): Vec3d
-	return Vec3d.add(pos, Universe.bodyPosition(bodyId, ut))
+	return Universe.toUniverse(bodyId, pos, ut)
 end
 
 --============================================================================
@@ -360,7 +361,7 @@ local function soloReferenceFor(astronaut: Astronaut, mode: PocketFrames.Mode, u
 	local bodyId, pos = Universe.soiTransition(astronaut.bodyId, astronaut.pos, ut)
 	local vel = astronaut.vel
 	if bodyId ~= astronaut.bodyId then
-		vel = Vec3d.add(vel, Universe.bodyVelocityOffset(astronaut.bodyId, bodyId, ut))
+		vel = Universe.velocityToBody(astronaut.bodyId, bodyId, ut, vel) -- CHANGED (Solar system): new axes too
 	end
 	return PocketFrames.solo(mode, bodyId, pos, vel, ut)
 end
@@ -546,8 +547,7 @@ local function applyAddCraft(ctx: Context, action: Bubbles.Action)
 	if root == nil then
 		return
 	end
-	local offset = if s.bodyId ~= f.refBodyId then Universe.bodyOffset(s.bodyId, f.refBodyId, ctx.ut) else nil
-	local craftCFrame = Frames.cframeToWorkspace(f, s.pos, s.rot, offset)
+	local craftCFrame = Universe.cframeInFrame(f, s.bodyId, s.pos, s.rot, ctx.ut) -- CHANGED (Solar system)
 	local origin = craftCFrame * CFrame.new(-(CraftDesign.blockCenter(root) * CraftDesign.GRID))
 	CraftService.buildFlightModel(r, origin, p.id, craftsFolder(p))
 	CraftService.announce(r)
@@ -837,8 +837,7 @@ function BubbleService.seatInReach(player: Player, seat: Seat): boolean
 			return false
 		end
 		local f, s = frame :: Frames.Frame, state :: FlightModel.CraftState
-		local offset = if s.bodyId ~= f.refBodyId then Universe.bodyOffset(s.bodyId, f.refBodyId, ut) else nil
-		local clientCraft = Frames.cframeToWorkspace(f, s.pos, s.rot, offset)
+		local clientCraft = Universe.cframeInFrame(f, s.bodyId, s.pos, s.rot, ut) -- CHANGED (Solar system)
 		local serverCraft = record.origin * CFrame.new(CraftDesign.blockCenter(rootBlock) * CraftDesign.GRID)
 		seatPosition = (clientCraft * serverCraft:Inverse()):PointToWorldSpace(seat.Position)
 	end

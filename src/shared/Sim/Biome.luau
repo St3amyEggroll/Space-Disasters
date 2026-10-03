@@ -57,9 +57,13 @@
 	done in small chunks (a step never paints a whole 1024 px row), and beginPatch / beginRect take an optional ground
 	height function: the painter then bakes BiomeDetail.reliefShade (hollows darker, crests lighter, slopes shaded)
 	into the colours, evaluated on the grid nodes and interpolated per pixel.
+	CHANGED (Solar system): Mars (Sim/BiomeMars: dust, dark regions, polar ice, craters, the Big Canyon and the Big
+	Volcano) is registered as its ground painter; its kinds (Dust, DarkDust, Canyon, Volcano, MarsCrater, PolarIce)
+	carry reddish boulders (prop "RedBoulder"). Mars' painter steps are as small as the Mun's (craters per pixel).
 ]]
 
 local BiomeDetail = require(script.Parent.BiomeDetail) -- CHANGED (Planet detail)
+local BiomeMars = require(script.Parent.BiomeMars) -- CHANGED (Solar system): Mars' fields, shade and kinds
 local Bodies = require(script.Parent.Parent.Config.Bodies)
 
 --============================================================================
@@ -247,6 +251,13 @@ local PROP_DENSITY: { [string]: number } = {
 	Crater = 1.6,
 	Ray = 1.2,
 	Plain = 0,
+	-- CHANGED (Solar system): Mars
+	Dust = 0.5,
+	DarkDust = 0.9,
+	Canyon = 2,
+	Volcano = 0.7,
+	MarsCrater = 1.4,
+	PolarIce = 0,
 }
 --============================================================================
 
@@ -264,8 +275,24 @@ export type Kind =
 	| "Crater"
 	| "Ray"
 	| "Plain"
+	-- CHANGED (Solar system): Mars (Sim/BiomeMars)
+	| "Dust"
+	| "DarkDust"
+	| "Canyon"
+	| "Volcano"
+	| "MarsCrater"
+	| "PolarIce"
 
-export type PropKind = "RoundTree" | "PineTree" | "SnowPine" | "Cactus" | "Rock" | "Bush" | "Boulder" | "CraterRim"
+export type PropKind =
+	"RoundTree"
+	| "PineTree"
+	| "SnowPine"
+	| "Cactus"
+	| "Rock"
+	| "Bush"
+	| "Boulder"
+	| "CraterRim"
+	| "RedBoulder" -- CHANGED (Solar system): Mars
 
 export type Layer = "Ground" | "Clouds"
 
@@ -337,6 +364,7 @@ local Biome = {}
 
 local HOMEWORLD = Bodies.HOMEWORLD
 local MOON = Bodies.MOON
+local MARS = Bodies.MARS -- CHANGED (Solar system)
 local QUARTER_PI = math.pi / 4
 local HALF_PI = math.pi / 2
 
@@ -1191,6 +1219,9 @@ for _, body in Bodies.List do
 		groundFields[body.Id], groundShade[body.Id] = earthFields, earthShade
 	elseif body.Id == MOON then
 		groundFields[body.Id], groundShade[body.Id] = dentFields, dentShade
+	elseif body.Id == MARS then
+		-- CHANGED (Solar system): Mars' painter functions (BiomeMars returns its kind as a plain string)
+		groundFields[body.Id], groundShade[body.Id] = BiomeMars.fields, BiomeMars.shade :: any
 	else
 		groundFields[body.Id], groundShade[body.Id] = plainFields, plainShadeFor(body.Id)
 	end
@@ -1285,6 +1316,12 @@ local PROP_MIX: { [string]: { { kind: PropKind, weight: number } } } = {
 	Highland = { { kind = "Boulder", weight = 0.85 }, { kind = "CraterRim", weight = 0.15 } },
 	Crater = { { kind = "Boulder", weight = 0.6 }, { kind = "CraterRim", weight = 0.4 } },
 	Ray = { { kind = "Boulder", weight = 1 } },
+	-- CHANGED (Solar system): Mars
+	Dust = { { kind = "RedBoulder", weight = 1 } },
+	DarkDust = { { kind = "RedBoulder", weight = 1 } },
+	Canyon = { { kind = "RedBoulder", weight = 1 } },
+	Volcano = { { kind = "RedBoulder", weight = 1 } },
+	MarsCrater = { { kind = "RedBoulder", weight = 1 } },
 }
 
 -- Expected props per hectare (10,000 m^2) on this kind of ground.
@@ -1456,7 +1493,7 @@ local function beginJob(p: Painter, bodyId: number, layer: Layer, octaves: numbe
 	p.nodeCol = 0
 	p.pixelRow = 0
 	p.pixelCol = 0
-	p.pixelsPerStep = if bodyId == MOON and layer == "Ground"
+	p.pixelsPerStep = if (bodyId == MOON or bodyId == MARS) and layer == "Ground" -- CHANGED (Solar system): Mars
 		then PAINT_CRATER_PIXELS_PER_STEP
 		else PAINT_PIXELS_PER_STEP
 	p.done = false

@@ -245,8 +245,8 @@ local function cleanDebris(now: number)
 			if Rails.isSuborbital(s.bodyId, s.pos, s.vel) then
 				local near = false
 				for _, ref in references do
-					local offset = Universe.bodyOffset(s.bodyId, ref.bodyId, now)
-					local distance = Vec3d.distance(Vec3d.add(s.pos, offset), ref.pos)
+					-- CHANGED (Solar system): full conversion (bodies with other axes)
+					local distance = Vec3d.distance(Universe.toBody(s.bodyId, ref.bodyId, now, s.pos), ref.pos)
 					if distance <= DEBRIS_DESPAWN_DIST then
 						near = true
 						break

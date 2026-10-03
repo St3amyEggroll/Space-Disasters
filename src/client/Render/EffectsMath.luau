@@ -391,8 +391,11 @@ EffectsMath.DUST_MAX_HEIGHT = DUST_MAX_HEIGHT
 EffectsMath.TRAIL_LIFETIME_MAX = TRAIL_LIFETIME_MAX -- CHANGED (Physics feel): exposed so the spec follows the tunable
 
 -- 0..1 re-entry heating: rho * v^3 on a log scale, times a speed gate so a normal ascent does not glow.
-function EffectsMath.heatFactor(density: number, speed: number): number
-	if density <= 0 or speed <= HEAT_SPEED_MIN then
+-- CHANGED (Solar system): `speedScale` (the body's Atmosphere.HeatSpeedScale, default 1) scales the speed gate:
+-- Mars' entries are slower (its orbit speed is 0.44 x Earth's), so its thin air still glows a little
+function EffectsMath.heatFactor(density: number, speed: number, speedScale: number?): number
+	local k = speedScale or 1
+	if density <= 0 or speed <= HEAT_SPEED_MIN * k then
 		return 0
 	end
 	local flux = density * speed * speed * speed
@@ -400,7 +403,7 @@ function EffectsMath.heatFactor(density: number, speed: number): number
 		return 0
 	end
 	local fluxGate = math.clamp(math.log(flux / HEAT_FLUX_MIN) / math.log(HEAT_FLUX_FULL / HEAT_FLUX_MIN), 0, 1)
-	return EffectsMath.smoothstep(HEAT_SPEED_MIN, HEAT_SPEED_FULL, speed) * fluxGate
+	return EffectsMath.smoothstep(HEAT_SPEED_MIN * k, HEAT_SPEED_FULL * k, speed) * fluxGate
 end
 
 -- 0..1 transonic vapour cone: a bump around Mach 1, only in thick air.

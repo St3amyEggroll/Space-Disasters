@@ -773,13 +773,23 @@ local function substep(craft: Craft, dt: number)
 end
 
 -- Patched-conics SOI switch at the current state.
+-- CHANGED (Solar system): the state is re-expressed in the new body's axes (Universe.transferState): position,
+-- velocity, attitude and angular velocity (Earth, Sol and Mars each have their own axes).
 local function checkSoi(craft: Craft)
 	local state = craft.state
-	local newBody, newPos = Universe.soiTransition(state.bodyId, state.pos, state.ut)
+	local newBody = Universe.soiTransition(state.bodyId, state.pos, state.ut)
 	if newBody ~= state.bodyId then
-		local velOffset = Universe.bodyVelocityOffset(state.bodyId, newBody, state.ut)
-		state.vel = Vec3d.add(state.vel, velOffset)
-		state.pos = newPos
+		local pos, vel, rotation = Universe.transferState(state.bodyId, newBody, state.ut, state.pos, state.vel)
+		state.pos = pos
+		state.vel = vel
+		if rotation then
+			state.rot = rotation * state.rot
+			state.angVel = rotation:VectorToWorldSpace(state.angVel)
+			local target = craft.sasTarget
+			if target then
+				craft.sasTarget = rotation * target -- SAS keeps holding the same attitude in space
+			end
+		end
 		state.bodyId = newBody
 	end
 end

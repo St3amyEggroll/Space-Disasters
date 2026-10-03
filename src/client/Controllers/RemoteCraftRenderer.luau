@@ -469,6 +469,17 @@ function RemoteCraftRenderer.render(ctx: RenderContext.RenderContext)
 			continue
 		end
 		local s = state :: State
+		-- CHANGED (Solar system): a craft on a body with other axes than the pocket's (Sol / Earth / Mars) is first
+		-- re-expressed relative to the pocket's body (position, velocity and attitude)
+		if s.bodyId ~= refBodyId and not Universe.sameAxes(s.bodyId, refBodyId) then
+			local pos, vel, rotation = Universe.transferState(s.bodyId, refBodyId, ctx.ut, s.pos, s.vel)
+			local converted = table.clone(s)
+			converted.bodyId = refBodyId
+			converted.pos = pos
+			converted.vel = vel
+			converted.rot = if rotation then rotation * s.rot else s.rot
+			s = converted
+		end
 		local bodyOffset = if s.bodyId ~= refBodyId then Universe.bodyOffset(s.bodyId, refBodyId, ctx.ut) else nil
 
 		-- CHANGED (Phase 3): true camera -> craft offset in doubles (I1), relative to the pocket's reference body

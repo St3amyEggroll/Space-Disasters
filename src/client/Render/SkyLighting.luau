@@ -36,6 +36,11 @@
 	own faces with EditableImages did not work in Studio, and rotating the stock skybox stood its clouds on end.
 
 	Lighting.Technology (Future) is set in the place file and never touched here.
+
+	CHANGED (Solar system): ctx.sunDirection comes from Sol's real position (UniverseRenderer). Planet shadows are
+	tested for every body except stars (Sol never shadows itself), with the camera re-expressed relative to each body
+	in the pocket's axes (Universe.bodyOffset), so Earth, the Mun and Mars all cast shadows from wherever you are.
+	On a body whose air has a SkyColor (Mars' butterscotch sky) the daylight ambient is tinted toward that colour.
 ]]
 
 local Lighting = game:GetService("Lighting")
@@ -94,6 +99,7 @@ local SPACE_BRIGHTNESS = 3
 local GROUND_AMBIENT = Color3.fromRGB(40, 40, 44) -- sea level, daylight
 local GROUND_OUTDOOR_AMBIENT = Color3.fromRGB(128, 128, 132)
 local GROUND_BRIGHTNESS = 2.5
+local SKY_TINT_SHARE = 0.35 -- CHANGED (Solar system): daylight ambient share of a SkyColor (Mars' butterscotch air)
 
 -- Environment / sky
 local ENVIRONMENT_DIFFUSE_SCALE = 0.4
@@ -130,8 +136,7 @@ local sky: Sky? = nil
 local physicalBodies = Bodies.physicalBodies()
 local scratchSun = Vec3d.zero()
 local scratchCam = Vec3d.zero()
-local scratchDominantAbs = Vec3d.zero()
-local scratchOtherAbs = Vec3d.zero()
+local scratchOtherAbs = Vec3d.zero() -- CHANGED (Solar system): a body's centre relative to the frame's body
 
 --============================================================================
 -- Pure helpers
@@ -501,35 +506,37 @@ local function planetShadow(ctx: RenderContext.RenderContext): number
 	end
 	Vec3d.set(sun, sun.x / length, sun.y / length, sun.z / length)
 
+	-- CHANGED (Solar system): every body but stars, all in the frame body's axes (the sun vector's axes): camera
+	-- relative to a body = camera relative to the frame's body - that body's centre relative to it
 	local factor = 0
-	local dominant = Bodies.find(ctx.dominantBodyId)
-	if dominant then
-		factor = bodyShadowFactor(ctx.cameraDominant, sun, dominant.Radius)
-	end
-	if factor >= 1 then
-		return 1
-	end
-	Universe.bodyPosition(ctx.dominantBodyId, ctx.ut, scratchDominantAbs)
+	local refBodyId = ctx.frame.refBodyId
+	local c = ctx.cameraAbs
 	for _, body in physicalBodies do
-		if body.Id ~= ctx.dominantBodyId and body.Radius > 0 then
-			-- camera relative to this body = cameraDominant + abs(dominant) - abs(body)
-			Universe.bodyPosition(body.Id, ctx.ut, scratchOtherAbs)
-			local c = ctx.cameraDominant
-			Vec3d.set(
-				scratchCam,
-				c.x + scratchDominantAbs.x - scratchOtherAbs.x,
-				c.y + scratchDominantAbs.y - scratchOtherAbs.y,
-				c.z + scratchDominantAbs.z - scratchOtherAbs.z
-			)
+		if body.Kind ~= "Star" and body.Radius > 0 then
+			if body.Id == refBodyId then
+				Vec3d.copyInto(scratchCam, c)
+			else
+				Universe.bodyOffset(body.Id, refBodyId, ctx.ut, scratchOtherAbs)
+				Vec3d.set(scratchCam, c.x - scratchOtherAbs.x, c.y - scratchOtherAbs.y, c.z - scratchOtherAbs.z)
+			end
 			factor = math.max(factor, bodyShadowFactor(scratchCam, sun, body.Radius))
+			if factor >= 1 then
+				return 1
+			end
 		end
 	end
 	return factor
 end
 
-local function updateLighting(air: number, shadow: number)
-	local ambient = SPACE_AMBIENT:Lerp(GROUND_AMBIENT, air):Lerp(SHADOW_AMBIENT, shadow)
-	local outdoor = SPACE_OUTDOOR_AMBIENT:Lerp(GROUND_OUTDOOR_AMBIENT, air):Lerp(SHADOW_OUTDOOR_AMBIENT, shadow)
+-- CHANGED (Solar system): `skyColor` (the body's Atmosphere.SkyColor, e.g. Mars) tints the daylight ambient
+local function updateLighting(air: number, shadow: number, skyColor: Color3?)
+	local groundAmbient, groundOutdoor = GROUND_AMBIENT, GROUND_OUTDOOR_AMBIENT
+	if skyColor then
+		groundAmbient = groundAmbient:Lerp(skyColor, SKY_TINT_SHARE * 0.4)
+		groundOutdoor = groundOutdoor:Lerp(skyColor, SKY_TINT_SHARE)
+	end
+	local ambient = SPACE_AMBIENT:Lerp(groundAmbient, air):Lerp(SHADOW_AMBIENT, shadow)
+	local outdoor = SPACE_OUTDOOR_AMBIENT:Lerp(groundOutdoor, air):Lerp(SHADOW_OUTDOOR_AMBIENT, shadow)
 	local brightness = lerp(lerp(SPACE_BRIGHTNESS, GROUND_BRIGHTNESS, air), SHADOW_BRIGHTNESS, shadow)
 	if colorChanged(Lighting.Ambient, ambient) then
 		Lighting.Ambient = ambient
@@ -554,7 +561,9 @@ function SkyLighting.update(ctx: RenderContext.RenderContext)
 
 	local air = airFactor(ctx.dominantBodyId, ctx.altitude)
 	local shadow = math.max(horizonShadowFactor(ctx.sunDirection.Y), planetShadow(ctx))
-	updateLighting(air, shadow)
+	local dominant = Bodies.find(ctx.dominantBodyId)
+	local atmosphere = if dominant then dominant.Atmosphere else nil
+	updateLighting(air, shadow, if atmosphere then atmosphere.SkyColor else nil) -- CHANGED (Solar system)
 
 	local currentSky = sky
 	if currentSky then

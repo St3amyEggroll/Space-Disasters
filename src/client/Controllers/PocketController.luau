@@ -584,10 +584,8 @@ local function poseCrafts(folder: Instance, primaryId: number?, primaryState: Pr
 			if known then
 				target = known
 			else
-				local offset = if s.bodyId ~= frame.refBodyId
-					then Universe.bodyOffset(s.bodyId, frame.refBodyId, renderUT)
-					else nil
-				target = Frames.cframeToWorkspace(frame, s.pos, s.rot, offset)
+				-- CHANGED (Solar system): Universe.cframeInFrame (the craft's body may turn other axes than the frame's)
+				target = Universe.cframeInFrame(frame, s.bodyId, s.pos, s.rot, renderUT)
 				posedCFrames[id] = target
 			end
 			poseModel(child, target, s.flags)

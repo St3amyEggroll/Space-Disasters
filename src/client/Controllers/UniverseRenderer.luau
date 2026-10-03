@@ -191,7 +191,9 @@ local function fillContext(target: RenderContext, frame: Frames.Frame, cameraCF:
 	target.dominantBodyId = dominantId
 	target.cameraDominant = cameraDominant
 	target.altitude = Vec3d.length(cameraDominant) - Bodies.get(dominantId).Radius
-	target.sunDirection = Frames.vectorToWorkspace(frame, Universe.sunDirection(ut)).Unit
+	-- CHANGED (Solar system): from the camera toward Sol's real position (Earth's day / night is unchanged)
+	target.sunDirection =
+		Frames.vectorToWorkspace(frame, Universe.sunDirectionFrom(frame.refBodyId, cameraAbs, ut)).Unit
 	target.pocketId = PocketController.pocketId()
 	target.drawDistance = drawDistance
 	target.dt = dt

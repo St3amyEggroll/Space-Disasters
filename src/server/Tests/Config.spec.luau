@@ -20,8 +20,9 @@ return function(t: TestKit.Context)
 		if orbit then
 			t.expectNear(orbit.Period, 10090, 20)
 		end
-		t.expectTrue(Bodies.get(Bodies.SUN).VisualOnly)
-		t.expectEqual(#Bodies.physicalBodies(), 2)
+		-- CHANGED (Solar system): Sol is a real body (the root), Mars is new
+		t.expectTrue(not Bodies.get(Bodies.SUN).VisualOnly)
+		t.expectEqual(#Bodies.physicalBodies(), 4)
 	end)
 
 	t.test("low orbit numbers from the spec rationale", function()

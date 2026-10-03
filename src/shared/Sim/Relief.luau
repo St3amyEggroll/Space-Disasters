@@ -18,7 +18,9 @@
 	Mun, from Biome.reliefFields (mare, highland variation) and Biome.craterSum (the craters Biome paints):
 	  * maria sink, highlands roll, and every crater gets a bowl, a raised rim and an ejecta apron
 	  * clamped to [MOON_MIN, MOON_MAX]: the 500 m rails floor (Rails.minAltitude) stays above every peak
-	Other bodies: 0.
+	CHANGED (Solar system): Mars, from Sim/BiomeMars.height (dust plains, craters, the Big Canyon, the Big Volcano,
+	polar domes), within BiomeMars.bounds (below the 5 km rails floor).
+	Other bodies (Sol): 0.
 	CHANGED (Terrain polish): gentler ground: longer, lower hills, smaller bumps, and mountains with rounded summits
 	and feet (a second smoothstep over Biome's mask, whose own ridges are now smooth too) and soft-crested detail
 	(smooth |n| ridged noise) instead of knife-edged ridges. Biome keeps a mountain-free plain within ~11 km of the
@@ -39,6 +41,7 @@
 
 local Biome = require(script.Parent.Biome)
 local BiomeDetail = require(script.Parent.BiomeDetail) -- CHANGED (Planet detail)
+local BiomeMars = require(script.Parent.BiomeMars) -- CHANGED (Solar system)
 local Bodies = require(script.Parent.Parent.Config.Bodies)
 
 --============================================================================
@@ -100,6 +103,7 @@ local Relief = {}
 
 local HOMEWORLD = Bodies.HOMEWORLD
 local MOON = Bodies.MOON
+local MARS = Bodies.MARS -- CHANGED (Solar system)
 local EARTH_RADIUS = Bodies.get(HOMEWORLD).Radius
 local MOON_RADIUS = Bodies.get(MOON).Radius
 local CRATER_EXTENT = Biome.CRATER_EXTENT
@@ -255,6 +259,8 @@ function Relief.height(bodyId: number, x: number, y: number, z: number): number
 		return h
 	elseif bodyId == MOON then
 		return moonRelief(x, y, z)
+	elseif bodyId == MARS then
+		return BiomeMars.height(x, y, z) -- CHANGED (Solar system)
 	end
 	return 0
 end
@@ -281,6 +287,8 @@ function Relief.bounds(bodyId: number): (number, number)
 		return 0, EARTH_MAX
 	elseif bodyId == MOON then
 		return MOON_MIN, MOON_MAX
+	elseif bodyId == MARS then
+		return BiomeMars.bounds() -- CHANGED (Solar system)
 	end
 	return 0, 0
 end

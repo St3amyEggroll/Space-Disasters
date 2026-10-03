@@ -71,6 +71,11 @@
 	    uncrewed, server-simulated craft.
 	  * Exported for BubbleService / EvaService: sendTransfer (also pins the player's PocketId, PocketService.pin),
 	    bumpPoseEpoch, seatedIn, isBusy, sendHome.
+
+	CHANGED (Solar system): Sol is not landable. Every BURN_CHECK_S the server looks at every craft (flying, server
+	simulated, debris or on rails); one closer to a body's centre than its DestroyRadius (Sol: 2.5 radii) burns up:
+	it is taken off rails and every block is destroyed (applyDestruction: PartsDestroyed explosions for everyone,
+	the seated crew dies, the craft is removed).
 ]]
 
 local Players = game:GetService("Players")
@@ -120,6 +125,7 @@ local PAD_STEP_OFF = 6 -- studs beyond the pad edge where a pilot who leaves the
 local RAILS_HANDOFF_DT = 0.05 -- CHANGED (Phase 5): s before a pilot's first off-rails state the rail is validated at
 local END_FLIGHT_COOLDOWN_S = 1 -- CHANGED (Phase 11): EndFlight requests closer together than this are ignored
 local BOARD_COOLDOWN_S = 1 -- CHANGED (Boarding): BoardCraft requests closer together than this are ignored
+local BURN_CHECK_S = 0.5 -- CHANGED (Solar system): s between "too close to Sol" checks
 --============================================================================
 
 local FlightService = {}
@@ -1135,6 +1141,48 @@ local function onBoardCraft(player: Player, craftIdArg: unknown, seatBlockIdArg:
 end
 
 --============================================================================
+-- CHANGED (Solar system): crafts that fly too close to Sol burn up
+--============================================================================
+
+-- Every craft closer to a body's centre than its DestroyRadius loses every block (header).
+local function burnUpCheck()
+	local ut = UniverseTime.now()
+	local doomed: { CraftRecord } = {}
+	for _, record in CraftService.all() do
+		local sim = record.sim
+		if sim == nil or ending[record.id] or launching[record.id] then
+			continue
+		end
+		local rails = record.rails
+		local s = if record.state == "OnRails" and rails then Rails.stateAt(rails, ut) else sim.state
+		local limit = Bodies.get(s.bodyId).DestroyRadius
+		if limit and Vec3d.lengthSq(s.pos) < limit * limit then
+			table.insert(doomed, record)
+		end
+	end
+	for _, record in doomed do
+		local sim = record.sim
+		if sim == nil or CraftService.get(record.id) ~= record then
+			continue
+		end
+		RailsService.takeOffRails(record)
+		local ids: { number } = {}
+		for _, block in sim.physics.design.blocks do
+			table.insert(ids, block.id)
+		end
+		if #ids > 0 then
+			local owner = Players:GetPlayerByUserId(record.ownerUserId)
+			if owner and not record.isDebris then
+				remotes.Notify:FireClient(owner, `{record.design.name} flew too close to Sol and burned up!`, "Error")
+			end
+			FlightService.applyDestruction(record, ids)
+		else
+			CraftService.remove(record.id)
+		end
+	end
+end
+
+--============================================================================
 -- Lifecycle
 --============================================================================
 
@@ -1227,6 +1275,19 @@ function FlightService.Start()
 			record.pocketId = nil
 			takeOver(record, true) -- CHANGED (Phase 3): uncrewed: zero input, throttle cut
 			CraftService.announce(record)
+		end
+	end)
+
+	-- CHANGED (Solar system): crafts too close to Sol burn up
+	task.spawn(function()
+		while true do
+			task.wait(BURN_CHECK_S)
+			local ok, err = pcall(function()
+				burnUpCheck()
+			end)
+			if not ok then
+				warn(`[FlightService] burn-up check failed: {err}`)
+			end
 		end
 	end)
 
