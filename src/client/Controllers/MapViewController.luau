@@ -100,7 +100,7 @@ local MAX_PATCHES = GameConfig.MAP_PREDICT_PATCHES
 local INTERP_DELAY = GameConfig.INTERP_DELAY
 local RENDER_STEP_NAME = "MapView"
 local RENDER_PRIORITY = Enum.RenderPriority.Camera.Value + 5 -- after ChaseCamera / Roblox camera, before UniverseRenderer
-local FIELD_OF_VIEW = 70
+local FIELD_OF_VIEW = GameConfig.MAP_FIELD_OF_VIEW -- CHANGED (Map planets fix): was 70 (rounder balls)
 local CUBE_MARGIN = 120 -- studs between the map extent and the star box
 local CUBE_DRAW_FRACTION = 0.75 -- the star box never exceeds this fraction of the draw distance
 local HIGH_SLOT_Y = 6000 -- slots above this put the map below them (keeps |y| <= 12,000)

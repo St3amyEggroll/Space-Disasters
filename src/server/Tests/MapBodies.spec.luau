@@ -1,13 +1,16 @@
 --!strict
 -- CHANGED (Map planets): new file. Tests for Render/MapBodiesMath, the pure maths behind the map's planets: the night
--- shading curve, the night shell turned toward Sol (and its six shared images shading every patch exactly as the
--- real direction to Sol says), on-screen sizes and limbs, the ball <-> icon switch with hysteresis at the map's real
--- scales, moon icons, the atmosphere rim's gradient and images, and Sol's glow.
+-- shading curve, on-screen sizes and limbs, the ball <-> icon switch with hysteresis at the map's real scales, moon
+-- icons, the atmosphere rim's gradient and images, and Sol's glow.
+-- CHANGED (Map planets fix): the night shell's tests are replaced by the limb disc's (its circle is the true
+-- silhouette), the night image's (every pixel shades by the true angle to Sol, in perspective and turned on screen;
+-- the real Sol at the launch site), round balls at the map's camera distance, and uniform ground patches.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TestKit = require(script.Parent.TestKit)
 local Biome = require(ReplicatedStorage.Shared.Sim.Biome)
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
+local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
@@ -17,10 +20,11 @@ local MapBodiesMath = require(game:GetService("StarterPlayer").StarterPlayerScri
 -- Tunables
 --============================================================================
 local EPSILON = 1e-9
-local BYTE = 1 / 255 + 1e-9 -- one 8-bit step
-local SHELL_SIZE = 16 -- px per shell image in the tests
+local PHASE_SIZE = 64 -- px per night image in the tests -- CHANGED (Map planets fix): was the shell images
 local VIEWPORT_HEIGHT = 900 -- px
-local MAP_FOV = 70 -- MapViewController's FIELD_OF_VIEW
+local MAP_FOV = GameConfig.MAP_FIELD_OF_VIEW -- MapViewController's FIELD_OF_VIEW (CHANGED (Map planets fix): was 70)
+local MAP_DEFAULT_YAW = math.rad(35) -- MapViewController's DEFAULT_YAW / DEFAULT_PITCH
+local MAP_DEFAULT_PITCH = math.rad(50)
 local SUN_DIRECTIONS: { Vector3 } = {
 	Vector3.new(1, 0, 0),
 	Vector3.new(-1, 0, 0),
@@ -32,16 +36,31 @@ local SUN_DIRECTIONS: { Vector3 } = {
 	Vector3.new(-0.7, 0.1, 0.7).Unit,
 	Vector3.new(0.95, -0.05, 0.31).Unit,
 }
+-- CHANGED (Map planets fix): cameras and balls (studs): on the view axis, Steamy's screenshot (Earth under the craft,
+-- two zoom notches in, the new camera), and two far off-axis bodies
+local CASES: { { camera: Vector3, centre: Vector3, radius: number } } = {
+	{ camera = Vector3.new(0, 0, 240), centre = Vector3.zero, radius = 60 },
+	{ camera = Vector3.new(88.6, 183.8, 126.5), centre = Vector3.new(-86.4, 0, 0), radius = 86.4 },
+	{ camera = Vector3.new(10, -50, 300), centre = Vector3.new(120, 40, -30), radius = 25 },
+	{ camera = Vector3.new(0, 30, 0), centre = Vector3.new(300, 100, -200), radius = 150 },
+}
 --============================================================================
 
 local function tanHalf(): number
 	return math.tan(math.rad(MAP_FOV) / 2)
 end
 
-local function paint(m: { number }): buffer
-	local buf = buffer.create(SHELL_SIZE * SHELL_SIZE * 4)
-	MapBodiesMath.paintShell(m, SHELL_SIZE, buf)
-	return buf
+-- Bilinear alpha (0..1) of an RGBA8 image at pixel coordinates (fx, fy) (pixel centres at whole numbers).
+local function sampleAlpha(buf: buffer, size: number, fx: number, fy: number): number
+	local x0 = math.clamp(math.floor(fx), 0, size - 2)
+	local y0 = math.clamp(math.floor(fy), 0, size - 2)
+	local u, v = math.clamp(fx - x0, 0, 1), math.clamp(fy - y0, 0, 1)
+	local function a(x: number, y: number): number
+		return buffer.readu8(buf, (y * size + x) * 4 + 3) / 255
+	end
+	local top = a(x0, y0) * (1 - u) + a(x0 + 1, y0) * u
+	local bottom = a(x0, y0 + 1) * (1 - u) + a(x0 + 1, y0 + 1) * u
+	return top * (1 - v) + bottom * v
 end
 
 return function(t: TestKit.Context)
@@ -85,61 +104,162 @@ return function(t: TestKit.Context)
 		end
 	end)
 
-	t.test("nightShellRotation: a proper rotation whose +Y points at Sol", function()
-		for _, sun in SUN_DIRECTIONS do
-			local r = MapBodiesMath.nightShellRotation(sun)
-			local x, y, z = r.XVector, r.YVector, r.ZVector
-			t.expectNear((y - sun).Magnitude, 0, 1e-6, "+Y toward Sol")
-			t.expectNear(x.Magnitude, 1, 1e-6)
-			t.expectNear(z.Magnitude, 1, 1e-6)
-			t.expectNear(x:Dot(y), 0, 1e-6)
-			t.expectNear(y:Dot(z), 0, 1e-6)
-			t.expectNear((x:Cross(y) - z).Magnitude, 0, 1e-6, "right-handed (determinant +1)")
-			t.expectNear(r.Position.Magnitude, 0, EPSILON, "rotation only")
-		end
-	end)
-
-	t.test("night shell: six shared images give every one of the 24 patches exactly its own pixels", function()
-		local matrices = Biome.cubeRotations()
-		t.expectEqual(#matrices, 24)
-		local counts: { [number]: number } = {}
-		local byKey: { [number]: buffer } = {}
-		for _, m in matrices do
-			local key = MapBodiesMath.shellKey(m)
-			t.expectTrue(key >= 1 and key <= 6, "key 1..6")
-			counts[key] = (counts[key] or 0) + 1
-			local own = paint(m)
-			local shared = byKey[key]
-			if shared == nil then
-				byKey[key] = own
-			else
-				t.expectEqual(buffer.tostring(own), buffer.tostring(shared), `patch shares image {key} pixel for pixel`)
+	-- CHANGED (Map planets fix): the limb disc, the night image, round balls and the patch sizes (the night shell's
+	-- tests are gone with it)
+	t.test(
+		"limb disc: its circle is the ball's true silhouette, wholly in front of the ball, facing the camera",
+		function()
+			for _, case in CASES do
+				local camera, centre, radius = case.camera, case.centre, case.radius
+				local frame, limb = MapBodiesMath.discFrame(camera, centre, radius, Vector3.yAxis)
+				local axis = (camera - centre).Unit
+				t.expectNear(
+					(frame.Position - centre).Magnitude,
+					radius,
+					1e-5 * radius,
+					"through the point nearest the camera"
+				)
+				t.expectNear(frame.LookVector:Dot(axis), 1, 1e-5, "the Front face looks at the camera")
+				for k = 0, 11 do
+					local a = k * math.pi / 6
+					local rim = frame:PointToWorldSpace(Vector3.new(math.cos(a) * limb, math.sin(a) * limb, 0))
+					-- the ray from the camera through the disc's circle just touches the sphere
+					local ray = (rim - camera).Unit
+					local along = (centre - camera):Dot(ray)
+					local miss = ((centre - camera) - ray * along).Magnitude
+					t.expectNear(miss, radius, 1e-5 * radius, "the circle lies on the silhouette")
+					t.expectTrue((rim - centre).Magnitude > radius, "the disc stays outside the ball")
+				end
 			end
 		end
-		for key = 1, 6 do
-			t.expectEqual(counts[key], 4, `four patches use image {key}`)
+	)
+
+	t.test("night image: every pixel shades by the true angle to Sol (true perspective, turned on screen)", function()
+		for _, case in CASES do
+			local camera, centre, radius = case.camera, case.centre, case.radius
+			local frame, limb = MapBodiesMath.discFrame(camera, centre, radius, Vector3.yAxis)
+			local axis = (camera - centre).Unit
+			for _, sun in SUN_DIRECTIONS do
+				local sunView = MapBodiesMath.discSun(frame, sun)
+				local rotation = math.rad(MapBodiesMath.screenRotation(sunView))
+				local buf = buffer.create(PHASE_SIZE * PHASE_SIZE * 4)
+				local q = radius / (camera - centre).Magnitude
+				MapBodiesMath.paintPhase(PHASE_SIZE, sunView.Z, q, buf)
+				for k = 1, 60 do
+					-- a point of the ball the camera sees
+					local n = Vector3.new(math.sin(k * 1.7), math.cos(k * 2.3), math.sin(k * 0.9 + 1)).Unit
+					local p = centre + n * radius
+					if (camera - p).Unit:Dot(n) < 0.3 then
+						continue -- hidden or too close to the limb (the image's steepest part)
+					end
+					-- where it lands on the disc (straight from the camera), in the disc's view axes (limb radii)
+					local ray = p - camera
+					local s = (frame.Position - camera):Dot(axis) / ray:Dot(axis)
+					local onDisc = frame:PointToObjectSpace(camera + ray * s)
+					local vx, vy = -onDisc.X / limb, onDisc.Y / limb
+					-- screen (y down) -> the image turned by `rotation` clockwise -> its pixels
+					local gx, gy = vx, -vy
+					local ix = gx * math.cos(rotation) + gy * math.sin(rotation)
+					local iy = -gx * math.sin(rotation) + gy * math.cos(rotation)
+					local canvas = MapBodiesMath.PHASE_CANVAS
+					local fx = (ix / canvas + 1) / 2 * PHASE_SIZE - 0.5
+					local fy = (iy / canvas + 1) / 2 * PHASE_SIZE - 0.5
+					local alpha = sampleAlpha(buf, PHASE_SIZE, fx, fy)
+					local expected = MapBodiesMath.nightAlpha(n:Dot(sun))
+					t.expectNear(alpha, expected, 0.06, "night image alpha = night alpha of the true angle to Sol")
+				end
+			end
 		end
 	end)
 
-	t.test("night shell: turned toward Sol, every shell pixel shades by the true angle to Sol", function()
-		local matrices = Biome.cubeRotations()
-		for _, sun in SUN_DIRECTIONS do
-			local rotation = MapBodiesMath.nightShellRotation(sun)
-			for index = 1, #matrices, 5 do
-				local m = matrices[index]
-				local buf = paint(m)
-				for py = 0, SHELL_SIZE - 1, 3 do
-					for px = 0, SHELL_SIZE - 1, 3 do
-						-- where this pixel sits on the shell (shell axes), then in the map's axes
-						local s, tt = Biome.uvToParam((px + 0.5) / SHELL_SIZE, (py + 0.5) / SHELL_SIZE)
-						local lx, ly, lz = Biome.patchDirection(m, s, tt)
-						local world = rotation:VectorToWorldSpace(Vector3.new(lx, ly, lz))
-						local expected = MapBodiesMath.nightAlpha(world:Dot(sun))
-						local alpha = buffer.readu8(buf, (py * SHELL_SIZE + px) * 4 + 3) / 255
-						t.expectNear(alpha, expected, BYTE, "shell alpha = night alpha of the true angle to Sol")
-						t.expectEqual(buffer.readu8(buf, (py * SHELL_SIZE + px) * 4), 0, "the shell is black")
-					end
-				end
+	t.test("night image: corners clear, the table form paints the same pixels, row ranges too", function()
+		local buf = buffer.create(PHASE_SIZE * PHASE_SIZE * 4)
+		MapBodiesMath.paintPhase(PHASE_SIZE, 0.3, 0.4, buf)
+		t.expectEqual(buffer.readu8(buf, 3), 0, "the corner is clear")
+		t.expectEqual(buffer.readu8(buf, 0), 0, "the night image is black")
+		local tbl = MapBodiesMath.phaseTable(PHASE_SIZE, 0.4)
+		local split = buffer.create(PHASE_SIZE * PHASE_SIZE * 4)
+		MapBodiesMath.paintPhaseFrom(tbl, 0.3, split, 0, 9)
+		MapBodiesMath.paintPhaseFrom(tbl, 0.3, split, 10, PHASE_SIZE - 1)
+		t.expectEqual(buffer.tostring(split), buffer.tostring(buf), "same pixels")
+		-- Sol straight behind the camera: the middle is full day; behind the ball: the middle is night
+		local middle = ((PHASE_SIZE / 2) * PHASE_SIZE + PHASE_SIZE / 2) * 4 + 3
+		MapBodiesMath.paintPhase(PHASE_SIZE, 1, 0.3, buf)
+		t.expectTrue(buffer.readu8(buf, middle) < 10, "front-lit: clear in the middle")
+		MapBodiesMath.paintPhase(PHASE_SIZE, -1, 0.3, buf)
+		t.expectTrue(buffer.readu8(buf, middle) > 240, "back-lit: dark in the middle")
+	end)
+
+	t.test("the map's real Sol: the pad side faces Sol as in flight, the night image darkens the far side", function()
+		local up = Frames.surfaceUp(0, 0) -- the launch site
+		for _, ut in { 0, 150, 600, 900 } do
+			local solRel = Universe.bodyOffset(Bodies.SUN, Bodies.HOMEWORLD, ut)
+			local sun = MapBodiesMath.sunDirection(Vec3d.zero(), solRel) :: Vector3
+			local flight = Universe.sunDirection(ut)
+			local cosPad = sun:Dot(Vector3.new(up.x, up.y, up.z))
+			t.expectNear(cosPad, flight.x * up.x + flight.y * up.y + flight.z * up.z, 1e-6, "the flight sun's height")
+			-- seen from the map camera straight above the pad: the pad (the middle of the disc) is as lit as its sun
+			local radius = 60
+			local camera = Vector3.new(up.x, up.y, up.z) * (radius + GameConfig.MAP_CAMERA_DISTANCE)
+			local frame = MapBodiesMath.discFrame(camera, Vector3.zero, radius, Vector3.yAxis)
+			local sunView = MapBodiesMath.discSun(frame, sun)
+			t.expectNear(sunView.Z, cosPad, 1e-6, "Sol's angle seen from the camera")
+			local buf = buffer.create(PHASE_SIZE * PHASE_SIZE * 4)
+			MapBodiesMath.paintPhase(PHASE_SIZE, sunView.Z, radius / (radius + GameConfig.MAP_CAMERA_DISTANCE), buf)
+			local alpha = sampleAlpha(buf, PHASE_SIZE, PHASE_SIZE / 2 - 0.5, PHASE_SIZE / 2 - 0.5)
+			t.expectNear(alpha, MapBodiesMath.nightAlpha(cosPad), 0.02, "the pad's shading")
+		end
+		local sun0 = MapBodiesMath.sunDirection(Vec3d.zero(), Universe.bodyOffset(Bodies.SUN, Bodies.HOMEWORLD, 0))
+		t.expectTrue((sun0 :: Vector3):Dot(Vector3.new(up.x, up.y, up.z)) > 0.5, "at UT 0 the pad is in daylight")
+	end)
+
+	t.test("round balls: Earth under the craft is within 5% of round at the map's camera distance", function()
+		t.expectNear(MapBodiesMath.silhouetteAspect(0, 0.4), 1, 1e-12, "on the view axis: a circle")
+		local function aspect(distance: number, scale: number): number
+			-- the map's default view of the craft on the pad (focus at the origin), Earth's centre under it
+			local orbit = CFrame.Angles(0, MAP_DEFAULT_YAW, 0) * CFrame.Angles(-MAP_DEFAULT_PITCH, 0, 0)
+			local camera = orbit:PointToWorldSpace(Vector3.new(0, 0, distance))
+			local radius = Bodies.get(Bodies.HOMEWORLD).Radius * scale
+			local centre = Vector3.new(-radius, 0, 0) -- the pad is at lat 0, lon 0 (+X)
+			local toCentre = centre - camera
+			local offAxis = math.acos(math.clamp(toCentre.Unit:Dot((-camera).Unit), -1, 1))
+			return MapBodiesMath.silhouetteAspect(offAxis, math.asin(radius / toCentre.Magnitude))
+		end
+		local scale = GameConfig.MAP_SCALE * GameConfig.MAP_ZOOM_STEP ^ 2 -- two notches in (Steamy's screenshot)
+		t.expectTrue(aspect(160, scale) > 1.09, "the old camera: about 10% wider than tall")
+		t.expectTrue(aspect(GameConfig.MAP_CAMERA_DISTANCE, scale) < 1.05, "now within 5%")
+		t.expectTrue(aspect(GameConfig.MAP_CAMERA_DISTANCE, GameConfig.MAP_SCALE) < 1.03, "at the opening zoom: 3%")
+		-- the framing of the focus is unchanged: same studs per pixel at the origin
+		local before = 160 * math.tan(math.rad(70) / 2)
+		local now = GameConfig.MAP_CAMERA_DISTANCE * math.tan(math.rad(GameConfig.MAP_FIELD_OF_VIEW) / 2)
+		t.expectNear(now / before, 1, 0.01, "the focus looks as big as before")
+	end)
+
+	t.test("ground patches: placed and sized uniformly, every vertex on the ball", function()
+		-- ScaledSpace's shared patch: the +Y face quarter, recentred on its bounds (MeshSize = those bounds)
+		local n = 8
+		local points: { Vector3 } = {}
+		local lo, hi = Vector3.one * math.huge, -Vector3.one * math.huge
+		for i = 0, n do
+			for j = 0, n do
+				local p = Vector3.new(-1 + i / n, 1, -1 + j / n).Unit
+				table.insert(points, p)
+				lo, hi = lo:Min(p), hi:Max(p)
+			end
+		end
+		local centre, size = (lo + hi) / 2, hi - lo
+		local radius = 37.5
+		local partSize = size * radius -- MapBodies.resize
+		local scale = partSize / size -- what Roblox stretches the mesh by, per axis
+		t.expectNear(scale.X, radius, 1e-9, "uniform")
+		t.expectNear(scale.Y, radius, 1e-9, "uniform")
+		t.expectNear(scale.Z, radius, 1e-9, "uniform")
+		for _, m in Biome.cubeRotations() do
+			local rotation = CFrame.new(0, 0, 0, m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9])
+			local placed = rotation * CFrame.new(centre * radius) -- MapBodies.placePatches (body at the origin)
+			for _, p in points do
+				local world = placed:PointToWorldSpace((p - centre) * scale)
+				t.expectNear(world.Magnitude, radius, 1e-4, "on the sphere (single-precision Vector3)")
 			end
 		end
 	end)
