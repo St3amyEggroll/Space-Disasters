@@ -501,7 +501,9 @@ function UniverseRenderer.Start()
 			print("[Terrain] /farground test: " .. (if on then "on (far ground: " .. FarLayer.mode() .. ")" else "off"))
 		elseif view == "farground probe" then
 			-- CHANGED (Far layer probe): six labelled test objects in front of the camera (which kinds Roblox draws)
-			print("[Terrain] /farground probe: " .. (if LayerProbe.toggle() then "on (A-F in front of you)" else "off"))
+			print(
+				"[Terrain] /farground probe: " .. (if LayerProbe.toggle() then "on (V1-V5 in front of you)" else "off")
+			)
 		elseif view == "farground tex" then
 			-- CHANGED (Far layer fix): the backdrop copies' white texture on / off
 			print("[Terrain] /farground tex: white texture " .. (if FarLayer.toggleTexture() then "on" else "off"))

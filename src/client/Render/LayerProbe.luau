@@ -6,17 +6,11 @@
 	in one screenshot: `/farground probe` (DebugService -> DebugView "farground probe") toggles six labelled test
 	objects that follow the camera, spread across the view from left to right:
 
-	  A  a red Neon cube, 40 studs ahead                         a plain part (always expected)
-	  B  a 20-stud SurfaceGui panel 60 studs ahead (red)           a SurfaceGui on an invisible part, near
-	  C  a 400-stud SurfaceGui panel 1000 studs ahead (green)      the same, at the backdrop's distance
-	  D  the same as C on a part with Transparency 0.98 (orange)   in case an invisible part skips its SurfaceGui
-	  E  a 20-stud SurfaceGui panel 80 studs ahead holding a       a ViewportFrame in a SurfaceGui
-	     ViewportFrame with a blue cube (blue frame around it)
-	  F  a 2040-stud SurfaceGui panel 1020 studs ahead, faint      the backdrop's exact panel size and distance
-	     yellow over the whole view, with a label at its centre
-	CHANGED (Far layer probe 2): Steamy saw B, C, D and E but not F. Added, 1000 studs ahead and 20 degrees up:
-	  G / H / I / J  strips 100 studs wide and 800 / 1200 / 1600 / 2040 tall (white / cyan / pink / brown)
-	  K  a 2040-stud square with a 1024 px canvas, 1600 studs ahead, opaque purple behind everything
+	  V1  a 20-stud panel 80 studs ahead, 256 px canvas            (as the earlier probe's E, which drew)
+	  V2  the same with a 1024 px canvas                           (the backdrop's canvas)
+	  V3 / V4 / V5  the same as V1 at 300 / 600 / 1000 studs        (the backdrop's distance is 1020)
+	Each holds a ViewportFrame (white, with a blue cube) in a blue frame. Earlier rounds (CHANGED (Far layer probe
+	2)) showed plain SurfaceGui panels drawing at every size and distance, but the backdrop's ViewportFrames do not.
 
 	Each panel says its letter. Nothing exists while the probe is off.
 
@@ -98,34 +92,10 @@ local function add(f: Folder, part: BasePart, distance: number, angle: number, h
 	table.insert(probes, { part = part, distance = distance, angle = math.rad(angle), height = math.rad(height) })
 end
 
-local function build(): Folder
-	local f = Instance.new("Folder")
-	f.Name = FOLDER_NAME
-
-	-- A: a plain part
-	local a = newPart("A", 4, 0)
-	a.Material = Enum.Material.Neon
-	a.Color = Color3.fromRGB(255, 40, 40)
-	add(f, a, 40, -25, 0)
-
-	-- B: a small SurfaceGui panel, near
-	local b = newPart("B", 20, 1)
-	newGui(b, Color3.fromRGB(220, 30, 30), "B", 0)
-	add(f, b, 60, -15, 0)
-
-	-- C: a SurfaceGui panel at the backdrop's distance
-	local c = newPart("C", 400, 1)
-	newGui(c, Color3.fromRGB(30, 200, 60), "C", 0)
-	add(f, c, 1000, -3, 8)
-
-	-- D: as C on a nearly (not fully) transparent part
-	local d = newPart("D", 400, 0.98)
-	newGui(d, Color3.fromRGB(255, 140, 0), "D", 0)
-	add(f, d, 1000, 12, 8)
-
-	-- E: a ViewportFrame in a SurfaceGui
-	local e = newPart("E", 20, 1)
-	local gui = newGui(e, Color3.fromRGB(30, 90, 255), "E", 0)
+-- a SurfaceGui panel holding a ViewportFrame (white background, a blue cube), `distance` studs ahead
+local function viewPanel(f: Folder, name: string, size: number, canvas: number, distance: number, yaw: number)
+	local part = newPart(name, size, 1)
+	local gui = newGui(part, Color3.fromRGB(30, 90, 255), name, 0, Vector2.new(canvas, canvas))
 	local view = Instance.new("ViewportFrame")
 	view.Size = UDim2.fromScale(0.8, 0.8)
 	view.Position = UDim2.fromScale(0.1, 0.1)
@@ -144,31 +114,20 @@ local function build(): Folder
 	camera.CFrame = CFrame.lookAt(Vector3.new(0, 1.5, 6), Vector3.zero)
 	camera.Parent = view
 	view.CurrentCamera = camera
-	add(f, e, 80, 22, 0)
+	add(f, part, distance, yaw, 0)
+end
 
-	-- F: the backdrop's panel size and distance
-	local panel = newPart("F", 2040, 1)
-	newGui(panel, Color3.fromRGB(255, 230, 0), "F", 0.8)
-	add(f, panel, 1020, 0, 0)
-
-	-- CHANGED (Far layer probe 2): B-E drew, F (2040 studs) did not: which size stops a SurfaceGui. Tall strips
-	-- 100 studs wide, 1000 studs ahead, above the horizon, left to right: G 800, H 1200, I 1600, J 2040 tall
-	local strips: { { name: string, tall: number, yaw: number, color: Color3 } } = {
-		{ name = "G", tall = 800, yaw = -24, color = Color3.fromRGB(255, 255, 255) },
-		{ name = "H", tall = 1200, yaw = -16, color = Color3.fromRGB(0, 255, 255) },
-		{ name = "I", tall = 1600, yaw = 16, color = Color3.fromRGB(255, 0, 255) },
-		{ name = "J", tall = 2040, yaw = 24, color = Color3.fromRGB(140, 70, 20) },
-	}
-	for _, strip in strips do
-		local part = newPart(strip.name, 100, 1, strip.tall)
-		newGui(part, strip.color, strip.name, 0, Vector2.new(64, 256))
-		add(f, part, 1000, strip.yaw, 20)
-	end
-	-- K: 2040 square like F but with the backdrop's 1024 px canvas, farther (behind the rest), opaque purple
-	local k = newPart("K", 2040, 1)
-	newGui(k, Color3.fromRGB(110, 40, 160), "K", 0, Vector2.new(1024, 1024))
-	add(f, k, 1600, 0, 0)
-
+local function build(): Folder
+	local f = Instance.new("Folder")
+	f.Name = FOLDER_NAME
+	-- CHANGED (Far layer probe 3): the backdrop's panels draw (their labels show) but their ViewportFrames do not,
+	-- while probe E (a ViewportFrame 80 studs ahead, 256 px) did. Each V panel looks the same size on screen,
+	-- left to right: V1 as E; V2 as E with a 1024 px canvas; V3 / V4 / V5 at 300 / 600 / 1000 studs
+	viewPanel(f, "V1", 20, 256, 80, -24)
+	viewPanel(f, "V2", 20, 1024, 80, -12)
+	viewPanel(f, "V3", 75, 256, 300, 0)
+	viewPanel(f, "V4", 150, 256, 600, 12)
+	viewPanel(f, "V5", 250, 256, 1000, 24)
 	return f
 end
 
