@@ -132,6 +132,24 @@
 	5-6 % -> 0.7-1.1 %. About a quarter more band builds while the camera moves (the culling's refresh), no new
 	memory refusals. The band scales (bandScales, the protected depth), ring layout and memory budget are unchanged.
 
+	CHANGED (Far slabs fix): Steamy, climbing at 95 m/s 100-200 m over the pads: grey / blue-grey slabs (far hill and
+	mountain faces) over the green plain, "same thing but slightly better". The bands are drawn at different factors
+	(Studio's Automatic quality gives a 3000-stud draw distance, so each band sits at its own part / budget limit:
+	~1, 0.40, 0.12, 0.034), so wherever the nearer ground hides a farther band in truth, that band is drawn IN FRONT
+	of it, and no layout of uniform scales keeps every band's depth in order (a ring's part limit makes k fall
+	outward). The bulge sphere only covered what the LOWEST ground hides, and with a 5 s speed reach (475 m at 95 m/s)
+	it culled almost nothing in a climb. Now:
+	  * every plan that builds a scaled band first makes a horizon profile of the drawn ground (all its leaves and the
+	    bands on screen, TerrainMath.newProfile / profileAdd / finishProfile): a lower bound of the ground in polar
+	    bins around the camera's nadir that holds for any detail level the other bands are rebuilt with; the scaled
+	    bands also leave out the triangles it hides from every camera within the reach (TerrainMath.cullChunk)
+	  * CULL.REACH_SPEED_S 5 -> 1 s (the reach a climbing camera culls for)
+	Offline audit (drawn vs the unculled leaves at true scale, High at Studio's 3000-stud draw distance, the climb
+	at 25 m/s^2 with the chase camera 35 studs behind, 8 yaws x 100-250 m): wrong order 0.231 % (max 0.80 %) ->
+	0.153 % (max 0.57 %), the screenshot-like view 0.6-1.0 % -> 0.12-0.26 % (thin slivers at the horizon left), no
+	holes, fewer band builds (139 -> 110). The profile costs ~0.05 s of build time per plan (time-sliced).
+	/bands (DebugService -> DebugView): setDebugTint shows each band in a flat colour.
+
 	API (driven by Surface):
 		TerrainMesh.init(parent)
 		TerrainMesh.update(ctx, show, prebuild)   show: draw this frame (surface mode); prebuild: build but keep hidden
@@ -150,6 +168,9 @@
 		TerrainMesh.isSettled(): boolean           CHANGED (Memory budget): no plan running for built ground
 		TerrainMesh.setLoadBoost(mode?)            CHANGED (Memory budget): "Menu" / "Cover" / nil: build time per frame
 		TerrainMesh.summary(): string              F3 debug line
+		TerrainMesh.setDebugTint(on)               CHANGED (Far slabs fix): the /bands view (a flat colour per band)
+		TerrainMesh.debugTint(): boolean           CHANGED (Far slabs fix)
+		TerrainMesh.tintBand(part, id)             CHANGED (Far slabs fix): (internal) one band's /bands tint
 ]]
 
 local AssetService = game:GetService("AssetService")
@@ -249,7 +270,9 @@ local PROTECT_HIGH_DEPTH = 160 -- studs
 local CULL = table.freeze({
 	REACH_MIN = 25, -- m
 	REACH_HEIGHT = 0.1, -- x the camera's height above the ground
-	REACH_SPEED_S = 5, -- s of the camera's current speed
+	-- CHANGED (Far slabs fix): was 5 s: at 95 m/s a 475 m reach (the camera raised that much) culled almost nothing,
+	-- so a climbing rocket saw the far bands' hidden faces drawn over the plain; with the profile 1 s audits best
+	REACH_SPEED_S = 1, -- s of the camera's current speed
 	REFRESH = 0.6, -- a band is rebuilt once the camera moved this x its reach ...
 	GAIN = 1.5, -- ... (a band that culled nothing: this x its reach, for what the bulge hides now)
 	TIGHTEN = 2.5, -- ... or once its reach is this x the reach a new plan would use (the camera slowed down)
@@ -258,6 +281,15 @@ local CULL = table.freeze({
 	SPEED_SMOOTH_S = 0.5, -- s: the camera speed estimate rises at once and falls with this time constant
 	SPEED_JUMP = 3000, -- m/s: a faster move is a jump (teleport, End Flight), not a speed
 })
+-- CHANGED (Far slabs fix): the /bands debug view (setDebugTint): a flat colour per band (Highlight fill; the near
+-- band keeps its colours), plates white. One table with its state (`on`, the module is at Roblox's 200-locals limit).
+local DEBUG_TINT = {
+	BANDS = { Color3.fromRGB(40, 90, 255), Color3.fromRGB(235, 40, 40), Color3.fromRGB(250, 220, 30) }, -- band 1, 2, 3
+	FURTHER = Color3.fromRGB(230, 40, 230), -- band 4 and up
+	PLATE = Color3.new(1, 1, 1),
+	NAME = "BandTint",
+	on = false, -- the view is on
+}
 
 -- Detail per Quality tier: splitK (LOD distance in node sizes), leaf cap, build time per frame (s), and whether the
 -- finest band casts shadows.
@@ -362,6 +394,7 @@ type Plan = {
 	stitch: { [number]: number }, -- leaf key -> seam code (TerrainMath.stitchCode) in this plan's selection
 	light: number, -- CHANGED (Review 3): the daylight step its bands' haze is baked for
 	occluder: TerrainMath.Occluder?, -- CHANGED (See-through fix): the bulge the scaled bands are culled against
+	profile: TerrainMath.Profile?, -- CHANGED (Far slabs fix): the drawn ground's horizon profile (the same reach)
 }
 
 type Plate = {
@@ -758,7 +791,7 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 		for index, c in chunks do
 			local cc, n = c, 0
 			if not (sunk and sunk[nodes[index].key]) then
-				cc, n = TerrainMath.cullChunk(c, occluder)
+				cc, n = TerrainMath.cullChunk(c, occluder, p.profile) -- CHANGED (Far slabs fix): + the nearer ground
 			end
 			kept[index] = cc
 			culled += n
@@ -941,6 +974,9 @@ local function swapIn(bm: BandMesh?, id: number)
 	end
 	if bm then
 		bands[id] = bm
+		if DEBUG_TINT.on then
+			TerrainMesh.tintBand(bm.part, id) -- CHANGED (Far slabs fix): the /bands view
+		end
 		-- a band hidden under the launch site's plate (hideScaledAt) stays hidden until that decides again
 		if old and holeHidden[id] == old then
 			holeHidden[id] = bm
@@ -1253,12 +1289,13 @@ local function selectAndRun(p: Plan)
 	selectParams.near = p.near -- CHANGED (Night review)
 	selectParams.rings = p.rings -- CHANGED (Terrain polish)
 	selectParams.horizonLead = math.max(HORIZON_LEAD_MIN, HORIZON_LEAD_FRACTION * heightAboveGround(p.config, p.cam))
-	selectParams.pause = function()
+	local function pause()
 		if os.clock() - sliceStart >= buildBudget() then -- CHANGED (Memory budget): load boost
 			task.wait()
 			sliceStart = os.clock()
 		end
 	end
+	selectParams.pause = pause
 	local selection = TerrainMath.select(p.config, p.cam, selectParams, split)
 	if p.aborted then
 		return
@@ -1266,6 +1303,49 @@ local function selectAndRun(p: Plan)
 	preparePlan(p, selection)
 	if p.aborted then
 		return
+	end
+	-- CHANGED (Far slabs fix): before a scaled band is built, the profile of every leaf of the plan and of the bands
+	-- on screen (it holds for any detail they are drawn at: TerrainMath.profileAdd), for that band's culling
+	local occluder = p.occluder
+	local scaledPending = false
+	for id in p.pending do
+		scaledPending = scaledPending or (id ~= TerrainMath.NEAR_BAND and next(p.target[id]) ~= nil)
+	end
+	if occluder and scaledPending then
+		local pf = TerrainMath.newProfile(p.cam, occluder.reach)
+		local function add(key: number, node: Node)
+			local chunk = chunkCache[key]
+			if chunk == nil then
+				local fresh = TerrainMath.buildChunk(p.config, node)
+				chunkCache[key] = fresh
+				chunkCount += 1
+				stamp += 1
+				chunkStamp[key] = stamp
+				chunk = fresh
+			end
+			TerrainMath.profileAdd(pf, chunk :: Chunk, node, p.config.cellArc)
+			pause()
+		end
+		for _, node in selection.leaves do
+			add(node.key, node)
+		end
+		local planned = (p.selection :: Selection).leaves
+		local inPlan: { [number]: boolean } = {}
+		for _, node in planned do
+			inPlan[node.key] = true
+		end
+		for _, bm in bands do
+			for key, node in bm.leaves do
+				if not inPlan[key] then
+					add(key, node)
+				end
+			end
+		end
+		TerrainMath.finishProfile(pf, pause)
+		if p.aborted then
+			return
+		end
+		p.profile = pf
 	end
 	runPlan(p)
 end
@@ -1657,7 +1737,7 @@ local function newPlate(config: Config, node: Node, folder: Folder): Plate
 	part.Size = Vector3.new(sizeX, thickness, sizeZ)
 	local dir = Vec3d.normalize(pc)
 	local r, g, b, kind = Biome.sample(config.bodyId, dir.x, dir.y, dir.z)
-	part.Color = Color3.new(r, g, b)
+	part.Color = if DEBUG_TINT.on then DEBUG_TINT.PLATE else Color3.new(r, g, b) -- CHANGED (Far slabs fix): /bands
 	part.Material = KIND_MATERIALS[kind] or FALLBACK_MATERIAL
 	part.Reflectance = if kind == "Ocean" or kind == "Lake" then OCEAN_REFLECTANCE else 0 -- CHANGED (Planet detail)
 	part.Parent = folder
@@ -2225,6 +2305,47 @@ function TerrainMesh.summary(): string
 		chunkCount,
 		if meshesShown then "" elseif platesShown then "  (plates)" else ""
 	)
+end
+
+--[[
+	CHANGED (Far slabs fix): the /bands debug view (Surface.setDebugTint): every scaled band gets a flat colour
+	(band 1 blue, 2 red, 3 yellow, further magenta; the near band keeps its own), the fallback plates turn white. No
+	rebuild: a Highlight per band (at most 5, under the engine's 31), plates are recreated once. Off by default;
+	off costs nothing.
+]]
+function TerrainMesh.setDebugTint(on: boolean)
+	if DEBUG_TINT.on == on then
+		return
+	end
+	DEBUG_TINT.on = on
+	for id, bm in bands do
+		TerrainMesh.tintBand(bm.part, id)
+	end
+	releaseAllPlates()
+end
+
+function TerrainMesh.debugTint(): boolean
+	return DEBUG_TINT.on
+end
+
+-- CHANGED (Far slabs fix): gives band `id`'s part its /bands tint while the view is on, or takes it away.
+function TerrainMesh.tintBand(part: MeshPart, id: number)
+	local existing = part:FindFirstChild(DEBUG_TINT.NAME)
+	if not DEBUG_TINT.on or id == TerrainMath.NEAR_BAND then
+		if existing then
+			existing:Destroy()
+		end
+		return
+	end
+	if existing == nil then
+		local highlight = Instance.new("Highlight")
+		highlight.Name = DEBUG_TINT.NAME
+		highlight.FillColor = DEBUG_TINT.BANDS[id] or DEBUG_TINT.FURTHER
+		highlight.FillTransparency = 0
+		highlight.OutlineTransparency = 1
+		highlight.DepthMode = Enum.HighlightDepthMode.Occluded
+		highlight.Parent = part
+	end
 end
 
 -- Test hook: what is on screen (leaf key -> band id, and band id -> scale), for offline simulations.

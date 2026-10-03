@@ -3,6 +3,8 @@
 -- skirts (TerrainMath.seamCode), and the scaled bands' bulge culling (bulgeOccluder / occluded / cullChunk): what it
 -- leaves out is hidden by the drawn ground for every camera within the reach, and it does leave out the slopes behind
 -- the horizon bulge that face the camera.
+-- CHANGED (Far slabs fix): + the horizon profile (newProfile / profileAdd / finishProfile / profileHides): what it
+-- leaves out is hidden by the drawn ground from moved cameras, and it leaves out more than the bulge alone.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TestKit = require(script.Parent.TestKit)
@@ -316,6 +318,56 @@ return function(t: TestKit.Context)
 		end
 		t.expectTrue(culledAll > 500, `ground behind the horizon is left out ({culledAll} triangles)`)
 		t.expectTrue(keptNear > 0, "the near band is whole")
+	end)
+
+	-- CHANGED (Far slabs fix)
+	t.test("horizon profile: what it hides is hidden by the drawn ground from moved cameras", function()
+		-- 200 m over the pads (Steamy's climb) and on the plain below the northern mountains (the night ridge)
+		for _, cam in { earthCamera(0, 280, 200), earthCamera(-6000, -10500, 40) } do
+			local s = scene(HOMEWORLD, cam)
+			local pf = TerrainMath.newProfile(s.cam, REACH)
+			for _, node in s.leaves do
+				TerrainMath.profileAdd(pf, TerrainMath.buildChunk(s.config, node), node, s.config.cellArc)
+			end
+			t.expectTrue(not TerrainMath.profileHides(pf, cam, cam, cam), "an unfinished profile hides nothing")
+			TerrainMath.finishProfile(pf)
+			local o = TerrainMath.bulgeOccluder(s.config, s.cam, REACH) :: TerrainMath.Occluder
+			local ground = triangles(s, function(): boolean
+				return true
+			end)
+			local scaled = triangles(s, function(band: number): boolean
+				return band ~= TerrainMath.NEAR_BAND
+			end)
+			local hidden: { Tri } = {}
+			local beyondBulge = 0
+			for _, tri in scaled do
+				if TerrainMath.profileHides(pf, tri.a, tri.b, tri.c) then
+					table.insert(hidden, tri)
+					if not TerrainMath.triangleHidden(o, tri.a, tri.b, tri.c) then
+						beyondBulge += 1
+					end
+				end
+			end
+			t.expectTrue(beyondBulge > 20, `the nearer ground hides more than the bulge ({beyondBulge} triangles)`)
+			local stepSize = math.max(1, #hidden // CHECKED_TRIANGLES)
+			for index = 1, #hidden, stepSize do
+				local tri = hidden[index]
+				for n, c in movedCameras(cam, tri.centre, REACH) do
+					if n > CAMERAS_PER_CHECK + 1 then
+						break
+					end
+					for _, p in { tri.a, tri.b, tri.c, tri.centre } do
+						t.expectTrue(
+							hiddenFrom(c, p, ground),
+							"a triangle the profile hides is hidden by the drawn ground"
+						)
+					end
+				end
+			end
+			-- the ground right below and in front of the camera is never hidden
+			local below = SurfaceHeight.groundPoint(HOMEWORLD, Vec3d.normalize(cam))
+			t.expectTrue(not TerrainMath.profileHides(pf, below, below, below), "the ground below")
+		end
 	end)
 
 	t.test("bulge culling: what a scaled band leaves out is hidden by the drawn ground from moved cameras", function()

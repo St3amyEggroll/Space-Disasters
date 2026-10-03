@@ -58,6 +58,7 @@ local Workspace = game:GetService("Workspace")
 
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
+local Remotes = require(ReplicatedStorage.Shared.Net.Remotes) -- CHANGED (Far slabs fix): /bands
 local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local DebugOverlay = require(script.Parent.DebugOverlay)
@@ -468,6 +469,12 @@ function UniverseRenderer.Start()
 	globals:GetAttributeChangedSignal(Universe.SUN_OFFSET_ATTRIBUTE):Connect(applySunOffset)
 	applySunOffset()
 	SiteLights.watchBase() -- CHANGED (Night review): the base's lamps and beacons on High only
+	-- CHANGED (Far slabs fix): DebugService's /bands toggles the terrain band view (Surface.setDebugTint)
+	Remotes.event("DebugView").OnClientEvent:Connect(function(view: unknown)
+		if view == "bands" then
+			Surface.setDebugTint(not Surface.debugTint())
+		end
+	end)
 	RunService:BindToRenderStep(RENDER_STEP_NAME, RENDER_PRIORITY, step)
 end
 

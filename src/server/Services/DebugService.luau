@@ -8,6 +8,8 @@
 	  /time <hour>            set the time of day at the base (0..24, 12 = noon; everyone sees it)
 	  /hover <m> [body]       CHANGED (Phase 8): put your craft upright and still, <m> metres above the terrain under
 	                          it (or above a hilly spot of another body) to test landings on slopes
+	  /bands                  CHANGED (Far slabs fix): toggle your terrain debug view (each terrain band in a flat
+	                          colour, plates white, the launch-site copy cyan; DebugView remote, client only)
 	"Your craft" = the craft you pilot, else the craft whose pocket you are in.
 ]]
 
@@ -42,6 +44,7 @@ local DebugService = {}
 
 local notify: RemoteEvent
 local override: RemoteEvent
+local debugView: RemoteEvent -- CHANGED (Far slabs fix)
 
 local function allowed(player: Player): boolean
 	return RunService:IsStudio() or table.find(GameConfig.DEBUG_USER_IDS, player.UserId) ~= nil
@@ -218,12 +221,15 @@ local function onChatted(player: Player, message: string)
 		setTime(player, args)
 	elseif command == "hover" then
 		hover(player, args) -- CHANGED (Phase 8)
+	elseif command == "bands" then
+		debugView:FireClient(player, "bands") -- CHANGED (Far slabs fix): the client toggles its terrain band view
 	end
 end
 
 function DebugService.Init()
 	notify = Remotes.event("Notify")
 	override = Remotes.event("FlightOverride")
+	debugView = Remotes.event("DebugView") -- CHANGED (Far slabs fix)
 end
 
 function DebugService.Start()

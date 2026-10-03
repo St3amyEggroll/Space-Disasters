@@ -155,6 +155,20 @@ local RING_KEEP = 0.85 -- the last plan's ring bounds stay while they protect at
 local RING_TIE = 1e-6 -- m: leaf ring distances closer than this are one group (never split by a bound)
 -- CHANGED (See-through fix): ground hidden behind the body's bulge is left out of the scaled bands (cullChunk)
 local OCCLUDER_SLACK = 1 -- m: the occluding sphere stays this much below the lowest drawn ground (plus the drops)
+-- CHANGED (Far slabs fix): the horizon profile the scaled bands are also culled against (newProfile / cullChunk).
+-- One table (the module's chunk is near Roblox's 200-locals limit).
+local PROFILE = table.freeze({
+	AZIMUTHS = 384, -- azimuth bins around the camera's nadir (0.94 deg)
+	DISTANCES = 128, -- distance bins: [0, NEAR) then log-spaced by RATIO (out to ~70 km)
+	NEAR = 40, -- m: ground nearer than this to the nadir is no occluder (rays to far ground pass high over it)
+	RATIO = 1.06,
+	-- the drawn ground's lower bound is taken from the leaves' lattice vertices (the drawn LOD) per 2 x 2 quads (the
+	-- quad of the leaf one level coarser), minus MARGIN m plus MARGIN_PER_SPACING x its quad spacing (the detail a
+	-- finer level adds; a union's sunk leaves sit less than this low)
+	MARGIN = 3,
+	MARGIN_PER_SPACING = 0.2,
+	UNKNOWN = -1e30, -- no ground known there: nothing occludes
+})
 --============================================================================
 
 export type Config = {
@@ -266,6 +280,31 @@ export type Occluder = {
 	z: number,
 	c2: number, -- |cam|^2 - radius^2 (> 0: the camera is outside the sphere)
 	reach: number, -- m: the camera may move this far before the culling must be redone
+}
+
+--[[
+	CHANGED (Far slabs fix): the horizon profile of the drawn ground seen from a camera (newProfile): in the camera's
+	tangent frame (y up, heights relative to the camera), polar bins around its nadir. `low` holds a lower bound of
+	the drawn ground's height in each bin (any level of detail a leaf may be drawn at), `slope` (finishProfile) the
+	running maximum, outward along each azimuth, of the lowest slope from any camera within `reach` to that ground.
+]]
+export type Profile = {
+	cx: number, -- camera (body-relative, m)
+	cy: number,
+	cz: number,
+	ux: number, -- up
+	uy: number,
+	uz: number,
+	ex: number, -- tangent axes
+	ey: number,
+	ez: number,
+	fx: number,
+	fy: number,
+	fz: number,
+	reach: number, -- m
+	low: buffer, -- f32 per bin (azimuth-major): lowest drawn ground (m relative to the camera), +inf = none yet
+	slope: buffer, -- f32 per bin: occluding slope (finishProfile)
+	finished: boolean,
 }
 
 export type Triangle = { number } -- ax, ay, az, bx, by, bz, cx, cy, cz (body-relative, m), counter-clockwise from above
@@ -1709,31 +1748,365 @@ function TerrainMath.triangleHidden(o: Occluder, a: Vec3d, b: Vec3d, c: Vec3d): 
 		and TerrainMath.occluded(o, c.x, c.y, c.z)
 end
 
+--============================================================================
+-- CHANGED (Far slabs fix): occlusion by the nearer ground (horizon profile)
+--============================================================================
+--[[
+	Why: the scaled bands have different factors (each band's own part size / draw budget limit, and the protected
+	depth of the nearest ring), a far band's smaller than a nearer one's. Wherever the nearer ground hides a far band
+	in truth, the far band was drawn in FRONT of it (k_far x d_far < k_near x d_near): Steamy's grey / blue slabs (far
+	hill and mountain faces) over the green plain, and green slabs through a ridge at night. No layout of uniform
+	scales about the camera keeps every band's drawn depth in order (a ring's part limit forces k <= 1020 studs / its
+	outer radius, so k falls outward), and the bulge sphere only covers what the lowest ground hides. So the scaled
+	bands also leave out what the drawn ground itself hides, from a profile of it:
+	  * newProfile / profileAdd: every 2 x 2 quads of every leaf of the plan (and of the bands on screen) write the
+	    lowest of their nine lattice vertices, minus PROFILE.MARGIN (+ MARGIN_PER_SPACING x the quad spacing), into
+	    the polar bins their footprint overlaps, in the camera's tangent frame. The drawn ground is planar between
+	    those vertices, the leaf one level coarser joins every other one (its quad is the 2 x 2 block), and a finer
+	    one adds bounded detail (MARGIN): a lower bound of the drawn ground whatever detail the other bands are
+	    rebuilt with before this band is.
+	  * finishProfile: bins nothing wrote count as no ground; each bin takes the lowest bound within `reach` (the
+	    disc a moved camera's ray can stray by), then each azimuth keeps the running maximum of the occluding slope
+	    (bound - reach) / distance.
+	  * profileHides: a point p (height y_p over the camera, s_p from its nadir) is hidden from every camera within
+	    `reach` when (y_p - reach) / s_p < that maximum before s_p: the camera's ray, moved by at most (1 - t) x reach
+	    at its point t, then still passes below the ground's bound there (between the camera and p). A triangle is
+	    hidden when the bound holds for its highest vertex, its nearest possible distance and every azimuth it spans:
+	    exact and conservative for each of its points (no holes), whatever the bands' scales.
+]]
+local function profileBin(s: number): number
+	if s < PROFILE.NEAR then
+		return 0
+	end
+	return math.min(math.floor(math.log(s / PROFILE.NEAR) / math.log(PROFILE.RATIO)) + 1, PROFILE.DISTANCES - 1)
+end
+
+-- inner / outer distance (m) of distance bin d
+local function profileInner(d: number): number
+	return if d <= 0 then 0 else PROFILE.NEAR * PROFILE.RATIO ^ (d - 1)
+end
+
+local function profileAzimuth(a: number): number
+	local n = PROFILE.AZIMUTHS
+	return math.floor((a + math.pi) / (2 * math.pi) * n) % n
+end
+
+-- CHANGED (Far slabs fix): an empty profile for body-relative camera `cam`, valid within `reach` of it.
+function TerrainMath.newProfile(cam: Vec3d, reach: number): Profile
+	local up = Vec3d.normalize(cam)
+	local seed = if math.abs(up.y) < 0.9 then Vec3d.new(0, 1, 0) else Vec3d.new(1, 0, 0)
+	local e = Vec3d.normalize(Vec3d.cross(seed, up))
+	local f = Vec3d.cross(up, e)
+	local cells = PROFILE.AZIMUTHS * PROFILE.DISTANCES
+	local low = buffer.create(cells * 4)
+	for i = 0, cells - 1 do
+		buffer.writef32(low, i * 4, math.huge)
+	end
+	return {
+		cx = cam.x,
+		cy = cam.y,
+		cz = cam.z,
+		ux = up.x,
+		uy = up.y,
+		uz = up.z,
+		ex = e.x,
+		ey = e.y,
+		ez = e.z,
+		fx = f.x,
+		fy = f.y,
+		fz = f.z,
+		reach = math.max(reach, 0),
+		low = low,
+		slope = buffer.create(cells * 4),
+		finished = false,
+	}
+end
+
+-- Height over the camera, distance from its nadir and azimuth of body-relative (x, y, z).
+local function profileCoords(pf: Profile, x: number, y: number, z: number): (number, number, number, number, number)
+	local rx, ry, rz = x - pf.cx, y - pf.cy, z - pf.cz
+	local h = rx * pf.ux + ry * pf.uy + rz * pf.uz
+	local u = rx * pf.ex + ry * pf.ey + rz * pf.ez
+	local v = rx * pf.fx + ry * pf.fy + rz * pf.fz
+	return h, math.sqrt(u * u + v * v), math.atan2(v, u), u, v
+end
+
+-- Smallest arc [lo, hi] (rad, hi - lo <= pi, else nil) holding the angles a, b, c (and d).
+local function arcOf(a: number, b: number, c: number, d: number?): (number?, number)
+	local tau = 2 * math.pi
+	local rb = (b - a + math.pi) % tau - math.pi
+	local rc = (c - a + math.pi) % tau - math.pi
+	local rd = if d then (d - a + math.pi) % tau - math.pi else 0
+	local lo, hi = math.min(0, rb, rc, rd), math.max(0, rb, rc, rd)
+	if hi - lo > math.pi then
+		return nil, 0
+	end
+	return a + lo, a + hi
+end
+
+--[[
+	CHANGED (Far slabs fix): adds the ground of `chunk` (an unstitched buildChunk of `node`, a leaf drawn in some band
+	or about to be) to the profile as a lower bound (see above).
+]]
+function TerrainMath.profileAdd(pf: Profile, chunk: Chunk, node: Node, cellArc: number)
+	local side = CHUNK + 1
+	local spacing = node.stride * cellArc
+	local margin = PROFILE.MARGIN + PROFILE.MARGIN_PER_SPACING * spacing
+	local data, ox, oy, oz = chunk.data, chunk.ox, chunk.oy, chunk.oz
+	local hs: { number } = table.create(side * side, 0)
+	local ss: { number } = table.create(side * side, 0)
+	local as: { number } = table.create(side * side, 0)
+	local us: { number } = table.create(side * side, 0)
+	local vs: { number } = table.create(side * side, 0)
+	for v = 1, side * side do
+		local off = (v - 1) * VERTEX_BYTES
+		hs[v], ss[v], as[v], us[v], vs[v] = profileCoords(
+			pf,
+			ox + buffer.readf32(data, off),
+			oy + buffer.readf32(data, off + 4),
+			oz + buffer.readf32(data, off + 8)
+		)
+	end
+	local n, low = PROFILE.AZIMUTHS, pf.low
+	local binWidth = 2 * math.pi / n
+	-- 2 x 2 quad blocks: the quads of the leaf one level coarser (its vertices are every other one of these)
+	for a = 0, CHUNK - 2, 2 do
+		for b = 0, CHUNK - 2, 2 do
+			local i1 = a * side + b + 1
+			local i2, i3, i4 = i1 + 2, i1 + 2 * side, i1 + 2 * side + 2
+			local diag = math.max(
+				math.sqrt((us[i1] - us[i4]) ^ 2 + (vs[i1] - vs[i4]) ^ 2),
+				math.sqrt((us[i2] - us[i3]) ^ 2 + (vs[i2] - vs[i3]) ^ 2)
+			)
+			local sMin = math.min(ss[i1], ss[i2], ss[i3], ss[i4]) - diag
+			if sMin < PROFILE.NEAR then
+				continue -- around the nadir: left unknown (no occluder)
+			end
+			local sMax = math.max(ss[i1], ss[i2], ss[i3], ss[i4])
+			local lo, hi = arcOf(as[i1], as[i2], as[i3], as[i4])
+			if lo == nil then
+				continue
+			end
+			local value = math.huge
+			for r = 0, 2 do
+				local row = i1 + r * side
+				value = math.min(value, hs[row], hs[row + 1], hs[row + 2])
+			end
+			value -= margin
+			-- the middle vertices may bulge a little past the corners' arc
+			local widen = 0.25 * diag / sMin
+			local a0 = math.floor(((lo :: number) - widen + math.pi) / binWidth)
+			local a1 = math.floor((hi + widen + math.pi) / binWidth)
+			local d0, d1 = profileBin(sMin), profileBin(sMax + 0.25 * diag)
+			for ab = a0, math.min(a1, a0 + n - 1) do
+				local base = (ab % n) * PROFILE.DISTANCES
+				for d = d0, d1 do
+					local off = (base + d) * 4
+					if value < buffer.readf32(low, off) then
+						buffer.writef32(low, off, value)
+					end
+				end
+			end
+		end
+	end
+end
+
+-- Sliding minimum over a circular ring `src` (n values), window i - w .. i + w, into `out` (van Herk / Gil-Werman).
+local function ringMin(src: { number }, n: number, w: number, out: { number }, g: { number }, h: { number })
+	if 2 * w + 1 >= n then
+		local m = math.huge
+		for i = 1, n do
+			m = math.min(m, src[i])
+		end
+		for i = 1, n do
+			out[i] = m
+		end
+		return
+	end
+	local k = 2 * w + 1
+	local len = n + 2 * w
+	for j = 0, len - 1 do
+		local value = src[(j - w) % n + 1]
+		g[j + 1] = if j % k == 0 then value else math.min(g[j], value)
+	end
+	for j = len - 1, 0, -1 do
+		local value = src[(j - w) % n + 1]
+		h[j + 1] = if j % k == k - 1 or j == len - 1 then value else math.min(h[j + 2], value)
+	end
+	for i = 0, n - 1 do
+		out[i + 1] = math.min(h[i + 1], g[i + k])
+	end
+end
+
+--[[
+	CHANGED (Far slabs fix): turns the lower bounds into the occluding slopes (see above). `pause` is called now and
+	then (a caller in a thread may yield there).
+]]
+function TerrainMath.finishProfile(pf: Profile, pause: (() -> ())?)
+	local n, m = PROFILE.AZIMUTHS, PROFILE.DISTANCES
+	local low, slope, reach = pf.low, pf.slope, pf.reach
+	local binWidth = 2 * math.pi / n
+	local ring: { number } = table.create(n, 0)
+	local out: { number } = table.create(n, 0)
+	local g: { number } = table.create(2 * n + 1, 0)
+	local h: { number } = table.create(2 * n + 1, 0)
+	-- 1. azimuth: the lowest bound within `reach` sideways (+ a bin: the point lies anywhere in its own bin)
+	for d = 0, m - 1 do
+		local inner = profileInner(d)
+		local w = if inner <= reach then n else math.ceil(math.asin(reach / inner) / binWidth) + 1
+		for a = 0, n - 1 do
+			local value = buffer.readf32(low, (a * m + d) * 4)
+			ring[a + 1] = if value == math.huge then PROFILE.UNKNOWN else value
+		end
+		ringMin(ring, n, math.min(w, n), out, g, h)
+		for a = 0, n - 1 do
+			buffer.writef32(slope, (a * m + d) * 4, out[a + 1])
+		end
+		if pause and d % 16 == 15 then
+			pause()
+		end
+	end
+	-- 2. distance: the lowest within `reach` along the azimuth, then the running maximum of the occluding slope
+	local column: { number } = table.create(m, 0)
+	for a = 0, n - 1 do
+		local base = a * m
+		for d = 0, m - 1 do
+			column[d + 1] = buffer.readf32(slope, (base + d) * 4)
+		end
+		local best = -math.huge
+		local first, last = 0, 0
+		local windowMin = math.huge
+		for d = 0, m - 1 do
+			local inner = profileInner(d)
+			local outer = profileInner(d + 1)
+			local lo, hi = profileBin(math.max(inner - reach, 0)), profileBin(outer + reach)
+			-- both ends only move outward: rescan only when the window's start passed the minimum's bin
+			if lo > first or d == 0 then
+				first = lo
+				last = lo - 1
+				windowMin = math.huge
+			end
+			while last < hi do
+				last += 1
+				windowMin = math.min(windowMin, column[last + 1])
+			end
+			local bound = windowMin
+			local slopeHere = -math.huge
+			if bound > PROFILE.UNKNOWN * 0.5 and inner > 0 then
+				local num = bound - reach
+				slopeHere = if num >= 0 then num / outer else num / inner
+			end
+			best = math.max(best, slopeHere)
+			buffer.writef32(slope, (base + d) * 4, best)
+		end
+		if pause and a % 64 == 63 then
+			pause()
+		end
+	end
+	pf.finished = true
+end
+-- CHANGED (Far slabs fix): profileHides with the vertices' profileCoords (h, s, azimuth, tangent u, v) given.
+local function profileHidesCoords(
+	pf: Profile,
+	h1: number,
+	s1: number,
+	a1: number,
+	u1: number,
+	v1: number,
+	h2: number,
+	s2: number,
+	a2: number,
+	u2: number,
+	v2: number,
+	h3: number,
+	s3: number,
+	a3: number,
+	u3: number,
+	v3: number
+): boolean
+	-- the triangle's nearest point to the nadir is at most its longest edge nearer than its nearest vertex
+	local edge =
+		math.sqrt(math.max((u1 - u2) ^ 2 + (v1 - v2) ^ 2, (u2 - u3) ^ 2 + (v2 - v3) ^ 2, (u3 - u1) ^ 2 + (v3 - v1) ^ 2))
+	local sMin = math.min(s1, s2, s3) - edge
+	if sMin < PROFILE.NEAR then
+		return false
+	end
+	local d0 = profileBin(sMin)
+	if d0 < 1 then
+		return false
+	end
+	local lo, hi = arcOf(a1, a2, a3)
+	if lo == nil then
+		return false
+	end
+	local num = math.max(h1, h2, h3) - pf.reach
+	local slopeUp = if num >= 0 then num / sMin else num / math.max(s1, s2, s3)
+	local n, m = PROFILE.AZIMUTHS, PROFILE.DISTANCES
+	local binWidth = 2 * math.pi / n
+	local b0 = math.floor(((lo :: number) + math.pi) / binWidth)
+	local b1 = math.floor((hi + math.pi) / binWidth)
+	local slope = pf.slope
+	for b = b0, b1 do
+		if slopeUp >= buffer.readf32(slope, ((b % n) * m + d0 - 1) * 4) then
+			return false
+		end
+	end
+	return true
+end
+
+-- CHANGED (Far slabs fix): whether the drawn ground (finished profile) hides the whole triangle a, b, c (body-relative)
+-- from every camera within the profile's reach.
+function TerrainMath.profileHides(pf: Profile, a: Vec3d, b: Vec3d, c: Vec3d): boolean
+	if not pf.finished then
+		return false
+	end
+	local h1, s1, a1, u1, v1 = profileCoords(pf, a.x, a.y, a.z)
+	local h2, s2, a2, u2, v2 = profileCoords(pf, b.x, b.y, b.z)
+	local h3, s3, a3, u3, v3 = profileCoords(pf, c.x, c.y, c.z)
+	return profileHidesCoords(pf, h1, s1, a1, u1, v1, h2, s2, a2, u2, v2, h3, s3, a3, u3, v3)
+end
+
 --[[
 	CHANGED (See-through fix): `chunk` without its triangles hidden behind the occluder (every vertex occluded) that
 	face the camera, and only the vertices the kept triangles use (the mesh's box is the drawn geometry's:
 	CreateMeshPartAsync centres on it). A triangle facing away is invisible anyway; it stays, so if the camera moves
 	beyond the reach before the band is rebuilt, the ground beyond the old horizon is still there (only the culled
 	slopes are missing). Returns the chunk itself when nothing is left out, and the number of triangles left out.
+	CHANGED (Far slabs fix): + `pf`: also the triangles the drawn nearer ground hides (profileHides) from every
+	camera within the profile's reach (the same camera as the occluder's).
 ]]
-function TerrainMath.cullChunk(chunk: Chunk, o: Occluder): (Chunk, number)
+function TerrainMath.cullChunk(chunk: Chunk, o: Occluder, pf: Profile?): (Chunk, number)
 	local data = chunk.data
 	local ox, oy, oz = chunk.ox, chunk.oy, chunk.oz
 	local count = chunk.vertexCount
 	local hidden: { boolean } = table.create(count, false)
 	local any = false
+	-- CHANGED (Far slabs fix): and each vertex's place in the horizon profile (the nearer ground hides it too)
+	local profile = if pf and pf.finished then pf else nil
+	local pointHidden: { boolean } = table.create(if profile then count else 0, false)
+	local ph: { number } = table.create(if profile then count else 0, 0)
+	local ps: { number } = table.create(if profile then count else 0, 0)
+	local pa: { number } = table.create(if profile then count else 0, 0)
+	local pu: { number } = table.create(if profile then count else 0, 0)
+	local pv: { number } = table.create(if profile then count else 0, 0)
 	for v = 1, count do
 		local off = (v - 1) * VERTEX_BYTES
-		local h = TerrainMath.occluded(
-			o,
-			ox + buffer.readf32(data, off),
-			oy + buffer.readf32(data, off + 4),
-			oz + buffer.readf32(data, off + 8)
-		)
+		local x, y, z =
+			ox + buffer.readf32(data, off), oy + buffer.readf32(data, off + 4), oz + buffer.readf32(data, off + 8)
+		local h = TerrainMath.occluded(o, x, y, z)
 		hidden[v] = h
 		any = any or h
+		if profile then
+			local hv, sv, av, uv, vv = profileCoords(profile, x, y, z)
+			ph[v], ps[v], pa[v], pu[v], pv[v] = hv, sv, av, uv, vv
+			-- the vertex alone (a quick necessary condition for its triangles)
+			local d = profileBin(sv)
+			pointHidden[v] = d >= 1
+				and (hv - profile.reach) / sv
+					< buffer.readf32(profile.slope, (profileAzimuth(av) * PROFILE.DISTANCES + d - 1) * 4)
+		end
 	end
-	if not any then
+	if not any and profile == nil then
 		return chunk, 0
 	end
 	-- the camera relative to the chunk origin
@@ -1745,7 +2118,28 @@ function TerrainMath.cullChunk(chunk: Chunk, o: Occluder): (Chunk, number)
 	local culled = 0
 	for t = 1, #tris, 3 do
 		local a, b, c = tris[t], tris[t + 1], tris[t + 2]
-		if hidden[a] and hidden[b] and hidden[c] then
+		local candidate = hidden[a] and hidden[b] and hidden[c]
+		if not candidate and profile and pointHidden[a] and pointHidden[b] and pointHidden[c] then
+			candidate = profileHidesCoords(
+				profile,
+				ph[a],
+				ps[a],
+				pa[a],
+				pu[a],
+				pv[a],
+				ph[b],
+				ps[b],
+				pa[b],
+				pu[b],
+				pv[b],
+				ph[c],
+				ps[c],
+				pa[c],
+				pu[c],
+				pv[c]
+			)
+		end
+		if candidate then
 			local ao, bo, co = (a - 1) * VERTEX_BYTES, (b - 1) * VERTEX_BYTES, (c - 1) * VERTEX_BYTES
 			local px, py, pz = buffer.readf32(data, ao), buffer.readf32(data, ao + 4), buffer.readf32(data, ao + 8)
 			local ux, uy, uz =

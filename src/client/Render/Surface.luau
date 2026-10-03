@@ -85,6 +85,13 @@
 		Surface.isReady(): boolean                          -- CHANGED (Terrain polish): ground meshes on screen
 		Surface.isSettled(): boolean                        -- CHANGED (Memory budget): ground built, no plan running
 		Surface.setLoadBoost(mode?)                         -- CHANGED (Memory budget): "Menu" / "Cover" / nil
+		Surface.setDebugTint(on) / Surface.debugTint()      -- CHANGED (Far slabs fix): the /bands debug view
+
+	CHANGED (Far slabs fix): Steamy's screenshot over the pads showed big dark-green rectangles with lighter lines
+	between them on the grass beside the site. A copy drawn scaled about the camera (whenever part of the plate's
+	ground is in a scaled band) floats between the camera and the ground, and Roblox's sun shadows of its plate,
+	plots and pads fell on the true-scale near ground below it, offset along the sun: rectangles that are not in the
+	true scene. The copy casts no shadow while it is scaled (ShadowGate, its own reason; back at true scale it does).
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -96,6 +103,7 @@ local HomeBase = require(ReplicatedStorage.Shared.Sites.HomeBase)
 local Quality = require(script.Parent.Quality) -- CHANGED (Phase 8)
 local RenderContext = require(script.Parent.RenderContext)
 local SiteLights = require(script.Parent.SiteLights) -- CHANGED (Night review)
+local ShadowGate = require(script.Parent.ShadowGate) -- CHANGED (Far slabs fix)
 local SurfaceProps = require(script.Parent.SurfaceProps)
 local TerrainCollision = require(script.Parent.TerrainCollision) -- CHANGED (Phase 8)
 local TerrainMath = require(script.Parent.TerrainMath) -- CHANGED (Night review)
@@ -134,6 +142,11 @@ local SITE_PLATE_STEPS = 8 -- outline samples per plate edge (~108 m apart: fine
 -- x / z, and height above it): the real base is drawn, with everything standing on it
 local SITE_NEAR_HALF = 700 -- m
 local SITE_NEAR_HEIGHT = 300 -- m
+-- CHANGED (Far slabs fix): a copy drawn scaled about the camera floats between the camera and the ground; its sun
+-- shadows (plots, pads, the plate) landed on the true-scale ground beside it as dark rectangles. Off while scaled.
+local SITE_SHADOW_REASON = "SiteCopyScaled" -- ShadowGate reason
+local SITE_TINT = Color3.fromRGB(0, 230, 255) -- CHANGED (Far slabs fix): the copy in the /bands view
+local SITE_TINT_NAME = "SiteTint"
 
 -- CHANGED (Phase 8): props per Quality tier: draw radius (m; at most ~0.7 x TerrainMesh's near-disc radius, so props
 -- only stand on true-scale terrain), part cap and density (share of Biome's props per hectare)
@@ -241,6 +254,7 @@ type SiteScaleRecords = {
 }
 local siteRecords: SiteScaleRecords? = nil
 local siteScale = 1 -- the scale the copy is built at now
+local siteTint = false -- CHANGED (Far slabs fix): the /bands view is on (setDebugTint)
 local siteLastCamera: Vector3? = nil
 
 --============================================================================
@@ -348,6 +362,34 @@ local function applySiteScale(records: SiteScaleRecords, s: number)
 	for index, gui in records.guis do
 		gui.PixelsPerStud = records.pixels[index] / s -- the same canvas on a smaller part
 	end
+	-- CHANGED (Far slabs fix): no sun shadows while scaled (they fell on the true-scale ground beside the copy)
+	for _, part in records.parts do
+		if s < 1 then
+			ShadowGate.suppress(part, SITE_SHADOW_REASON)
+		else
+			ShadowGate.release(part, SITE_SHADOW_REASON)
+		end
+	end
+end
+
+-- CHANGED (Far slabs fix): the copy's flat cyan tint in the /bands view (on), or none.
+local function tintSite(model: Model, on: boolean)
+	local existing = model:FindFirstChild(SITE_TINT_NAME)
+	if not on then
+		if existing then
+			existing:Destroy()
+		end
+		return
+	end
+	if existing == nil then
+		local highlight = Instance.new("Highlight")
+		highlight.Name = SITE_TINT_NAME
+		highlight.FillColor = SITE_TINT
+		highlight.FillTransparency = 0
+		highlight.OutlineTransparency = 1
+		highlight.DepthMode = Enum.HighlightDepthMode.Occluded
+		highlight.Parent = model
+	end
 end
 
 local function hideSite()
@@ -451,6 +493,9 @@ local function updateSite(ctx: RenderContext.RenderContext, surfaceMode: boolean
 		siteRecords = collectScaleRecords(built) -- CHANGED (Night review): before SiteLights unparents lights
 		siteScale = 1
 		siteUntrackLights = SiteLights.track(built) -- CHANGED (Night review): lights on High only
+		if siteTint then
+			tintSite(built, true) -- CHANGED (Far slabs fix): the /bands view
+		end
 	end
 	assert(model and rootPart)
 	-- CHANGED (Night review): drawn like the terrain under it (at or a step in front of its scale factor)
@@ -560,8 +605,33 @@ function Surface.setLoadBoost(mode: string?)
 end
 
 -- CHANGED (Phase 8): F3 debug line.
+-- CHANGED (Far slabs fix): + the /bands legend while that view is on
 function Surface.summary(): string
-	return TerrainMesh.summary() .. string.format("  colliders %d", TerrainCollision.partCount())
+	return TerrainMesh.summary()
+		.. string.format("  colliders %d", TerrainCollision.partCount())
+		.. (
+			if siteTint
+				then "\n/bands: near = own colours, 1 blue, 2 red, 3 yellow, 4+ magenta, plates white, site cyan"
+				else ""
+		)
+end
+
+--[[
+	CHANGED (Far slabs fix): the /bands debug view (chat command, DebugService -> DebugView remote): each terrain band
+	in a flat colour (TerrainMesh.setDebugTint), the fallback plates white and the launch-site copy cyan, so a
+	screenshot shows which band draws what. Toggles; off by default (nothing is created while off).
+]]
+function Surface.setDebugTint(on: boolean)
+	siteTint = on
+	TerrainMesh.setDebugTint(on)
+	local model = siteModel
+	if model then
+		tintSite(model, on)
+	end
+end
+
+function Surface.debugTint(): boolean
+	return siteTint
 end
 
 -- Test hook: pure helpers for the offline tests.
