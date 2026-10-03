@@ -342,6 +342,7 @@ local function step(dt: number)
 	end
 
 	timed("ScaledSpace", function()
+		ScaledSpace.setGroundReach(Surface.groundReach()) -- CHANGED (Behind the ground): last frame's reach
 		ScaledSpace.update(ctx)
 	end)
 	updateShadowGate() -- CHANGED (Rocket shudder / orbit shadows)

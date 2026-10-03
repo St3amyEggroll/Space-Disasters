@@ -10,6 +10,7 @@
 	                                       forceScaled: no surface handover, the main menu view)
 	  ScaledSpace.isSurfaceMode()          true while the dominant body's proxy is hidden (the Surface layer draws)
 	  ScaledSpace.proxyMinAltitude(id)     current proxy -> surface handover altitude for that body (m)
+	  ScaledSpace.setGroundReach(studs)    CHANGED (Behind the ground): the 3D ground's reach; other bodies stay beyond it
 
 	Fake distance (spec 7.6): d = near + (far - near) * clamp((ln D - LOG_D_MIN) / (LOG_D_MAX - LOG_D_MIN), 0, 1),
 	monotonic in D. near / far / the largest proxy radius are scaled down to the measured draw distance (D10).
@@ -126,6 +127,11 @@ local NEAR_FLOOR_FRACTION = 0.5 -- near >= NEAR_RENDER_RADIUS * this (unless far
 local MIN_PROXY_RADIUS = 20 -- studs; floor for the largest proxy radius on absurdly small draw distances
 local DEPTH_ORDER_GAP = 1.01 -- a farther body's nearest surface stays 1% behind nearer bodies' centres
 local MAX_SIN_RADIUS = 0.9999 -- R / D at or above this means the camera is (almost) inside the body: hidden
+-- CHANGED (Behind the ground): Steamy on the Mun: "the earth was going through the terain". In surface mode the 3D
+-- ground (TerrainMesh's bands) reaches far beyond NEAR_RENDER_RADIUS, so a proxy of another body placed by the log
+-- mapping (Earth from the Mun: ~600 studs) was drawn in front of far hills. Other bodies' nearest points now stay this
+-- far beyond the ground's reach (setGroundReach), the draw budget permitting
+local GROUND_CLEAR_MARGIN = 60 -- studs
 
 -- CHANGED (Solar system): was 0.6 for a 0.27 deg visual sun; Sol's true size from Earth is ~0.57 deg now (0.38 from
 -- Mars), so this is only a floor for far away
@@ -366,7 +372,9 @@ local function nextSurfaceMode(current: boolean, altitude: number, minAlt: numbe
 end
 
 -- Fills entry.d / entry.r for active entries. `entries` must be sorted by D ascending.
-local function solveDistances(entries: { Entry }, limits: Limits)
+-- CHANGED (Behind the ground): `groundClear` (studs, 0 for none): bodies other than the dominant one keep their nearest
+-- point beyond it (the 3D ground's reach in surface mode)
+local function solveDistances(entries: { Entry }, limits: Limits, groundClear: number)
 	local nearestCentre = 0
 	for _, e in entries do
 		if not e.active then
@@ -377,6 +385,8 @@ local function solveDistances(entries: { Entry }, limits: Limits)
 		if e.dominant then
 			-- nearest surface point d * (1 - R/D) must stay outside the near zone
 			d = math.max(d, NEAR_RENDER_RADIUS / (1 - s))
+		elseif groundClear > 0 then
+			d = math.max(d, groundClear / (1 - s)) -- CHANGED (Behind the ground)
 		end
 		if nearestCentre > 0 then
 			d = math.max(d, nearestCentre * DEPTH_ORDER_GAP / (1 - s))
@@ -426,6 +436,7 @@ local limits: Limits = computeLimits(DRAW_DISTANCE_CAP, false)
 local visuals: { Visual } = {}
 local visualById: { [number]: Visual } = {}
 local surfaceMode = false
+local groundReach = 0 -- CHANGED (Behind the ground): studs the 3D ground reaches (setGroundReach)
 local surfaceBodyId: number? = nil
 -- CHANGED (Map planets): the map view is open (every base image wanted) and its listener (body id, patch index)
 local mapActive = false
@@ -1600,7 +1611,12 @@ function ScaledSpace.update(ctx: RenderContext.RenderContext, forceScaled: boole
 		table.insert(sortedEntries, visual.entry)
 	end
 	table.sort(sortedEntries, byDistance)
-	solveDistances(sortedEntries, limits)
+	-- CHANGED (Behind the ground): other bodies stay behind the 3D ground in surface mode
+	solveDistances(
+		sortedEntries,
+		limits,
+		if surfaceMode and groundReach > 0 then groundReach + GROUND_CLEAR_MARGIN else 0
+	)
 
 	-- 5. placement
 	table.clear(moveParts)
@@ -1660,6 +1676,12 @@ end
 
 function ScaledSpace.isSurfaceMode(): boolean
 	return surfaceMode
+end
+
+-- CHANGED (Behind the ground): how far (studs) the 3D ground reaches from the camera this frame (Surface.groundReach;
+-- 0: no 3D ground beyond the near zone). Other bodies' proxies are kept behind it in surface mode.
+function ScaledSpace.setGroundReach(studs: number)
+	groundReach = if studs == studs and studs > 0 then studs else 0
 end
 
 function ScaledSpace.proxyMinAltitude(bodyId: number): number
