@@ -642,6 +642,24 @@ Steamy asked for "an effects phase, to update effects of rockets and everything"
 - **Fix:** `Shared/Sim/SimInterp` blends the state before the latest step with the current one at alpha = accumulator / STEP (doubles; rotation slerped; no blend across an SOI change, a UT resync or a replaced state). FlightController's primary provider and its Effects report return that render state, so the frame, every pose, the world and the effects use one render UT that advances by the frame's dt (one step of constant latency, no overshoot). PocketController computes the frame at Camera − 2, before every camera (EvaController's and UniverseRenderer's calls reuse it; D47 unchanged). Shake: 0.0015 rad thrust, ×2 at the ground, 0.001 rad q, at 3.5 / 6 Hz with a 4/s response. Streamed (passenger) frames and the server are unchanged.
 - **Bug (Steamy, orbit):** "still a shaddow forming": five rocket-shaped shadows on the planet. Above the handover the ground is a ScaledSpace proxy with up to four nested translucent atmosphere shells a few hundred studs away; the true-scale craft's sun shadow landed on the ground proxy and on every shell (one copy per layer, offset along the sun ray). **Fix:** `Render/ShadowGate` owns CastShadow with per-reason suppression; while not in surface mode, UniverseRenderer gates the pocket's folder, RemoteCrafts, the Effects folder and every character (parts touched only on the mode change and when added), and restores every original on the way back down. PocketController's hiding uses the same gate (its own reason), so neither restores the other's stale value.
 
+### D49. Far ground "see-through" and stripes (2026-10-03)
+- **Report (Steamy):** at 250 m over the plain, "I can see through the planet on the distant ground"; the far ground looks flat and stripy, with grey and blue streaks that change as the camera moves. On foot at night, flat green slabs cut through a mountain ridge.
+- **Cause:** an offline z-buffer audit compared the drawn bands with the same meshes at true scale. It found no gaps. Scaled bands are drawn nearer than they really are, so wherever nearer ground should hide them, they appeared in front of it. That covered 2.0% / 2.6% / 2.8% of pixels on High / Medium / Low, and up to 8-10% when looking at mountains.
+  - About 85% of these pixels were deep, outward-facing skirts on coarse far leaves.
+  - Most of the rest was hill sides behind the horizon bulge.
+  - At every band swap, the band was also missing for one frame.
+- **Fix:**
+  - Every LOD seam inside a cube face is stitched (`TerrainMath.seamCode`), so skirts can stay short.
+  - Scaled bands leave out the triangles hidden behind a sphere under the lowest ground (`TerrainMath.cullChunk`). This holds for any camera within a reach set by height, camera speed and zoom distance. A band is rebuilt once the camera leaves that reach.
+  - `swapIn` poses the new band at once.
+  - A union too big for one mesh keeps the old band on screen until the new one replaces it.
+- **Result:**
+  - Wrong pixels: 0.31% / 0.31% / 0.34%, with no gaps.
+  - The view from 250 m over the site went from 2.7-3.6% to 0.2-0.4%.
+  - A mountain range seen from the ground went from 5-6% to 0.7-1.1%.
+  - What is left is thin slivers along ridge lines.
+  - The band layout and the memory budget are unchanged. Bands are rebuilt about a quarter more often while the camera moves.
+
 ## Phase 0 spike results
 
 Steamy ran all ten spikes in Studio on 2026-09-30. The raw `[SPIKE ...]` output is summarized here.

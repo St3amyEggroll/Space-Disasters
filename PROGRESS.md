@@ -41,6 +41,7 @@ Phase 2 is split into 2a/2b so you can playtest halfway through (agreed with Ste
   - Rockets settle on slopes.
   - Detail follows the graphics tier. Part plates are the fallback if EditableMesh is off.
 - **Night review (D46):** 5 independent reviews (EVA, terrain, effects and phone performance, multiplayer, full play-through) found about 40 problems. Each was checked, then fixed. Details in D46.
+- **Far ground fix (D49):** the far ground no longer shows grey walls, slabs or streaks in front of nearer hills (2-3% of the screen before, about 0.3% now). Test it by climbing 100-500 m above the base and looking at the horizon, and by standing on the ground looking at a mountain range.
 
 ## Night of 2026-10-02: how to test
 1. **Effects:**

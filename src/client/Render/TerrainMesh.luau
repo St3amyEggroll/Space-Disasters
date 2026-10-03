@@ -106,6 +106,32 @@
 	    "Preparing launch site..." cover (LOAD_BOOST_COVER_S) is up; isSettled() tells ScaledSpace when the first
 	    ground is built (its other textures wait for it at join)
 
+	CHANGED (See-through fix): Steamy, 250 m over the plain: "I can see through the planet on the distant ground", far
+	ground "flat / stripy" with grey and blue streaks that change with the camera; on foot at night: flat green slabs
+	cutting through a mountain ridge. Nothing was missing (an offline z-buffer audit found no gaps): every scaled band is
+	drawn NEARER than it is, so wherever nearer ground hides it in truth, it was drawn in front of that ground. The
+	audit (drawn bands vs the same meshes at true scale, 101 views per tier) found 2.0 % (High) / 2.6 % (Medium) /
+	2.8 % (Low) of all pixels showing a farther band over a nearer one, up to 8-10 % in views of a mountain range:
+	  * ~85 % of them were skirts: an edge's skirt hung as deep as the worst LOD crack (tens to hundreds of metres on
+	    coarse, hilly leaves) and faced outward, so the near-edge skirts of far leaves faced the camera (grey / dark
+	    walls and slabs). Every LOD seam inside a cube face is now stitched (TerrainMath.seamCode): no cracks, short
+	    skirts.
+	  * most of the rest was ground behind the horizon bulge: hill sides facing the camera, drawn as hazy grey-blue
+	    slabs along the horizon. A scaled band now leaves out the triangles that face the camera but lie behind a
+	    sphere under the lowest ground (TerrainMath.cullChunk; exact and conservative, whatever the bands' detail),
+	    for every camera within the plan's reach (CULL: by height, the camera's speed and its distance from its
+	    focus, so a zoom or an orbit stays inside it); a band is rebuilt once the camera moved most of that reach, or
+	    slowed down (a tighter reach culls more). What is left: thin slivers where a nearer hill hides farther ground
+	    (a horizon profile of the drawn ground could cull those too, but a band's culling would then depend on the
+	    detail of the bands in front of it, which changes without the culled band being rebuilt).
+	  * swapIn poses a new band at once: the builder thread resumes after the frame's update, so a swapped band was
+	    missing for a frame (a quarter of the ground, or the near band under the camera, flashing away). A union too
+	    big for one mesh keeps the old band on screen until its new mesh replaces it (it was dropped first).
+	After: 0.31 % (High) / 0.31 % (Medium) / 0.34 % (Low), at most 0.9-1.6 % (thin slivers along hill and ridge
+	lines), still no gaps; the view from 250 m over the site 2.7-3.6 % -> 0.2-0.4 %, a mountain range from the ground
+	5-6 % -> 0.7-1.1 %. About a quarter more band builds while the camera moves (the culling's refresh), no new
+	memory refusals. The band scales (bandScales, the protected depth), ring layout and memory budget are unchanged.
+
 	API (driven by Surface):
 		TerrainMesh.init(parent)
 		TerrainMesh.update(ctx, show, prebuild)   show: draw this frame (surface mode); prebuild: build but keep hidden
@@ -215,6 +241,23 @@ local PROTECT_LOW_HEIGHT = 60 -- m
 local PROTECT_LOW_DEPTH = 520 -- studs
 local PROTECT_HIGH_HEIGHT = 500 -- m
 local PROTECT_HIGH_DEPTH = 160 -- studs
+-- CHANGED (See-through fix): ground facing the camera but hidden behind the body's bulge is left out of the scaled
+-- bands (TerrainMath.bulgeOccluder / cullChunk), valid while the camera stays within the plan's reach of where
+-- it was built: reach = max(REACH_MIN, REACH_HEIGHT x height, REACH_SPEED_S x camera speed, ZOOM_COVER x the camera's
+-- distance from its focus: a zoom or an orbit moves it that far in a moment). One table (the module is near Roblox's
+-- 200-locals limit).
+local CULL = table.freeze({
+	REACH_MIN = 25, -- m
+	REACH_HEIGHT = 0.1, -- x the camera's height above the ground
+	REACH_SPEED_S = 5, -- s of the camera's current speed
+	REFRESH = 0.6, -- a band is rebuilt once the camera moved this x its reach ...
+	GAIN = 1.5, -- ... (a band that culled nothing: this x its reach, for what the bulge hides now)
+	TIGHTEN = 2.5, -- ... or once its reach is this x the reach a new plan would use (the camera slowed down)
+	ZOOM_COVER = 2.5, -- x the camera's distance from Workspace.CurrentCamera.Focus ...
+	ZOOM_MAX = 400, -- ... counted up to this many studs
+	SPEED_SMOOTH_S = 0.5, -- s: the camera speed estimate rises at once and falls with this time constant
+	SPEED_JUMP = 3000, -- m/s: a faster move is a jump (teleport, End Flight), not a speed
+})
 
 -- Detail per Quality tier: splitK (LOD distance in node sizes), leaf cap, build time per frame (s), and whether the
 -- finest band casts shadows.
@@ -281,6 +324,11 @@ type BandMesh = {
 	nearestNow: number, -- m from this frame's camera (lower bound: nearest minus how far the camera moved)
 	stitch: { [number]: number }, -- leaf key -> the seam code it was built with (TerrainMath.stitchCode)
 	light: number, -- CHANGED (Review 3): the daylight step its haze was baked for (TerrainMath.daylight)
+	-- CHANGED (See-through fix): its bulge culling (TerrainMath.cullChunk)
+	cullCam: Vec3d, -- the camera it was culled for
+	cullReach: number, -- m: valid while the camera stays this close to cullCam
+	culled: number, -- triangles left out
+	cullable: boolean, -- culled some, or reaches beyond the horizon (more may be hidden after the camera moves)
 }
 
 type Plan = {
@@ -313,6 +361,7 @@ type Plan = {
 	ringBounds: { number }?, -- the ring bounds this plan's selection uses
 	stitch: { [number]: number }, -- leaf key -> seam code (TerrainMath.stitchCode) in this plan's selection
 	light: number, -- CHANGED (Review 3): the daylight step its bands' haze is baked for
+	occluder: TerrainMath.Occluder?, -- CHANGED (See-through fix): the bulge the scaled bands are culled against
 }
 
 type Plate = {
@@ -370,6 +419,10 @@ local drawBudget = BUDGET_FRACTION * DRAW_DISTANCE_CAP -- studs, from the latest
 local protectNow = PROTECT_LOW_DEPTH
 local lightNow = 1 -- CHANGED (Review 3): the daylight step at the camera (TerrainMath.daylight), from update
 local holeHidden: { [number]: BandMesh } = {}
+-- CHANGED (See-through fix): the camera's speed (m/s, smoothed) and where it was last frame (cull reach)
+-- (and its distance from its focus, studs)
+local camSpeed: { value: number, cam: Vec3d?, time: number, zoom: number } =
+	{ value = 0, cam = nil, time = 0, zoom = 0 }
 
 local chunkCache: { [number]: Chunk } = {}
 local chunkStamp: { [number]: number } = {}
@@ -678,6 +731,9 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 		chunkStamp[key] = stamp
 		-- CHANGED (Terrain polish): seams to other bands (outgoing leaves of a union keep their plain skirts)
 		local code = if sunk and sunk[key] then 0 else p.stitch[key] or 0
+		if sunk then
+			code = TerrainMath.plainSkirts(code) -- CHANGED (See-through fix): a union keeps deep skirts (passing)
+		end
 		stitched[key] = code
 		table.insert(chunks, TerrainMath.stitchChunk(p.config, node, chunk :: Chunk, code))
 		table.insert(nodes, node)
@@ -693,6 +749,30 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 		end
 	end
 	local axes = TerrainMath.bestAxes(chunks, p.axes)
+	-- CHANGED (See-through fix): a scaled band leaves out what the bulge hides (outgoing union leaves are kept whole)
+	local culled = 0
+	local occluder = if id ~= TerrainMath.NEAR_BAND then p.occluder else nil
+	if occluder then
+		local kept: { Chunk } = table.create(#chunks)
+		local left = 0
+		for index, c in chunks do
+			local cc, n = c, 0
+			if not (sunk and sunk[nodes[index].key]) then
+				cc, n = TerrainMath.cullChunk(c, occluder)
+			end
+			kept[index] = cc
+			culled += n
+			left += cc.triangleCount
+			if index % 8 == 0 and due() then
+				return nil
+			end
+		end
+		if culled > 0 and left > 0 then
+			chunks = kept
+		else
+			culled = 0 -- nothing hidden, or everything (a band is never empty: drawn whole)
+		end
+	end
 	local fx, fy, fz, size = TerrainMath.frameBounds(chunks, nodes, drops, axes, function()
 		due()
 	end)
@@ -802,12 +882,16 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 	end
 	local count = 0
 	local nearest = math.huge -- CHANGED (Terrain polish)
+	local farthest = 0 -- CHANGED (See-through fix)
 	local cam = p.cam
 	for _, node in leaves do
 		count += 1
-		local d = math.sqrt((node.cx - cam.x) ^ 2 + (node.cy - cam.y) ^ 2 + (node.cz - cam.z) ^ 2) - node.radius
-		nearest = math.min(nearest, d)
+		local centre = math.sqrt((node.cx - cam.x) ^ 2 + (node.cy - cam.y) ^ 2 + (node.cz - cam.z) ^ 2)
+		nearest = math.min(nearest, centre - node.radius)
+		farthest = math.max(farthest, centre + node.radius)
 	end
+	-- CHANGED (See-through fix): ground beyond the horizon can be hidden by the bulge (now or after a move)
+	local horizon = TerrainMath.horizonDistance(p.config, cam)
 	return {
 		id = id,
 		mesh = mesh,
@@ -830,10 +914,25 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 		nearest = math.max(nearest, 0),
 		nearestNow = math.max(nearest, 0),
 		light = p.light, -- CHANGED (Review 3)
+		-- CHANGED (See-through fix)
+		cullCam = Vec3d.clone(cam),
+		cullReach = if occluder then occluder.reach else math.huge,
+		culled = culled,
+		cullable = occluder ~= nil and (culled > 0 or farthest > horizon),
 	}
 end
 
--- Puts a freshly built band on screen in place of the old one with the same id (nil: the band is gone).
+-- CHANGED (See-through fix): placeBands, defined below (swapIn poses a new band at once)
+local placeBands: (ctx: RenderContext.RenderContext) -> ()
+local lastPlaceCtx: RenderContext.RenderContext? = nil -- the context placeBands last ran with
+
+--[[
+	Puts a freshly built band on screen in place of the old one with the same id (nil: the band is gone).
+	CHANGED (See-through fix): the new band is posed and parented right away (placeBands with the latest frame's
+	context). It used to wait for the next placeBands while the old band was already destroyed: the builder thread
+	resumes after the frame's update, so for one frame that band was missing (the offline climb trace showed a band
+	hidden for a frame at every swap: a ~25% hole in the ground, or the near band under the camera, flashing).
+]]
 local function swapIn(bm: BandMesh?, id: number)
 	local old = bands[id]
 	if old then
@@ -841,7 +940,15 @@ local function swapIn(bm: BandMesh?, id: number)
 		bands[id] = nil
 	end
 	if bm then
-		bands[id] = bm -- parented by placeBands once it has its first pose
+		bands[id] = bm
+		-- a band hidden under the launch site's plate (hideScaledAt) stays hidden until that decides again
+		if old and holeHidden[id] == old then
+			holeHidden[id] = bm
+		end
+		local ctx = lastPlaceCtx
+		if meshesShown and ctx then
+			placeBands(ctx)
+		end
 	end
 	bandsVersion += 1 -- CHANGED (Night review)
 end
@@ -954,8 +1061,11 @@ local function runPlan(p: Plan)
 			end
 			p.pending[id] = nil
 		elseif count > MAX_MESH_LEAVES then
-			-- too big for one mesh: drop the old band instead (plates cover the gap until the plan is done)
-			if old then
+			-- too big for one mesh: its final mesh now (plates cover the gap until the plan is done)
+			-- CHANGED (See-through fix): the old band stays on screen until that mesh replaces it (swapIn), so only
+			-- its outgoing leaves leave a gap (was: the old band was dropped first, a hole over the whole band while
+			-- the new mesh was built); without room for the spare mesh it still goes first
+			if old and liveMeshes >= meshLimit then
 				destroyBand(old)
 				bands[id] = nil
 			end
@@ -1008,71 +1118,8 @@ local function replacementBands(
 	end
 end
 
---[[
-	CHANGED (Terrain polish): the seam code of a leaf (TerrainMath.stitchCode): per edge, whether its neighbour is
-	in another band and coarser (stitch to it) and whether that band, or every band of its finer leaves, is a nearer
-	one (a lower id: only a short skirt here). Edges on a cube edge keep plain skirts.
-]]
-local function seamCode(
-	config: Config,
-	node: Node,
-	targetBand: { [number]: number },
-	underBands: { [number]: { [number]: boolean } }
-): number
-	local band = targetBand[node.key]
-	local count = 2 ^ node.depth
-	local logs = { 0, 0, 0, 0 }
-	local inner = { false, false, false, false }
-	for edge = 1, 4 do
-		local x, y = node.x, node.y
-		if edge == 1 then
-			x -= 1
-		elseif edge == 2 then
-			x += 1
-		elseif edge == 3 then
-			y -= 1
-		else
-			y += 1
-		end
-		if x < 0 or y < 0 or x >= count or y >= count then
-			continue
-		end
-		local key = TerrainMath.nodeKey(config.bodyId, node.face, node.depth, x, y)
-		local other = targetBand[key]
-		local coarser = 0
-		if other == nil then
-			-- a coarser leaf above that node?
-			local depth, ax, ay = node.depth, x, y
-			while depth > 0 and other == nil do
-				depth -= 1
-				ax //= 2
-				ay //= 2
-				coarser += 1
-				other = targetBand[TerrainMath.nodeKey(config.bodyId, node.face, depth, ax, ay)]
-			end
-			if other == nil then
-				-- finer leaves: a short skirt only when all of them are in nearer bands
-				local under = underBands[key]
-				if under and next(under) ~= nil then
-					local allNearer = true
-					for id in under do
-						if id >= band then
-							allNearer = false
-							break
-						end
-					end
-					inner[edge] = allNearer
-				end
-				continue
-			end
-		end
-		if other ~= band then
-			logs[edge] = coarser
-			inner[edge] = other < band
-		end
-	end
-	return TerrainMath.stitchCode(logs, inner)
-end
+-- CHANGED (See-through fix): the seam code of a leaf is TerrainMath.seamCode (every LOD seam is stitched, skirts
+-- are short; was: only seams between bands)
 
 -- Works out which bands change for `selection` and what each one waits for (fills the plan).
 local function preparePlan(p: Plan, selection: Selection)
@@ -1112,7 +1159,7 @@ local function preparePlan(p: Plan, selection: Selection)
 	end
 	-- CHANGED (Terrain polish): seams between bands
 	for _, node in selection.leaves do
-		p.stitch[node.key] = seamCode(config, node, targetBand, underBands)
+		p.stitch[node.key] = TerrainMath.seamCode(config, node, targetBand, underBands) -- CHANGED (See-through fix)
 	end
 	local pending = p.pending
 	local covered = p.covered
@@ -1159,6 +1206,15 @@ local function preparePlan(p: Plan, selection: Selection)
 					or Vec3d.distance(p.cam, old.planCam)
 						> HAZE_REBUILD_FRACTION * math.max(old.nearest, HAZE_REBUILD_MIN)
 				)
+			-- CHANGED (See-through fix): or its bulge culling is no longer sure for this camera (or misses ground the
+			-- bulge hides now)
+			if not rebuild and old.cullable then
+				-- (one that culled nothing only for the gain: after a longer move, or a slower camera)
+				local moved = Vec3d.distance(p.cam, old.cullCam)
+				local occluder = p.occluder
+				rebuild = moved > (if old.culled > 0 then CULL.REFRESH else CULL.GAIN) * old.cullReach
+					or (occluder ~= nil and old.cullReach > CULL.TIGHTEN * occluder.reach)
+			end
 			if not rebuild then
 				for key in new do
 					if (old.stitch[key] or 0) ~= (p.stitch[key] or 0) then
@@ -1430,6 +1486,17 @@ local function maybeSelect(config: Config, cam: Vec3d)
 		ringBounds = nil,
 		stitch = {},
 		light = lightNow, -- CHANGED (Review 3)
+		-- CHANGED (See-through fix): what the bulge hides from every camera within the reach (speed and height)
+		occluder = TerrainMath.bulgeOccluder(
+			config,
+			cam,
+			math.max(
+				CULL.REACH_MIN,
+				CULL.REACH_HEIGHT * heightAboveGround(config, cam),
+				CULL.REACH_SPEED_S * camSpeed.value,
+				CULL.ZOOM_COVER * math.min(camSpeed.zoom, CULL.ZOOM_MAX)
+			)
+		),
 	}
 	plan = p
 	task.spawn(selectAndRun, p)
@@ -1450,7 +1517,9 @@ local function setMeshesShown(shown: boolean)
 end
 
 -- Places every band: true scale, or uniformly scaled about the camera to fit the draw budget / part limit.
-local function placeBands(ctx: RenderContext.RenderContext)
+-- CHANGED (See-through fix): assigned to the forward-declared local (swapIn calls it); remembers its context
+placeBands = function(ctx: RenderContext.RenderContext)
+	lastPlaceCtx = ctx
 	local frame = ctx.frame
 	local cam = ctx.cameraDominant
 	local camWs = ctx.camera.Position
@@ -1789,8 +1858,27 @@ function TerrainMesh.update(ctx: RenderContext.RenderContext, show: boolean, pre
 		forceSelect = true
 		nearSquare = nil -- CHANGED (Night review)
 		ringBounds = nil -- CHANGED (Terrain polish)
+		camSpeed.cam = nil -- CHANGED (See-through fix)
 	end
 	local cam = ctx.cameraDominant
+	-- CHANGED (See-through fix): the camera's speed (the bulge culling's reach); a jump (another body, a teleport)
+	-- is not a speed
+	do
+		local now = os.clock()
+		local last = camSpeed.cam
+		local dt = now - camSpeed.time
+		if last and dt > 0 and dt < 1 then
+			local v = Vec3d.distance(cam, last) / dt
+			if v < CULL.SPEED_JUMP then
+				camSpeed.value =
+					math.max(v, camSpeed.value + (v - camSpeed.value) * math.min(dt / CULL.SPEED_SMOOTH_S, 1))
+			end
+		end
+		camSpeed.cam = Vec3d.clone(cam)
+		camSpeed.time = now
+		local camera = Workspace.CurrentCamera
+		camSpeed.zoom = if camera then (camera.Focus.Position - ctx.camera.Position).Magnitude else 0
+	end
 	-- CHANGED (Review 3): the daylight at the camera; bands baked for another step are rebuilt by the next plan
 	if Bodies.get(config.bodyId).AtmosphereColor ~= nil then
 		local up = Frames.vectorToWorkspace(ctx.frame, Vec3d.normalize(cam))

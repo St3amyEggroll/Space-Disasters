@@ -66,6 +66,14 @@
 	    the plate when drawn scaled), and the vertex colours have slope soil / rock, high-ground and dry tints,
 	    brightness noise at three scales and cavity shading (groundColour).
 
+	CHANGED (See-through fix): far bands drawn in front of nearer ground (Render/TerrainMesh's header has the audit):
+	  * seamCode (moved here from TerrainMesh): every LOD seam inside a cube face is stitched (the finer edge onto the
+	    coarser one, whichever band each is in) and keeps only the SKIRT_INNER skirt; only cube-edge seams keep
+	    buildChunk's deep skirt, which faced the camera on far leaves and was drawn over nearer bands.
+	  * bulge culling for the scaled bands (bulgeOccluder / occluded / cullChunk): triangles facing the camera but
+	    hidden behind the body's bulge from every camera within a reach are left out of a band, so they cannot be
+	    drawn over the nearer ground that hides them (the grey-blue slabs along the horizon).
+
 	All positions are body-relative metres (body axes = universe axes) in doubles.
 ]]
 
@@ -145,6 +153,8 @@ local RING_SEARCH_STEPS = 18 -- binary search steps for the protected depth
 local RING_DEPTH_MAX = 8000 -- studs: upper end of that search
 local RING_KEEP = 0.85 -- the last plan's ring bounds stay while they protect at least this x the best depth
 local RING_TIE = 1e-6 -- m: leaf ring distances closer than this are one group (never split by a bound)
+-- CHANGED (See-through fix): ground hidden behind the body's bulge is left out of the scaled bands (cullChunk)
+local OCCLUDER_SLACK = 1 -- m: the occluding sphere stays this much below the lowest drawn ground (plus the drops)
 --============================================================================
 
 export type Config = {
@@ -244,6 +254,18 @@ export type Chunk = {
 	maxX: number,
 	maxY: number,
 	maxZ: number,
+}
+
+--[[
+	CHANGED (See-through fix): a sphere about the body centre that lies entirely below the drawn ground (bulgeOccluder),
+	seen from a camera: whatever lies behind it from EVERY camera within `reach` of `cam` is hidden by the ground.
+]]
+export type Occluder = {
+	x: number, -- camera (body-relative, m)
+	y: number,
+	z: number,
+	c2: number, -- |cam|^2 - radius^2 (> 0: the camera is outside the sphere)
+	reach: number, -- m: the camera may move this far before the culling must be redone
 }
 
 export type Triangle = { number } -- ax, ay, az, bx, by, bz, cx, cy, cz (body-relative, m), counter-clockwise from above
@@ -1613,6 +1635,234 @@ function TerrainMath.stitchCode(stitchLog2: { number }, inner: { boolean }): num
 		code += e * 16 ^ (edge - 1)
 	end
 	return code
+end
+
+--[[
+	CHANGED (See-through fix): `code` with every edge's plain (deep) skirt back, the stitches kept. For the new leaves
+	of a union mesh (TerrainMesh): next to them the outgoing leaves are still drawn, sunk, and the neighbours their
+	stitches expect are not on screen yet, so the deep skirts close those passing cracks (the union is replaced by
+	the band's final mesh within the same plan).
+]]
+function TerrainMath.plainSkirts(code: number): number
+	local out = 0
+	for edge = 1, 4 do
+		local e = math.floor(code / 16 ^ (edge - 1)) % 16
+		out += (e % 8) * 16 ^ (edge - 1)
+	end
+	return out
+end
+
+--============================================================================
+-- CHANGED (See-through fix): occlusion by the body's bulge
+--============================================================================
+--[[
+	Why: every band but the near one is drawn scaled down about the camera, i.e. nearer than it is, so where nearer
+	ground hides it (in truth) it is drawn IN FRONT of that ground instead. The worst case is the ring that holds the
+	ground beyond the horizon (factor ~0.03-0.05, drawn ~200-300 studs away): its hill sides facing the camera lie
+	behind the horizon bulge, and were drawn over the nearer ground as hazy grey-blue slabs along the horizon
+	(Steamy, 250 m over the plain: "I can see through the planet on the distant ground"). Back-face culling hides the
+	flat ground beyond the horizon, but not slopes that face the camera.
+	The fix leaves those triangles out of the scaled bands: a triangle is dropped when every vertex is hidden behind
+	a sphere that lies entirely below the drawn ground (radius: the body's lowest ground, minus the render drop, the
+	site sink and OCCLUDER_SLACK, minus `reach`). Exact and conservative:
+	  * the segment from the camera to a hidden point passes below that sphere, so it crosses the drawn (watertight:
+	    seamCode) ground before the point: the point is really hidden;
+	  * shrinking the sphere by `reach` keeps that true for every camera within `reach` of `cam` (each point of the
+	    segment moves by at most `reach`), so the bands stay right while the camera moves that far; TerrainMesh
+	    rebuilds them before it moves farther;
+	  * behind the plane of the horizon circle the hidden region is convex (the shadow cone), so a triangle whose
+	    vertices are hidden is hidden as a whole: no holes.
+	nil when the camera is (nearly) inside that sphere.
+]]
+function TerrainMath.bulgeOccluder(config: Config, cam: Vec3d, reach: number): Occluder?
+	local radius = config.radius + config.minHeight - RENDER_DROP - SITE_SINK - OCCLUDER_SLACK - math.max(reach, 0)
+	local c2 = cam.x * cam.x + cam.y * cam.y + cam.z * cam.z - radius * radius
+	if radius <= 0 or c2 <= 1 then
+		return nil
+	end
+	return { x = cam.x, y = cam.y, z = cam.z, c2 = c2, reach = math.max(reach, 0) }
+end
+
+-- CHANGED (See-through fix): distance (m) from body-relative `cam` to the horizon of the body's lowest ground (0 below it)
+function TerrainMath.horizonDistance(config: Config, cam: Vec3d): number
+	local low = config.radius + config.minHeight
+	local d2 = cam.x * cam.x + cam.y * cam.y + cam.z * cam.z - low * low
+	return if d2 > 0 then math.sqrt(d2) else 0
+end
+
+-- CHANGED (See-through fix): is body-relative point (px, py, pz) hidden behind the occluder's sphere?
+function TerrainMath.occluded(o: Occluder, px: number, py: number, pz: number): boolean
+	local dx, dy, dz = px - o.x, py - o.y, pz - o.z
+	local a = dx * dx + dy * dy + dz * dz
+	local b = o.x * dx + o.y * dy + o.z * dz
+	-- the closest approach to the centre lies strictly inside the segment, and inside the sphere
+	return b < 0 and -b < a and b * b > a * o.c2
+end
+
+-- CHANGED (See-through fix): whether cullChunk leaves out the triangle with body-relative vertices a, b, c (front
+-- face: (b - a) x (c - a)), for specs.
+function TerrainMath.triangleHidden(o: Occluder, a: Vec3d, b: Vec3d, c: Vec3d): boolean
+	local n = Vec3d.cross(Vec3d.sub(b, a), Vec3d.sub(c, a))
+	return Vec3d.dot(n, Vec3d.sub(Vec3d.new(o.x, o.y, o.z), a)) > 0
+		and TerrainMath.occluded(o, a.x, a.y, a.z)
+		and TerrainMath.occluded(o, b.x, b.y, b.z)
+		and TerrainMath.occluded(o, c.x, c.y, c.z)
+end
+
+--[[
+	CHANGED (See-through fix): `chunk` without its triangles hidden behind the occluder (every vertex occluded) that
+	face the camera, and only the vertices the kept triangles use (the mesh's box is the drawn geometry's:
+	CreateMeshPartAsync centres on it). A triangle facing away is invisible anyway; it stays, so if the camera moves
+	beyond the reach before the band is rebuilt, the ground beyond the old horizon is still there (only the culled
+	slopes are missing). Returns the chunk itself when nothing is left out, and the number of triangles left out.
+]]
+function TerrainMath.cullChunk(chunk: Chunk, o: Occluder): (Chunk, number)
+	local data = chunk.data
+	local ox, oy, oz = chunk.ox, chunk.oy, chunk.oz
+	local count = chunk.vertexCount
+	local hidden: { boolean } = table.create(count, false)
+	local any = false
+	for v = 1, count do
+		local off = (v - 1) * VERTEX_BYTES
+		local h = TerrainMath.occluded(
+			o,
+			ox + buffer.readf32(data, off),
+			oy + buffer.readf32(data, off + 4),
+			oz + buffer.readf32(data, off + 8)
+		)
+		hidden[v] = h
+		any = any or h
+	end
+	if not any then
+		return chunk, 0
+	end
+	-- the camera relative to the chunk origin
+	local cx, cy, cz = o.x - ox, o.y - oy, o.z - oz
+	local tris = chunk.tris
+	local kept: { number } = {}
+	local remap: { number } = table.create(count, 0)
+	local used = 0
+	local culled = 0
+	for t = 1, #tris, 3 do
+		local a, b, c = tris[t], tris[t + 1], tris[t + 2]
+		if hidden[a] and hidden[b] and hidden[c] then
+			local ao, bo, co = (a - 1) * VERTEX_BYTES, (b - 1) * VERTEX_BYTES, (c - 1) * VERTEX_BYTES
+			local px, py, pz = buffer.readf32(data, ao), buffer.readf32(data, ao + 4), buffer.readf32(data, ao + 8)
+			local ux, uy, uz =
+				buffer.readf32(data, bo) - px, buffer.readf32(data, bo + 4) - py, buffer.readf32(data, bo + 8) - pz
+			local wx, wy, wz =
+				buffer.readf32(data, co) - px, buffer.readf32(data, co + 4) - py, buffer.readf32(data, co + 8) - pz
+			local nx, ny, nz = uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx
+			if nx * (cx - px) + ny * (cy - py) + nz * (cz - pz) > 0 then
+				culled += 1
+				continue
+			end
+		end
+		for _, v in { a, b, c } do
+			if remap[v] == 0 then
+				used += 1
+				remap[v] = used
+			end
+			table.insert(kept, remap[v])
+		end
+	end
+	if culled == 0 then
+		return chunk, 0
+	end
+	local out = buffer.create(math.max(used, 1) * VERTEX_BYTES)
+	local minX, minY, minZ = math.huge, math.huge, math.huge
+	local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
+	for v = 1, count do
+		local n = remap[v]
+		if n > 0 then
+			local from, to = (v - 1) * VERTEX_BYTES, (n - 1) * VERTEX_BYTES
+			buffer.copy(out, to, data, from, VERTEX_BYTES)
+			local x, y, z = buffer.readf32(data, from), buffer.readf32(data, from + 4), buffer.readf32(data, from + 8)
+			minX, maxX = math.min(minX, x), math.max(maxX, x)
+			minY, maxY = math.min(minY, y), math.max(maxY, y)
+			minZ, maxZ = math.min(minZ, z), math.max(maxZ, z)
+		end
+	end
+	if used == 0 then
+		minX, minY, minZ, maxX, maxY, maxZ = 0, 0, 0, 0, 0, 0
+	end
+	return {
+		key = chunk.key,
+		depth = chunk.depth,
+		ox = ox,
+		oy = oy,
+		oz = oz,
+		vertexCount = used,
+		triangleCount = #kept // 3,
+		data = out,
+		tris = kept,
+		skirt = chunk.skirt,
+		minX = minX,
+		minY = minY,
+		minZ = minZ,
+		maxX = maxX,
+		maxY = maxY,
+		maxZ = maxZ,
+	},
+		culled
+end
+
+--[[
+	CHANGED (See-through fix): the seam code (stitchCode) of leaf `node` in a selection (targetBand: leaf key -> band
+	id; underBands: key of a split node -> the bands holding leaves under it). Moved here from TerrainMesh.
+	Was: only edges to a leaf in ANOTHER band were stitched and short; every other edge kept buildChunk's skirt, which
+	is as deep as the worst LOD crack (tens to hundreds of metres on coarse, hilly leaves) and faces outward, so the
+	near-edge skirts of far leaves face the camera. Behind the horizon bulge and behind nearer hills they are hidden
+	in truth, but their band is drawn scaled down about the camera, i.e. in front of the nearer bands that hide them:
+	the offline view audit found ~85% of the wrongly ordered pixels on skirts ("flat slabs", grey and dark walls along
+	the horizon and across far mountains). Now every edge inside a cube face is handled here:
+	  * a coarser neighbour (any band): this edge is stitched onto its straight edge (no crack at all)
+	  * a finer neighbour: that leaf stitches onto this edge
+	  * same level: identical lattice vertices
+	so these edges only keep the short SKIRT_INNER skirt (float slack). Edges on a cube edge (the neighbour is on
+	another face) keep the plain skirt.
+]]
+function TerrainMath.seamCode(
+	config: Config,
+	node: Node,
+	targetBand: { [number]: number },
+	underBands: { [number]: { [number]: boolean } }
+): number
+	local count = 2 ^ node.depth
+	local logs = { 0, 0, 0, 0 }
+	local short = { false, false, false, false }
+	for edge = 1, 4 do
+		local x, y = node.x, node.y
+		if edge == 1 then
+			x -= 1
+		elseif edge == 2 then
+			x += 1
+		elseif edge == 3 then
+			y -= 1
+		else
+			y += 1
+		end
+		if x < 0 or y < 0 or x >= count or y >= count then
+			continue -- a cube edge: the plain skirt
+		end
+		short[edge] = true
+		local other = targetBand[TerrainMath.nodeKey(config.bodyId, node.face, node.depth, x, y)]
+		if other == nil and underBands[TerrainMath.nodeKey(config.bodyId, node.face, node.depth, x, y)] == nil then
+			-- a coarser leaf above that node? (none: beyond the selection, e.g. over the horizon)
+			local depth, ax, ay, coarser = node.depth, x, y, 0
+			while depth > 0 and other == nil do
+				depth -= 1
+				ax //= 2
+				ay //= 2
+				coarser += 1
+				other = targetBand[TerrainMath.nodeKey(config.bodyId, node.face, depth, ax, ay)]
+			end
+			if other ~= nil then
+				logs[edge] = coarser
+			end
+		end
+	end
+	return TerrainMath.stitchCode(logs, short)
 end
 
 --[[
