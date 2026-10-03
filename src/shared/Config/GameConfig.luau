@@ -148,7 +148,12 @@ local GameConfig = {
 	MAP_SCALE_MIN = 0.00002, -- fully zoomed out: the whole solar system fits on screen
 	MAP_SCALE_MAX = 0.015, -- fully zoomed in (Earth's ball 1800 studs, its 68 km air shell 2040: under the part limit)
 	MAP_ZOOM_STEP = 1.2, -- scale factor per mouse-wheel notch (logarithmic zoom)
-	MAP_CAMERA_DISTANCE = 160, -- studs; the map camera never moves farther, zoom changes the scale instead
+	-- CHANGED (Map planets fix): was 160 at a 70 degree field of view. Perspective draws a ball off the view axis as an
+	-- oval (Earth under the craft looked 10% wider than tall); 1.5 x farther with a narrower view frames the focus
+	-- exactly as before (160 * tan 35 = 240 * tan 25): Earth under the craft, two zoom notches in, goes from 10.5% to
+	-- 5% wider than tall (MapBodies.spec). Not farther: quality 1 stops drawing small parts past ~300 studs (S11)
+	MAP_CAMERA_DISTANCE = 240, -- studs; the map camera never moves farther, zoom changes the scale instead
+	MAP_FIELD_OF_VIEW = 50, -- degrees (vertical), the map camera's (CHANGED (Map planets fix): was 70)
 	MAP_EXTENT = 650, -- studs around the focus where map objects are drawn (inside the map's star cube)
 	MAP_ORIGIN_OFFSET = 2000, -- studs between the pocket's slot origin and the map origin (up or down)
 	MAP_ORBIT_SEGMENTS = 256, -- line segments per orbit patch of the focused craft
