@@ -904,13 +904,8 @@ local function endFlight(record: CraftRecord, ender: Player)
 	ending[id] = nil
 end
 
-local function onEndFlight(player: Player)
-	local now = os.clock()
-	local last = lastEndFlight[player]
-	if last and now - last < END_FLIGHT_COOLDOWN_S then
-		return
-	end
-	lastEndFlight[player] = now
+-- CHANGED (Solar system): End Flight without the cooldown (also FlightService.leaveFlight, for the admin panel)
+local function endFlightFor(player: Player)
 	local record = seatedCraft(player)
 	if record == nil then
 		-- CHANGED (Phase 6): an astronaut on EVA ("Return to plot") goes home alone
@@ -937,6 +932,16 @@ local function onEndFlight(player: Player)
 		-- a passenger only leaves; the craft flies on (or stays on its pad)
 		sendHome(player, record.pocketId)
 	end
+end
+
+local function onEndFlight(player: Player)
+	local now = os.clock()
+	local last = lastEndFlight[player]
+	if last and now - last < END_FLIGHT_COOLDOWN_S then
+		return
+	end
+	lastEndFlight[player] = now
+	endFlightFor(player)
 end
 
 -- Hands a player's piloted crafts to the server simulation (pilot left, died, or lost the craft).
@@ -1341,6 +1346,12 @@ end
 -- Sends one player back to their plot (base pocket), from `fromPocket` (nil = already in the base).
 function FlightService.sendHome(player: Player, fromPocket: number?)
 	sendHome(player, fromPocket)
+end
+
+-- CHANGED (Solar system): what End Flight does for this player, without its cooldown (the admin panel ends the
+-- player's flight before spawning a new ship): a pilot / owner ends the flight, a passenger or an astronaut goes home.
+function FlightService.leaveFlight(player: Player)
+	endFlightFor(player)
 end
 
 return FlightService

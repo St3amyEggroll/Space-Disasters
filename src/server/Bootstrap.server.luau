@@ -27,6 +27,7 @@ local BOOT_ORDER = {
 	"EvaService", -- CHANGED (Phase 6): jetpack models, EvaInput, rescuing lost astronauts
 	"FlightRelayService",
 	"DebugService",
+	"AdminService", -- CHANGED (Solar system): the admin panel's spawns (uses DebugService's placements)
 }
 --============================================================================
 

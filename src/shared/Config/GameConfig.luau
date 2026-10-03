@@ -144,7 +144,8 @@ local GameConfig = {
 	DEBRIS_CHECK_INTERVAL = 1, -- s between suborbital-debris despawn checks
 	-- CHANGED (Physics feel): the three map scales are halved for the 60 km Earth so the map frames it as before
 	MAP_SCALE = 0.001, -- studs per metre when the map opens (Earth: 60 studs in radius)
-	MAP_SCALE_MIN = 0.00005, -- fully zoomed out: the whole Earth-Mun system fits on screen
+	-- CHANGED (Solar system): was 0.00005 (the Earth-Mun system); now Mars' 15,000 km orbit fits (300 studs)
+	MAP_SCALE_MIN = 0.00002, -- fully zoomed out: the whole solar system fits on screen
 	MAP_SCALE_MAX = 0.015, -- fully zoomed in (Earth's ball 1800 studs, its 68 km air shell 2040: under the part limit)
 	MAP_ZOOM_STEP = 1.2, -- scale factor per mouse-wheel notch (logarithmic zoom)
 	MAP_CAMERA_DISTANCE = 160, -- studs; the map camera never moves farther, zoom changes the scale instead
@@ -202,6 +203,10 @@ local GameConfig = {
 	--========================================================================
 	RUN_TESTS = true, -- Studio only; RunTests also checks RunService:IsStudio()
 	DEBUG_USER_IDS = table.freeze({} :: { number }), -- players allowed to use debug commands outside Studio
+	-- CHANGED (Solar system): the admin panel (F7 or its button: spawn your ship in orbit or landed on any body).
+	-- Admins: everyone in Studio; in live servers the place's creator (a group game's owner) and these user ids.
+	ADMIN_USER_IDS = table.freeze({} :: { number }),
+	ADMIN_SPAWN_COOLDOWN_S = 3, -- s between two accepted spawn requests of one player
 	DEBUG_OVERLAY_REFRESH = 0.25, -- s between overlay text refreshes
 }
 

@@ -22,6 +22,10 @@
 	CHANGED (Phase 6): onRemoving listeners (BubbleService re-points the craft's pocket), isBoardable and
 	buildFlightModel (an uncrewed craft in flight gets a real model again as a secondary craft in an astronaut's
 	pocket). Every change of record.pocketId is re-announced (CraftSpawned) so clients know which pocket draws it.
+
+	CHANGED (Solar system): CraftService.rollOut(player, design?) is the Roll Out without its cooldown, for the admin
+	panel (AdminService): it rolls out `design` (default: the player's plot design) and returns the new record, or
+	nil and the reason (also told to the player). CraftService.canFly(design) is its "can this design fly?" check.
 ]]
 
 local Players = game:GetService("Players")
@@ -152,31 +156,33 @@ local function clearPad(padTop: CFrame, halfExtent: number, height: number)
 	end
 end
 
-local function onRollOut(player: Player)
-	local now = os.clock()
-	if lastRollout[player] and now - lastRollout[player] < ROLLOUT_COOLDOWN_S then
-		return
-	end
-	lastRollout[player] = now
-
-	local plotIndex = PlotService.plotOf(player)
-	local design = BuildService.designOf(player)
-	if plotIndex == nil or design == nil then
-		return
-	end
+-- CHANGED (Solar system): why a design cannot fly (nil: it can). Was inline in onRollOut.
+local function flyProblem(design: Design): string?
 	if #design.blocks == 0 then
-		BuildService.notify(player, "Build something first!", "Error")
-		return
+		return "Build something first!"
 	end
 	local graph = CraftGraph.build(design)
 	if graph.rootId == nil then
 		-- CHANGED (Phase 2a feedback): Roll Out seats you in the pod, so a pilot seat is required
-		BuildService.notify(player, "You need a Command Pod (or Crew Cabin) to fly! Add one to your rocket.", "Error")
-		return
+		return "You need a Command Pod (or Crew Cabin) to fly! Add one to your rocket."
 	end
 	if #graph.looseIds > 0 then
-		BuildService.notify(player, `{#graph.looseIds} block(s) are not attached to the command part`, "Error")
-		return
+		return `{#graph.looseIds} block(s) are not attached to the command part`
+	end
+	return nil
+end
+
+-- CHANGED (Solar system): Roll Out without the cooldown (the admin panel too); `override` replaces the plot design.
+local function rollOut(player: Player, override: Design?): (CraftRecord?, string?)
+	local plotIndex = PlotService.plotOf(player)
+	local design = override or BuildService.designOf(player)
+	if plotIndex == nil or design == nil then
+		return nil, "You have no plot yet"
+	end
+	local problem = flyProblem(design)
+	if problem then
+		BuildService.notify(player, problem, "Error")
+		return nil, problem
 	end
 
 	-- Reuse the player's pad (replacing their previous craft), else take the first free pad.
@@ -196,7 +202,7 @@ local function onRollOut(player: Player)
 	end
 	if padIndex == nil then
 		BuildService.notify(player, "All launch pads are busy, try again soon", "Error")
-		return
+		return nil, "All launch pads are busy"
 	end
 
 	local pad = BaseLayout.pad(padIndex)
@@ -245,6 +251,16 @@ local function onRollOut(player: Player)
 	for _, listener in rolledOutListeners do
 		task.spawn(listener, player, crafts[id])
 	end
+	return crafts[id], nil
+end
+
+local function onRollOut(player: Player)
+	local now = os.clock()
+	if lastRollout[player] and now - lastRollout[player] < ROLLOUT_COOLDOWN_S then
+		return
+	end
+	lastRollout[player] = now
+	rollOut(player)
 end
 
 local function onSetBoarding(player: Player, mode: unknown)
@@ -301,6 +317,16 @@ function CraftService.Start()
 			end
 		end)
 	end)
+end
+
+-- CHANGED (Solar system): Roll Out for the admin panel (no cooldown; `design` defaults to the plot's).
+function CraftService.rollOut(player: Player, design: Design?): (CraftRecord?, string?)
+	return rollOut(player, design)
+end
+
+-- CHANGED (Solar system): can this design be rolled out and flown?
+function CraftService.canFly(design: Design): boolean
+	return flyProblem(design) == nil
 end
 
 function CraftService.get(id: number): CraftRecord?

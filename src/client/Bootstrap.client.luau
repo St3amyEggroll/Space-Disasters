@@ -28,6 +28,7 @@ local BOOT_ORDER = {
 	"UniverseRenderer",
 	"MapViewController", -- CHANGED (Phase 5): map view (M)
 	"EvaController", -- CHANGED (Phase 6): spacewalks (jetpack, walking on the Mun, the EVA HUD)
+	"AdminController", -- CHANGED (Solar system): the admin panel (F7 / the ADMIN button, admins only)
 	"MainMenuController", -- CHANGED (Phase 11): main menu and its space scene (last: opens over everything)
 }
 --============================================================================
