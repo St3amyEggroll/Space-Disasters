@@ -104,8 +104,8 @@ local SIZE_REWRITE_THRESHOLD = 0.003 -- only rewrite Size when the radius moved 
 local RIM_FRONT_MIN = 0.5 -- studs: closer than this to the body's front point the rim hides
 local RIM_MAX_PX = 6000 -- the rim hides above this on-screen radius (the limb is far off screen)
 local RIM_REWRITE = 0.02 -- gradient transparency change that rewrites the keypoints
-local GLOW_DIAMETERS = 4 -- Sol's glow image: this many ball diameters across ...
-local GLOW_MIN_PX = 110 -- ... but at least this many pixels ...
+local GLOW_DIAMETERS = 5 -- Sol's glow image: this many ball diameters across ...
+local GLOW_MIN_PX = 130 -- ... but at least this many pixels ...
 local GLOW_MAX_PX = 4000 -- ... and at most this many
 local GLOW_COLOR = Color3.fromRGB(255, 220, 160)
 -- Disc glow (until the glow image is painted, or without images): size fraction, transparency; outermost first
@@ -567,10 +567,14 @@ local function releaseImage(entry: MapImage)
 	EditableBudget.destroy(handle)
 end
 
--- Paints rows 0..size-1 a few at a time, yielding whenever PAINT_BUDGET_S of work is done this frame.
+-- Paints rows 0..size-1 a few at a time, yielding whenever PAINT_BUDGET_S of work is done this frame. Stops as
+-- soon as the map closes (nothing of the map runs while it is closed).
 local function paintRows(size: number, paintRange: (y0: number, y1: number) -> ())
 	local sliceStart = os.clock()
 	for y0 = 0, size - 1, PAINT_ROWS do
+		if not isOpen then
+			return
+		end
 		paintRange(y0, math.min(y0 + PAINT_ROWS, size) - 1)
 		if os.clock() - sliceStart >= PAINT_BUDGET_S then
 			task.wait()

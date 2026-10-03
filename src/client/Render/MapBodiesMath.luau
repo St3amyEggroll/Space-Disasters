@@ -76,7 +76,7 @@ local RIM_OUTER_POWER = 1.4 -- outer falloff exponent (below 2: a long soft tail
 local RIM_MIN = 0.18 -- rim brightness on the night limb (1 on the sunlit limb)
 local RIM_WHITEN = 0.3 -- the brightest part of the rim blends this much toward white
 -- Sol's glow image
-local GLOW_POWER = 2.4 -- falloff exponent of the halo
+local GLOW_POWER = 1.8 -- falloff exponent of the halo
 local GLOW_PEAK = 0.9 -- halo alpha at the centre
 local GLOW_CORE = 0.35 -- extra alpha of the bright core ...
 local GLOW_CORE_WIDTH = 0.18 -- ... over this fraction of the glow radius

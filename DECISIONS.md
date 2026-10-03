@@ -752,6 +752,37 @@ Steamy: "make the solar system and mars", and instead of time warp for now "do a
   - Astronauts on EVA near Sol do not burn up (crafts do).
   - Crossing an SOI edge between Earth, Sol and Mars turns the chase camera's view once (its orbit is kept in the body's axes, which change there); the craft itself is continuous.
 
+### D52. Map planets renovation (Steamy, 2026-10-03)
+Steamy: "planets dont look good" on the map (M). Every body was one flat Neon ball. He picked four improvements; all four are built in `Render/MapBodies` (instances, per frame) and `Render/MapBodiesMath` (pure maths, `MapBodies.spec`). MapViewController calls them; its lines, crafts, apsis markers, SOI spheres, Mun ghost, buttons, Tab, zoom, drag, clicks and touch are unchanged.
+
+- **1. Real surfaces.** Each planet and moon is ScaledSpace's 24 cube-sphere patches: clones of ScaledSpace's one shared patch mesh (`ScaledSpace.mapSurface`), each showing the **same** base EditableImage as the flight view (`ScaledSpace.mapPatch`, `Content.fromObject` on the same image). So surfaces cost **no Editable memory** on the map.
+  - A patch without an image shows its own average colour (like in flight). ScaledSpace tells the map (`setMapView`'s listener) whenever a base image is painted, restored, or about to be destroyed, so a texture swaps in the moment it is ready and the map never shows a destroyed image.
+  - While the map is open every body's base images are wanted, at their usual budget priorities (a landed player's own planet stays at its low "hidden" priority, so the map never pushes out terrain bands).
+  - The surface turns with the body's real axes at the map's time (`Universe.axesRotation` into the map body's axes): it spins at its day rate and matches the view from orbit. Focused on Earth the map is in Earth's turning axes, so there the sun (and the night side) moves round instead.
+  - No clouds on the map: the cloud shell and the night shell are both transparent, Roblox sorts transparent parts one by one, and white clouds could end up drawn over the night side.
+  - No EditableMesh (ScaledSpace's Ball fallback): the old coloured balls.
+- **2. Day and night side.** Roblox has one global light and the map shows several bodies around Sol, so the map lights **nothing**:
+  - In map mode `SkyLighting.updateMap` gives a flat light: Brightness 0, no sky reflections, an even ambient (`MAP_AMBIENT` 70 grey + `MAP_OUTDOOR_AMBIENT` 150 grey; guesses to tune in Studio). The pocket is hidden behind the map's opaque star box meanwhile. The sun solve keeps running, and the next normal update writes the flight values back.
+  - Every planet and moon wears a black **night shell**: 24 more patch clones at 1.004 x the radius, whose texture alpha darkens the side facing away from Sol. Brightness = 0.02 + 0.98 x smoothstep(-0.06, 0.25, c) x (0.35 + 0.65 x max(c, 0)), with c the cosine to Sol: a soft terminator, a dark night half, and a day half that falls off toward the terminator so the ball looks round (blending is in linear light).
+  - The shell's images are painted with Sol on the shell's +Y. Patch i then shades with row 2 of its cube rotation, which is one of six signed axes, so **six small images serve every patch of every body**. The whole shell turns toward Sol's real direction from that body each frame (doubles), so Earth and Mars around Sol are each lit correctly at once, and nothing is repainted at run time.
+  - Sol is not shaded: a Neon ball with a smooth glow image (5 ball diameters, at least 130 px). Stacked discs show until it is painted.
+- **3. Atmosphere glow.** A camera-facing BillboardGui just in front of Earth and Mars holds a radial rim image whose ring sits exactly on the limb (perspective: `frontLimbRadius`). Earth's is blue; Mars' is orange-pink, thinner and fainter; the Mun has none. On Medium and High a UIGradient turns toward Sol on screen: the sunlit limb is bright, the night limb faint, and the ring is even when Sol is in front of or behind the planet. Low has an even ring. Without the image the old translucent air shell shows.
+- **4. Never shrinks to nothing.** Below 4 px of on-screen radius a body becomes an icon: a round dot in its colour with its name (KSP style). It turns back into a ball above 6 px (hysteresis, so it never flickers). The icon (dot and name) is a button: click or tap focuses the body. As a ball, its name sits just under its limb (camera-space offset), so it never covers the ball; it hides on a ball bigger than 2000 px. A moon's icon hides when it is within 26 px of its parent's icon. These icons replace the old body labels; crafts' and apsis markers are unchanged.
+- **Cost per graphics tier** (`Render/Quality`, read when the map opens):
+  - Surfaces: 0 bytes on every tier (ScaledSpace's images).
+  - Map images: Low 72 KB (shell 32 px, rims 64, glow 64), Medium 288 KB (64 / 128 / 128), High 864 KB (64 / 256 / 256). They go through EditableBudget at OTHER_BASE priority with release callbacks: a released image falls back as above and is asked for again 5 s later.
+  - Painting: once, in the background, 2 ms a frame, while the map is open; kept for the next time. A new tier repaints them.
+  - Parts: 48 MeshParts per planet or moon drawn as a ball (24 ground, 24 shell) plus an invisible pick ball. Bodies drawn as icons or out of range have their parts unparented. One BulkMoveTo a frame.
+  - Nothing of this runs while the map is closed.
+- **Tests:** `MapBodies.spec` (12 tests): the shading curve; Sol's direction; the shell rotation; all 24 patches equal to their shared image pixel for pixel, and every shell pixel shading by the true angle to Sol; pixel radius and limb radii; the icon hysteresis; icons and balls at the map's real scales; moon icons; the rim gradient, rim image and Sol's glow.
+- **Previews:** three.js renders of the real Biome textures and the same formulas (scratchpad `mapviews/final`).
+- **Only Studio can confirm:**
+  - That one EditableImage can show on two MeshParts at once (the flight view's and the map's).
+  - That the flat light really looks flat and bright enough (tune `SkyLighting` `MAP_*`).
+  - That the night shell's texture alpha blends like the cloud shell's (Transparency 0.02 puts it in the transparent pass).
+  - That the rim BillboardGui (not always on top) is drawn in front of the planet as planned.
+  - Mars' 64 px base textures look soft when zoomed right in (that is what the flight view has).
+
 ## Phase 0 spike results
 
 Steamy ran all ten spikes in Studio on 2026-09-30. The raw `[SPIKE ...]` output is summarized here.
