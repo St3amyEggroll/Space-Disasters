@@ -660,6 +660,17 @@ Steamy asked for "an effects phase, to update effects of rockets and everything"
   - What is left is thin slivers along ridge lines.
   - The band layout and the memory budget are unchanged. Bands are rebuilt about a quarter more often while the camera moves.
 
+### D50. Far slabs, second pass (2026-10-03)
+- **Report (Steamy, Studio, after D49):** "same thing but slightly better". Grey slabs of far hills and mountains still showed over nearer green ground while climbing 100-250 m. There were also dark green rectangles beside the launch site.
+- **Cause:** Steamy's Studio runs at a 3000-stud draw distance, where the band scales are about 1 / 0.40 / 0.12 / 0.034. A farther band is shrunk more, so its hill faces land in front of nearer ground. Ordering by scale alone can't fix this, because each ring's part limit forces its scale to shrink outward. D49's bulge culling only removed what the lowest ground hides. Its 5 s speed reach (475 m at 95 m/s) removed almost nothing during a climb.
+- **Fix:**
+  - Each plan builds a conservative horizon profile of the nearer drawn ground, binned by angle and distance and lowered by a margin for one LOD step.
+  - Scaled bands drop triangles that the profile hides from every camera within the reach.
+  - The speed reach is now 1 s.
+  - The launch-site copy casts no shadows while it is drawn scaled. This is the likely cause of the dark rectangles, but it is not confirmed.
+  - `/bands` chat command: tints each band (band 1 blue, band 2 red, band 3 yellow, further bands magenta; plates white, site copy cyan) so screenshots show which band is on top.
+- **Audit (High, 3000 draw distance, a climb):** far-over-near pixels went from 0.23% to 0.15% on average. The screenshot-like view went from 0.6-1.0% to 0.1-0.3%. No holes. Thin slivers remain along ridge lines and the horizon. Medium and Low were not re-audited.
+
 ## Phase 0 spike results
 
 Steamy ran all ten spikes in Studio on 2026-09-30. The raw `[SPIKE ...]` output is summarized here.
