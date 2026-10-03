@@ -57,7 +57,9 @@ local function describe(value: any): string
 end
 
 -- Runs every spec and reports through `log`. Never throws.
-function TestKit.run(specs: { Spec }, log: (string) -> ()): Result
+-- CHANGED (Studio test timeout): `yield` (optional) runs between tests, so a long run never trips Roblox's script
+-- timeout (RunTests passes task.wait; the Lune runner passes nothing)
+function TestKit.run(specs: { Spec }, log: (string) -> (), yield: (() -> ())?): Result
 	local result: Result = { passed = 0, failed = 0, failures = {} }
 
 	for _, spec in specs do
@@ -143,6 +145,9 @@ function TestKit.run(specs: { Spec }, log: (string) -> ()): Result
 				local line = spec.name .. " > " .. test.name .. ": " .. tostring(err)
 				table.insert(result.failures, line)
 				log(FAIL_PREFIX .. test.name .. ": " .. tostring(err))
+			end
+			if yield then
+				yield()
 			end
 		end
 	end

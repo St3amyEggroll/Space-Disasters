@@ -71,10 +71,13 @@ local RenderContext = require(script.Parent.RenderContext)
 -- per Quality tier: the default mode and the SurfaceGui canvas (pixels across a face; at 1080p and a 70-degree view
 -- a face spans ~1500 pixels on screen, the far ground is hazy)
 type TierParams = { mode: string, canvas: number }
+-- CHANGED (Far layer off by default): Steamy in Studio: "i cant see any of the planet really ... untill i go to space":
+-- the backdrop drew no ground in Studio (the band copies do not show in the ViewportFrames), so every tier defaults to
+-- "mesh" again until that is fixed; /farground still switches to "layer" for testing
 local TIERS: { [string]: TierParams } = {
 	Low = { mode = "mesh", canvas = 384 },
-	Medium = { mode = "layer", canvas = 640 },
-	High = { mode = "layer", canvas = 1024 },
+	Medium = { mode = "mesh", canvas = 640 },
+	High = { mode = "mesh", canvas = 1024 },
 }
 local HALF_SIZE: FarLayerMath.HalfSizeParams = {
 	fraction = 0.8, -- x the draw distance (the face centres stay drawn)

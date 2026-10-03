@@ -206,7 +206,9 @@ local GameConfig = {
 	--========================================================================
 	-- Debug and tests
 	--========================================================================
-	RUN_TESTS = true, -- Studio only; RunTests also checks RunService:IsStudio()
+	-- CHANGED (Studio test timeout): off by default: the specs run offline (tools/check.sh) and in Studio they cost
+	-- seconds of server time at every Play. Set true to run them in Studio (Studio only; RunTests also checks IsStudio)
+	RUN_TESTS = false,
 	DEBUG_USER_IDS = table.freeze({} :: { number }), -- players allowed to use debug commands outside Studio
 	-- CHANGED (Solar system): the admin panel (F7 or its button: spawn your ship in orbit or landed on any body).
 	-- Admins: everyone in Studio; in live servers the place's creator (a group game's owner) and these user ids.

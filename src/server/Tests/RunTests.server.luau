@@ -38,8 +38,12 @@ task.delay(START_DELAY_S, function()
 		return a.name < b.name
 	end)
 
+	-- CHANGED (Studio test timeout): yield a frame after every test (the terrain specs run for seconds; one long
+	-- unbroken run hit "Script timeout: exhausted allowed execution time")
 	local result = TestKit.run(specs, function(line: string)
 		print("[Tests] " .. line)
+	end, function()
+		task.wait()
 	end)
 	if result.failed > 0 then
 		warn(`[Tests] {result.failed} FAILED`)
