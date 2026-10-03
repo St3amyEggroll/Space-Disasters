@@ -11,6 +11,11 @@
 	  /bands                  CHANGED (Far slabs fix): toggle your terrain debug view (each terrain band in a flat
 	                          colour, plates white, the launch-site copy cyan; DebugView remote, client only)
 	"Your craft" = the craft you pilot, else the craft whose pocket you are in.
+	CHANGED (Solar system): bodies are earth/homeworld, mun/moon, mars and sol/sun (orbit only: /hover over Sol
+	burns the craft up). The two placements are exported for the admin panel (AdminService), so it uses exactly
+	these implementations: DebugService.placeInOrbit(record, bodyId, altKm, radial?) and
+	DebugService.placeHovering(record, bodyId, metres, up?, onGround?) (onGround: the craft's lowest point, not its
+	bounding radius, sits `metres` above the ground: a gentle landing).
 ]]
 
 local Players = game:GetService("Players")
@@ -38,6 +43,7 @@ local RailsService = require(script.Parent.RailsService) -- CHANGED (Phase 5)
 local PREFIX = "/"
 local HOVER_OTHER_BODY_DIR = Vec3d.normalize(Vec3d.new(-1, 0.25, 0.15)) -- CHANGED (Phase 8): /hover spot on another body
 local HOVER_MAX_M = 20000
+local GROUND_CLEARANCE = 1 -- CHANGED (Solar system): m between the lowest hull point and the ground (onGround)
 --============================================================================
 
 local DebugService = {}
@@ -78,6 +84,25 @@ local function setState(record: CraftService.CraftRecord, state: FlightModel.Cra
 	end
 end
 
+-- CHANGED (Solar system): the /orbit placement, exported (header). `radial` = where on the orbit (body axes).
+local function placeInOrbit(record: CraftService.CraftRecord, bodyId: number, altKm: number, radial: Vec3d.Vec3d?)
+	local sim = record.sim :: FlightModel.Craft
+	local body = Bodies.get(bodyId)
+	local radius = body.Radius + altKm * 1000
+	local dir = radial or if bodyId == sim.state.bodyId then Vec3d.normalize(sim.state.pos) else Vec3d.new(1, 0, 0)
+	local east = Vec3d.cross(dir, Vec3d.new(0, 1, 0))
+	if Vec3d.length(east) < 1e-6 then
+		east = Vec3d.new(0, 0, 1)
+	end
+	east = Vec3d.normalize(east)
+	local state = FlightModel.copyState(sim.state)
+	state.bodyId = bodyId
+	state.pos = Vec3d.scale(dir, radius)
+	state.vel = Vec3d.scale(east, Universe.circularSpeed(bodyId, radius))
+	state.angVel = Vector3.zero
+	setState(record, state)
+end
+
 local function orbit(player: Player, args: { string })
 	local record = craftOf(player)
 	local altKm = tonumber(args[2])
@@ -95,21 +120,37 @@ local function orbit(player: Player, args: { string })
 		end
 		bodyId = body.Id
 	end
-	local body = Bodies.get(bodyId)
-	local radius = body.Radius + altKm * 1000
-	local radial = if bodyId == sim.state.bodyId then Vec3d.normalize(sim.state.pos) else Vec3d.new(1, 0, 0)
-	local east = Vec3d.cross(radial, Vec3d.new(0, 1, 0))
-	if Vec3d.length(east) < 1e-6 then
-		east = Vec3d.new(0, 0, 1)
+	placeInOrbit(record, bodyId, altKm, nil)
+	notify:FireClient(player, `Orbit set: {altKm} km around {Bodies.get(bodyId).DisplayName}`)
+end
+
+-- CHANGED (Solar system): the /hover placement, exported (header). `up` = the ground spot (body axes).
+local function placeHovering(
+	record: CraftService.CraftRecord,
+	bodyId: number,
+	metres: number,
+	up: Vec3d.Vec3d?,
+	onGround: boolean?
+)
+	local sim = record.sim :: FlightModel.Craft
+	local dir = up or if bodyId == sim.state.bodyId then Vec3d.normalize(sim.state.pos) else HOVER_OTHER_BODY_DIR
+	local ground = SurfaceHeight.groundPoint(bodyId, dir)
+	local lift = metres + sim.physics.boundingRadius
+	if onGround then
+		-- upright: craft +Y is up, so the lowest hull point is the smallest hull Y
+		local lowest = 0
+		for _, point in sim.physics.hull do
+			lowest = math.min(lowest, point.pos.Y)
+		end
+		lift = metres + GROUND_CLEARANCE - lowest
 	end
-	east = Vec3d.normalize(east)
 	local state = FlightModel.copyState(sim.state)
 	state.bodyId = bodyId
-	state.pos = Vec3d.scale(radial, radius)
-	state.vel = Vec3d.scale(east, Universe.circularSpeed(bodyId, radius))
+	state.pos = Vec3d.add(ground, Vec3d.scale(dir, lift))
+	state.vel = Vec3d.zero()
+	state.rot = Frames.surfaceRotation(dir)
 	state.angVel = Vector3.zero
 	setState(record, state)
-	notify:FireClient(player, `Orbit set: {altKm} km around {body.DisplayName}`)
 end
 
 -- CHANGED (Phase 8): /hover <m> [body]: upright and at rest, <m> metres (plus the craft's radius) above the terrain.
@@ -130,15 +171,7 @@ local function hover(player: Player, args: { string })
 		end
 		bodyId = body.Id
 	end
-	local up = if bodyId == sim.state.bodyId then Vec3d.normalize(sim.state.pos) else HOVER_OTHER_BODY_DIR
-	local ground = SurfaceHeight.groundPoint(bodyId, up)
-	local state = FlightModel.copyState(sim.state)
-	state.bodyId = bodyId
-	state.pos = Vec3d.add(ground, Vec3d.scale(up, metres + sim.physics.boundingRadius))
-	state.vel = Vec3d.zero()
-	state.rot = Frames.surfaceRotation(up)
-	state.angVel = Vector3.zero
-	setState(record, state)
+	placeHovering(record, bodyId, metres, nil, false)
 	notify:FireClient(player, `Hovering {metres} m above {Bodies.get(bodyId).DisplayName}'s ground`)
 end
 
@@ -224,6 +257,26 @@ local function onChatted(player: Player, message: string)
 	elseif command == "bands" then
 		debugView:FireClient(player, "bands") -- CHANGED (Far slabs fix): the client toggles its terrain band view
 	end
+end
+
+-- CHANGED (Solar system): the /orbit and /hover placements for the admin panel (header)
+function DebugService.placeInOrbit(
+	record: CraftService.CraftRecord,
+	bodyId: number,
+	altKm: number,
+	radial: Vec3d.Vec3d?
+)
+	placeInOrbit(record, bodyId, altKm, radial)
+end
+
+function DebugService.placeHovering(
+	record: CraftService.CraftRecord,
+	bodyId: number,
+	metres: number,
+	up: Vec3d.Vec3d?,
+	onGround: boolean?
+)
+	placeHovering(record, bodyId, metres, up, onGround)
 end
 
 function DebugService.Init()

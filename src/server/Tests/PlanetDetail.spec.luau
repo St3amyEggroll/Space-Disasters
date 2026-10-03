@@ -219,7 +219,9 @@ return function(t: TestKit.Context)
 				if body.Kind ~= "Star" and not body.VisualOnly then
 					images += 24
 					local base = PlanetDetail.baseTexture(tier, body.Id)
-					t.expectTrue(base.size >= 128, "base textures keep at least 128 px (the Mun's craters)")
+					-- CHANGED (Solar system): Mars' base images are 64 px (a dot from Earth; its slots carry the detail)
+					local minimum = if body.Id == Bodies.MARS then 64 else 128
+					t.expectTrue(base.size >= minimum, "base textures keep at least 128 px (the Mun's craters)")
 					local slot = PlanetDetail.slotTexture(tier, body.Id)
 					if slot then
 						t.expectTrue(slot.size >= base.size, "slots are sharper")

@@ -209,6 +209,22 @@ function Frames.relativeTransform(from: Frame, to: Frame, bodyOffset: Vec3d?): C
 	return CFrame.new(t) * q
 end
 
+--[[
+	CHANGED (Solar system): relativeTransform between frames whose reference bodies have DIFFERENT axes (Earth, Sol
+	and Mars each turn their own way). `fromRefInTo` = from.refPos re-expressed relative to to.refBodyId (doubles,
+	Universe.toBody); `axes` = rotation from from-body axes to to-body axes (Universe.axesRotation).
+	Universe.frameTransform picks this or relativeTransform.
+]]
+function Frames.relativeTransformAxes(from: Frame, to: Frame, fromRefInTo: Vec3d, axes: CFrame): CFrame
+	local d = Vec3d.sub(fromRefInTo, to.refPos)
+	local dx = to.r00 * d.x + to.r10 * d.y + to.r20 * d.z
+	local dy = to.r01 * d.x + to.r11 * d.y + to.r21 * d.z
+	local dz = to.r02 * d.x + to.r12 * d.y + to.r22 * d.z
+	local q = to.refRotInv * Frames.rotationOnly(axes) * from.refRot
+	local t = to.slotOrigin + Vector3.new(dx, dy, dz) - q:VectorToWorldSpace(from.slotOrigin)
+	return CFrame.new(t) * q
+end
+
 --============================================================================
 -- Surface frames
 --============================================================================

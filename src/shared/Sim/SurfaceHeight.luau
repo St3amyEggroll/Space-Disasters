@@ -201,7 +201,7 @@ end
 -- Heightmap lattice (CHANGED Phase 8)
 --============================================================================
 local lattices: { [number]: Lattice } = {}
-local noLattice: { [number]: boolean } = {} -- bodies without a surface (the visual-only Sun)
+local noLattice: { [number]: boolean } = {} -- bodies without a surface (CHANGED (Solar system): Sol, a star)
 
 -- The lattice of a body with a surface (nil for the visual-only Sun).
 local function latticeOf(bodyId: number): Lattice?
@@ -212,7 +212,7 @@ local function latticeOf(bodyId: number): Lattice?
 		return nil
 	end
 	local body = Bodies.get(bodyId)
-	if body.Radius <= 0 then
+	if not Bodies.hasSurface(bodyId) then -- CHANGED (Solar system): Sol has a radius but no ground
 		noLattice[bodyId] = true
 		return nil
 	end

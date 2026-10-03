@@ -166,6 +166,9 @@ local function broadcast(dt: number)
 			local distance: number
 			if state.bodyId == refBody then
 				distance = Vec3d.distance(state.pos, refPos)
+			elseif not Universe.sameAxes(state.bodyId, refBody) then
+				-- CHANGED (Solar system): bodies with other axes (Sol / Earth / Mars): the full conversion
+				distance = Vec3d.distance(Universe.toBody(state.bodyId, refBody, ut, state.pos), refPos)
 			else
 				local offset = bodyOffset(state.bodyId, refBody)
 				local dx = state.pos.x + offset.x - refPos.x

@@ -207,11 +207,11 @@ local function groundContact(state: State, dt: number, thrust: Vec3d?): boolean
 end
 
 -- Patched conics: moves the state into another body's frame when it crossed an SOI boundary.
+-- CHANGED (Solar system): in the new body's axes (Universe.transferState)
 local function checkSoi(state: State)
-	local newBody, newPos = Universe.soiTransition(state.bodyId, state.pos, state.ut)
+	local newBody = Universe.soiTransition(state.bodyId, state.pos, state.ut)
 	if newBody ~= state.bodyId then
-		state.vel = Vec3d.add(state.vel, Universe.bodyVelocityOffset(state.bodyId, newBody, state.ut))
-		state.pos = newPos
+		state.pos, state.vel = Universe.transferState(state.bodyId, newBody, state.ut, state.pos, state.vel)
 		state.bodyId = newBody
 	end
 end
@@ -295,8 +295,8 @@ function Eva.setBody(state: State, bodyId: number)
 	if bodyId == state.bodyId then
 		return
 	end
-	state.pos = Vec3d.add(state.pos, Universe.bodyOffset(state.bodyId, bodyId, state.ut))
-	state.vel = Vec3d.add(state.vel, Universe.bodyVelocityOffset(state.bodyId, bodyId, state.ut))
+	-- CHANGED (Solar system): full conversion (the bodies may have different axes)
+	state.pos, state.vel = Universe.transferState(state.bodyId, bodyId, state.ut, state.pos, state.vel)
 	state.bodyId = bodyId
 end
 

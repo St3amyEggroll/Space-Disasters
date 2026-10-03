@@ -282,9 +282,9 @@ local function craftRelative(craftId: number, s: Eva.State, now: number): (Vec3d
 	if craft.bodyId == s.bodyId then
 		return craft.pos, craft.vel
 	end
-	local offset = Universe.bodyOffset(craft.bodyId, s.bodyId, s.ut)
-	local velOffset = Universe.bodyVelocityOffset(craft.bodyId, s.bodyId, s.ut)
-	return Vec3d.add(craft.pos, offset), Vec3d.add(craft.vel, velOffset)
+	-- CHANGED (Solar system): full conversion (the bodies may turn different axes)
+	local pos, vel = Universe.transferState(craft.bodyId, s.bodyId, s.ut, craft.pos, craft.vel)
+	return pos, vel
 end
 
 local function findNearest(s: Eva.State, now: number)

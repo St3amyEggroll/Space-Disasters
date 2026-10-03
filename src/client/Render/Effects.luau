@@ -2001,12 +2001,18 @@ local function processCraft(record: CraftRecord, report: CraftReport, ctx: Rende
 	-- Pose and air drift (doubles until the subtraction, invariant I1)
 	local bodyOffset: Vec3d? = nil
 	local drift = baseDrift
+	-- CHANGED (Solar system): a craft on a body with other axes than the frame's (Sol / Earth / Mars) is turned
+	-- into the frame body's axes (Universe.cframeInFrame / vectorToBody)
+	local sameAxes = Universe.sameAxes(s.bodyId, frame.refBodyId)
 	if s.bodyId ~= frame.refBodyId then
 		bodyOffset = Universe.bodyOffset(s.bodyId, frame.refBodyId, ctx.ut)
 		local bodyVel = Universe.bodyVelocityOffset(s.bodyId, frame.refBodyId, ctx.ut)
 		drift = Frames.vectorToWorkspace(frame, Vec3d.sub(bodyVel, frameVelocity))
 	end
-	local craftCFrame = report.craftCFrame or Frames.cframeToWorkspace(frame, s.pos, s.rot, bodyOffset)
+	local craftCFrame = report.craftCFrame
+		or if sameAxes
+			then Frames.cframeToWorkspace(frame, s.pos, s.rot, bodyOffset)
+			else Universe.cframeInFrame(frame, s.bodyId, s.pos, s.rot, ctx.ut)
 	record.craftCFrame = craftCFrame
 	record.drift = drift
 	record.centerWs = craftCFrame:PointToWorldSpace(info.center)
@@ -2017,7 +2023,10 @@ local function processCraft(record: CraftRecord, report: CraftReport, ctx: Rende
 	local density = Atmosphere.density(s.bodyId, altitude)
 	local airSpeed = Vec3d.length(s.vel)
 	-- CHANGED (Effects v2): the craft's velocity relative to the air, and its own workspace velocity
-	local airVelocityWs = Frames.vectorToWorkspace(frame, s.vel)
+	local airVelocityWs = Frames.vectorToWorkspace(
+		frame,
+		if sameAxes then s.vel else Universe.vectorToBody(s.bodyId, frame.refBodyId, ctx.ut, s.vel)
+	)
 	record.velocityWs = drift + airVelocityWs
 	record.pressure = pressure
 
@@ -2125,7 +2134,9 @@ local function processCraft(record: CraftRecord, report: CraftReport, ctx: Rende
 	end
 
 	-- Re-entry heating and the transonic vapour cone
-	local heat = EffectsMath.heatFactor(density, airSpeed)
+	-- CHANGED (Solar system): the glow's speed gate follows the body (Mars' orbits are 0.44 x as fast)
+	local atmosphere = body.Atmosphere
+	local heat = EffectsMath.heatFactor(density, airSpeed, if atmosphere then atmosphere.HeatSpeedScale else 1)
 	local vapor = EffectsMath.vaporFactor(airSpeed, pressure)
 	if (heat > TUNE.AERO_MIN or vapor > TUNE.AERO_MIN) and airSpeed > 1 then
 		updateAero(record, airVelocityWs, craftCFrame, info, heat, vapor)

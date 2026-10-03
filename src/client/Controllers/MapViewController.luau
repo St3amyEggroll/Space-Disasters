@@ -36,6 +36,16 @@
 	CHANGED (Phase 11): the map's labels use UI/Theme fonts and colours (KSP skin); the title card moved to the top-left
 	corner so the flight HUD's altimeter stays visible at the top centre, and its help line shows the current map key.
 	Behaviour is unchanged.
+
+	CHANGED (Solar system): the whole solar system. Sol is a body ball like the others (no SOI sphere: its SOI is
+	infinite), Earth's and Mars' orbits around Sol are drawn like the Mun's around Earth, with their SOI spheres, and
+	the map zooms out far enough for Mars' 15,000 km orbit (GameConfig.MAP_SCALE_MIN). The map is drawn in the FOCUS
+	body's frame (its centre and axes; a focused craft: its SOI body): every body turns its own axes (Universe), so
+	focused on Earth everything Earth-side is exactly as before, and focused on Sol the planets' orbits stand still.
+	Lines and markers of other bodies are turned into those axes (Universe.axesRotation / toBody) at their anchor
+	time, so patched conics through Earth -> Sol -> Mars join up. Focus buttons (Sol, Earth, Mun, Mars, Craft) and
+	zoom buttons (- / +, also for touch) sit under the title card; Tab cycles the focus too. A body picked with a
+	button or Tab is framed: the zoom fits its SOI (Sol: the planets' orbits).
 ]]
 
 local GuiService = game:GetService("GuiService")
@@ -129,6 +139,11 @@ local FONT_BOLD = Theme.Fonts.Bold
 local FONT_HEAVY = Theme.Fonts.ExtraBold
 local OVERLAY_MARGIN = 12 -- px from the top-left corner (below the Roblox top bar)
 local OVERLAY_HEIGHT = 46
+-- CHANGED (Solar system): focus / zoom buttons and framing
+local FOCUS_BUTTON_SIZE = Vector2.new(56, 26) -- px
+local FOCUS_BUTTON_GAP = 4
+local FOCUS_KEY = Enum.KeyCode.Tab -- cycles the focus (Roblox's player list also opens on Tab)
+local FRAME_FILL = 0.45 -- a framed body's SOI (Sol: the farthest planet orbit) spans this share of MAP_EXTENT
 --============================================================================
 
 type FocusKind = "Body" | "Craft"
@@ -144,6 +159,7 @@ type Line = {
 	bodyId: number,
 	anchorUT: number?, -- nil = the body's position now
 	offset: Vector3, -- anchor offset from the map origin this frame
+	rotation: CFrame, -- CHANGED (Solar system): the anchor body's axes in the map body's axes (at the anchor time)
 }
 
 type BodyVisual = {
@@ -214,6 +230,7 @@ local dragDistance = 0
 local pilotBinding = false -- CHANGED (Phase 11): FlightController's binding handles the map key meanwhile
 local cachedOwnId: number? = nil -- own craft, resolved once per frame
 local cachedOwnState: State? = nil
+local mapBodyId = Bodies.HOMEWORLD -- CHANGED (Solar system): the body whose centre and axes the map is drawn in
 
 --============================================================================
 -- Instances
@@ -277,6 +294,7 @@ local function newLine(capacity: number, color: Color3, width: number): Line
 		bodyId = Bodies.HOMEWORLD,
 		anchorUT = nil,
 		offset = Vector3.zero,
+		rotation = CFrame.identity, -- CHANGED (Solar system)
 	}
 end
 
@@ -335,6 +353,131 @@ end
 local function destroyMarker(marker: Marker)
 	marker.gui:Destroy()
 	marker.attachment:Destroy()
+end
+
+local function setFocus(kind: FocusKind, id: number)
+	focus = { kind = kind, id = id }
+	predictTimer = math.huge
+	otherTimer = math.huge
+	lineTimer = math.huge
+end
+
+-- CHANGED (Solar system): the radius (m) that frames a body: its SOI, or (Sol) its farthest planet's orbit.
+local function frameRadius(bodyId: number): number
+	local body = Bodies.get(bodyId)
+	if body.SoiRadius < math.huge then
+		return body.SoiRadius
+	end
+	local farthest = body.Radius * 4
+	for _, child in Bodies.children(bodyId) do
+		local orbit = child.Orbit
+		if orbit then
+			farthest = math.max(farthest, orbit.Radius + child.SoiRadius)
+		end
+	end
+	return farthest
+end
+
+-- CHANGED (Solar system): focus a body and zoom so it fills the view (focus buttons and Tab).
+local function frameBody(bodyId: number)
+	setFocus("Body", bodyId)
+	scale = math.clamp(EXTENT * FRAME_FILL / frameRadius(bodyId), SCALE_MIN, SCALE_MAX)
+end
+
+-- CHANGED (Solar system): the focus order of the buttons and Tab: Sol, the planets and moons, then your craft.
+local FOCUS_ORDER: { number } = {}
+for _, body in Bodies.List do
+	table.insert(FOCUS_ORDER, body.Id)
+end
+table.sort(FOCUS_ORDER, function(a: number, b: number): boolean
+	local ka = if a == Bodies.SUN then 0 elseif a == Bodies.MARS then 3 else a
+	local kb = if b == Bodies.SUN then 0 elseif b == Bodies.MARS then 3 else b
+	if ka == kb then
+		return a < b
+	end
+	return ka < kb
+end)
+
+local function cycleFocus()
+	local f = focus
+	if f == nil or f.kind == "Craft" then
+		frameBody(FOCUS_ORDER[1])
+		return
+	end
+	local index = table.find(FOCUS_ORDER, f.id) or 0
+	if index >= #FOCUS_ORDER then
+		local own = cachedOwnId
+		if own then
+			setFocus("Craft", own)
+			scale = MAP_SCALE
+			return
+		end
+		index = 0
+	end
+	frameBody(FOCUS_ORDER[index + 1])
+end
+
+local function zoomBy(notches: number)
+	scale = math.clamp(scale * ZOOM_STEP ^ notches, SCALE_MIN, SCALE_MAX)
+end
+
+-- CHANGED (Solar system): one small focus / zoom button (Theme look) in the overlay's button row.
+local function overlayButton(parent: Instance, text: string, order: number, onActivated: () -> ())
+	local button = Instance.new("TextButton")
+	button.Name = text
+	button.LayoutOrder = order
+	button.Size = UDim2.fromOffset(FOCUS_BUTTON_SIZE.X, FOCUS_BUTTON_SIZE.Y)
+	button.BackgroundColor3 = PANEL_COLOR
+	button.BackgroundTransparency = Theme.Transparency.Panel
+	button.BorderSizePixel = 0
+	button.AutoButtonColor = true
+	button.Font = FONT_BOLD
+	button.TextSize = Theme.TextSizes.Small
+	button.TextColor3 = TITLE_COLOR
+	button.Text = text
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, Theme.Radius.Button)
+	corner.Parent = button
+	local stroke = Instance.new("UIStroke")
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	stroke.Color = PANEL_STROKE
+	stroke.Thickness = Theme.Stroke.Thin
+	stroke.Parent = button
+	button.Activated:Connect(onActivated)
+	button.Parent = parent
+end
+
+local function buildFocusButtons(gui: ScreenGui)
+	local row = Instance.new("Frame")
+	row.Name = "FocusButtons"
+	row.BackgroundTransparency = 1
+	row.Position = UDim2.fromOffset(OVERLAY_MARGIN, OVERLAY_MARGIN + OVERLAY_HEIGHT + 24)
+	row.Size = UDim2.fromOffset(0, FOCUS_BUTTON_SIZE.Y)
+	row.AutomaticSize = Enum.AutomaticSize.X
+	local layout = Instance.new("UIListLayout")
+	layout.FillDirection = Enum.FillDirection.Horizontal
+	layout.Padding = UDim.new(0, FOCUS_BUTTON_GAP)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = row
+	for index, bodyId in FOCUS_ORDER do
+		overlayButton(row, Bodies.get(bodyId).DisplayName, index, function()
+			frameBody(bodyId)
+		end)
+	end
+	overlayButton(row, "Craft", #FOCUS_ORDER + 1, function()
+		local own = cachedOwnId
+		if own then
+			setFocus("Craft", own)
+			scale = MAP_SCALE
+		end
+	end)
+	overlayButton(row, "-", #FOCUS_ORDER + 2, function()
+		zoomBy(-2)
+	end)
+	overlayButton(row, "+", #FOCUS_ORDER + 3, function()
+		zoomBy(2)
+	end)
+	row.Parent = gui
 end
 
 local function buildOverlay()
@@ -399,15 +542,9 @@ local function buildOverlay()
 	scaleLabel.TextStrokeTransparency = 0.5
 	scaleLabel.Text = ""
 	scaleLabel.Parent = gui
+	buildFocusButtons(gui) -- CHANGED (Solar system)
 	gui.Parent = player:WaitForChild("PlayerGui")
 	overlay = gui
-end
-
-local function setFocus(kind: FocusKind, id: number)
-	focus = { kind = kind, id = id }
-	predictTimer = math.huge
-	otherTimer = math.huge
-	lineTimer = math.huge
 end
 
 local function buildMap()
@@ -499,9 +636,9 @@ end
 -- Universe -> map
 --============================================================================
 
+-- CHANGED (Solar system): relative to the map body (its centre and axes), was the universe frame
 local function absolute(bodyId: number, pos: Vec3d, ut: number): Vec3d
-	local b = Universe.bodyPosition(bodyId, ut)
-	return Vec3d.new(b.x + pos.x, b.y + pos.y, b.z + pos.z)
+	return Universe.toBody(bodyId, mapBodyId, ut, pos)
 end
 
 -- Map offset (studs, relative to the map origin) of an absolute position, given the focus position.
@@ -542,37 +679,45 @@ local function craftState(id: number, ut: number): State?
 end
 
 local function focusAbsolute(ut: number): (Vec3d, string)
+	-- CHANGED (Solar system): the focus also picks the map body (a craft: its SOI body; a body: itself)
 	local f = focus
 	if f and f.kind == "Craft" then
 		local state = craftState(f.id, ut)
 		if state then
 			local design = RemoteCraftRenderer.design(f.id)
-			return absolute(state.bodyId, state.pos, ut), if design then design.name else "Craft"
+			mapBodyId = state.bodyId
+			return Vec3d.clone(state.pos), if design then design.name else "Craft"
 		end
 		focus = nil
 		f = nil
 	end
 	if f and f.kind == "Body" then
-		return Universe.bodyPosition(f.id, ut), Bodies.get(f.id).DisplayName
+		mapBodyId = f.id
+		return Vec3d.zero(), Bodies.get(f.id).DisplayName
 	end
 	local id = ownCraft()
 	if id then
 		setFocus("Craft", id)
 		local state = craftState(id, ut)
 		if state then
-			return absolute(state.bodyId, state.pos, ut), "Your craft"
+			mapBodyId = state.bodyId
+			return Vec3d.clone(state.pos), "Your craft"
 		end
 	end
 	setFocus("Body", Bodies.HOMEWORLD)
-	return Universe.bodyPosition(Bodies.HOMEWORLD, ut), Bodies.get(Bodies.HOMEWORLD).DisplayName
+	mapBodyId = Bodies.HOMEWORLD
+	return Vec3d.zero(), Bodies.get(Bodies.HOMEWORLD).DisplayName
 end
 
 --============================================================================
 -- Lines
 --============================================================================
 
+-- CHANGED (Solar system): also the anchor body's axes in the map body's axes (line.rotation), both at the anchor UT
 local function anchorOffset(line: Line, ut: number, focusAbs: Vec3d): Vector3
-	local anchorAbs = Universe.bodyPosition(line.bodyId, line.anchorUT or ut)
+	local at = line.anchorUT or ut
+	local anchorAbs = Universe.bodyOffset(line.bodyId, mapBodyId, at)
+	line.rotation = Universe.axesRotation(line.bodyId, mapBodyId, at)
 	return toMap(anchorAbs, focusAbs)
 end
 
@@ -591,11 +736,12 @@ local function layoutLine(line: Line, ut: number, focusAbs: Vec3d)
 		return
 	end
 	local previousNear = false
+	local rotation = line.rotation -- CHANGED (Solar system)
 	for index = 1, line.count do
 		local p = points[index]
 		local localPos = Vector3.new(p.x * scale, p.y * scale, p.z * scale)
 		attachments[index].Position = localPos
-		local near = (offset + localPos).Magnitude <= EXTENT
+		local near = (offset + rotation:VectorToWorldSpace(localPos)).Magnitude <= EXTENT
 		if index > 1 then
 			beams[index - 1].Enabled = near or previousNear
 		end
@@ -612,7 +758,7 @@ local function placeLine(line: Line, ut: number, focusAbs: Vec3d)
 	end
 	local offset = anchorOffset(line, ut, focusAbs)
 	line.offset = offset
-	line.anchor.CFrame = CFrame.new(origin + offset)
+	line.anchor.CFrame = CFrame.new(origin + offset) * line.rotation -- CHANGED (Solar system): turned
 end
 
 -- How far an open orbit around a body is drawn (m from its centre).
@@ -804,7 +950,7 @@ local function updateBodies(ut: number, focusAbs: Vec3d)
 	end
 	for id, visual in bodyVisuals do
 		local body = visual.body
-		local center = toMap(Universe.bodyPosition(id, ut), focusAbs)
+		local center = toMap(Universe.bodyOffset(id, mapBodyId, ut), focusAbs) -- CHANGED (Solar system)
 		setBall(visual.ball, center, body.Radius * scale, true)
 		local atmosphere = body.Atmosphere
 		if atmosphere then
@@ -816,7 +962,8 @@ local function updateBodies(ut: number, focusAbs: Vec3d)
 		local meet = encounterUT[id]
 		if visual.ghost then
 			if meet and body.Orbit then
-				setBall(visual.ghost, toMap(Universe.bodyPosition(id, meet), focusAbs), body.Radius * scale, true)
+				local ghostAbs = Universe.bodyOffset(id, mapBodyId, meet) -- CHANGED (Solar system)
+				setBall(visual.ghost, toMap(ghostAbs, focusAbs), body.Radius * scale, true)
 			else
 				setBall(visual.ghost, Vector3.zero, 0, false)
 			end
@@ -893,8 +1040,9 @@ local function updateMarkers(ut: number, focusAbs: Vec3d)
 			marker.gui.Enabled = false
 			continue
 		end
-		local bodyPos = Universe.bodyPosition(apsis.bodyId, apsis.anchorUT or ut)
-		local offset = toMap(Vec3d.add(bodyPos, apsis.rel), focusAbs)
+		-- CHANGED (Solar system): turned into the map body's axes like its line
+		local apsisAbs = Universe.toBody(apsis.bodyId, mapBodyId, apsis.anchorUT or ut, apsis.rel)
+		local offset = toMap(apsisAbs, focusAbs)
 		local visible = offset.Magnitude <= EXTENT and apsis.ut >= ut
 		marker.gui.Enabled = visible
 		if visible then
@@ -971,8 +1119,8 @@ local function step(dt: number)
 
 	focusLabel.Text = `MAP  <font color="{FOCUS_HEX}">{focusName}</font>` -- CHANGED (Phase 11): Theme title colour
 	-- CHANGED (Phase 11): the help line names the current map key
-	local helpText =
-		`Drag: rotate   Wheel: zoom   Click a body or craft: focus   {Keybinds.label("MapView")} / Esc: close`
+	-- CHANGED (Solar system): Tab cycles the focus
+	local helpText = `Drag: rotate   Wheel: zoom   Click / Tab: focus   {Keybinds.label("MapView")} / Esc: close`
 	if helpLabel.Text ~= helpText then
 		helpLabel.Text = helpText
 	end
@@ -1017,6 +1165,11 @@ local function onInputBegan(input: InputObject, processed: boolean)
 		MapViewController.close()
 		return
 	end
+	-- CHANGED (Solar system): Tab cycles the focus (it may arrive processed: Roblox's player list uses it too)
+	if input.KeyCode == FOCUS_KEY and isOpen then
+		cycleFocus()
+		return
+	end
 	if processed then
 		return
 	end
@@ -1056,8 +1209,7 @@ local function onInputChanged(input: InputObject, processed: boolean)
 		yaw -= delta.X * sensitivity
 		pitch = math.clamp(pitch + delta.Y * sensitivity * pitchSign, -PITCH_LIMIT, PITCH_LIMIT)
 	elseif kind == Enum.UserInputType.MouseWheel and not processed then
-		local notches = input.Position.Z
-		scale = math.clamp(scale * ZOOM_STEP ^ notches, SCALE_MIN, SCALE_MAX)
+		zoomBy(input.Position.Z) -- CHANGED (Solar system): shared with the zoom buttons
 	end
 end
 

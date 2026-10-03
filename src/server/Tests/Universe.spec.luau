@@ -117,8 +117,10 @@ return function(t: TestKit.Context)
 		t.expectNear(upLow.z, 1, 1e-9)
 		local high = Vec3d.new(0, 0, home.Radius + 50000)
 		local upHigh = Universe.pocketUp(Bodies.HOMEWORLD, high, ut)
-		local sun = Universe.sunDirection(ut)
+		-- CHANGED (Solar system): toward Sol's real position from the pocket (0.3 deg of parallax from Earth's centre)
+		local sun = Universe.sunDirectionFrom(Bodies.HOMEWORLD, high, ut)
 		t.expectNear(Vec3d.dot(upHigh, sun), 1, 1e-9)
+		t.expectNear(Vec3d.dot(upHigh, Universe.sunDirection(ut)), 1, 1e-4)
 		-- continuous through the blend
 		local previous = upLow
 		for altitude = 500, 20000, 100 do

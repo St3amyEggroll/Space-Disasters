@@ -27,6 +27,14 @@
 	STAR_RETRY_S from update (the panels stay starless black meanwhile); images made before a refusal or a failed
 	paint are destroyed (they leaked before).
 
+	CHANGED (Solar system):
+	  * the stars are fixed to Sol's axes (the heliocentric frame), so they slowly turn across Earth's and Mars'
+	    night skies (each planet turns its own axes) and stay put when a craft changes SOI;
+	  * a body whose air has a SkyColor (Mars) gets its whole sky from the cube, in the air and on the ground (Roblox's
+	    sky is blue): by day the panels are that colour (butterscotch) without stars, fading to black space with
+	    stars by night and with altitude (day = sun elevation at the camera, air = 1 at the ground .. 0 at the top).
+	    Risk: the cube (0.9 x draw distance) can cover the farthest terrain triangles at the horizon there.
+
 	API:
 		SkyCube.init(parent)                                  -- parent: workspace.ClientUniverse
 		SkyCube.update(ctx, surfaceMode, handoverAltitude)    -- every frame, after ScaledSpace
@@ -39,7 +47,10 @@ local Workspace = game:GetService("Workspace")
 
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies)
 local EditableBudget = require(script.Parent.EditableBudget) -- CHANGED (Memory budget)
+local Frames = require(ReplicatedStorage.Shared.Math.Frames) -- CHANGED (Solar system)
 local RenderContext = require(script.Parent.RenderContext)
+local Universe = require(ReplicatedStorage.Shared.Sim.Universe) -- CHANGED (Solar system)
+local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d) -- CHANGED (Solar system)
 
 --============================================================================
 -- Tunables
@@ -64,6 +75,11 @@ local PANEL_DEPTH = 0.2 -- studs
 local PANEL_OVERLAP = 0.01 -- panels are 1% larger than their grid cell so no hairline seams show
 local STAR_RETRY_S = 20 -- CHANGED (Memory budget): s between attempts after the memory budget refused the stars
 local BUDGET_OWNER = "SkyCube" -- CHANGED (Memory budget)
+-- CHANGED (Solar system): painted day sky (bodies whose air has a SkyColor: Mars)
+local SKY_DAY_ELEVATION0 = -0.08 -- sin of the sun's elevation where the day sky starts ...
+local SKY_DAY_ELEVATION1 = 0.12 -- ... and is full
+local SKY_AIR_POWER = 0.7 -- sky amount = day * air^this (as Roblox's sky thins with height)
+local SKY_COLOR_STEP = 0.01 -- rewrite panel colours only when the sky amount moved more than this
 --============================================================================
 
 local SkyCube = {}
@@ -85,6 +101,8 @@ local starRetryAt = math.huge -- CHANGED (Memory budget): when to try the stars 
 local halfSize = 0
 local opacity = -1
 local shown = false
+local skyAmount = -1 -- CHANGED (Solar system): 0 = space (black, stars) .. 1 = a painted day sky
+local skyTint: Color3? = nil
 
 -- Deterministic generator (LCG), [0, 1).
 local rngState = SEED
@@ -262,13 +280,46 @@ local function layout(h: number)
 	halfSize = h
 end
 
+-- CHANGED (Solar system): the stars fade out as the painted day sky comes in (skyAmount)
 local function setOpacity(value: number)
 	opacity = value
 	local transparency = 1 - value
+	local starTransparency = 1 - value * (1 - math.max(skyAmount, 0))
 	for _, panel in panels do
 		panel.background.BackgroundTransparency = transparency
-		panel.stars.ImageTransparency = transparency
+		panel.stars.ImageTransparency = starTransparency
 	end
+end
+
+-- CHANGED (Solar system): panel colour for a sky amount (0 = space) in a body's SkyColor, then the stars' fade.
+local function setSky(amount: number, tint: Color3?)
+	skyAmount = amount
+	skyTint = tint
+	local color = if tint then SPACE_COLOR:Lerp(tint, amount) else SPACE_COLOR
+	for _, panel in panels do
+		panel.background.BackgroundColor3 = color
+	end
+	setOpacity(math.max(opacity, 0))
+end
+
+-- CHANGED (Solar system): the day-sky amount at the camera on a body whose air has a SkyColor (header).
+local function daySkyAmount(ctx: RenderContext.RenderContext, body: Bodies.Body): number
+	local atmosphere = body.Atmosphere
+	if atmosphere == nil or atmosphere.Top <= 0 or ctx.altitude >= atmosphere.Top then
+		return 0
+	end
+	local air = 1 - math.clamp(ctx.altitude / atmosphere.Top, 0, 1)
+	-- radial up at the camera, in the frame body's axes (the sun direction's axes)
+	local centre = Universe.bodyOffset(body.Id, ctx.frame.refBodyId, ctx.ut)
+	local radial = Vec3d.sub(ctx.cameraAbs, centre)
+	local length = Vec3d.length(radial)
+	if length < 1 then
+		return 0
+	end
+	local sun = Frames.vectorFromWorkspace(ctx.frame, ctx.sunDirection)
+	local elevation = Vec3d.dot(radial, sun) / length
+	local day = smoothstep(SKY_DAY_ELEVATION0, SKY_DAY_ELEVATION1, elevation)
+	return day * air ^ SKY_AIR_POWER
 end
 
 function SkyCube.init(parent: Folder)
@@ -290,12 +341,16 @@ function SkyCube.init(parent: Folder)
 end
 
 -- Space opacity for this frame (header).
+-- CHANGED (Solar system): a body with a SkyColor (Mars) is always fully covered (the cube paints its day sky too).
 local function spaceOpacity(ctx: RenderContext.RenderContext, surfaceMode: boolean, handover: number): number
+	local body = Bodies.find(ctx.dominantBodyId)
+	local atmosphere = if body then body.Atmosphere else nil
+	if atmosphere and atmosphere.SkyColor then
+		return 1
+	end
 	if surfaceMode then
 		return 0
 	end
-	local body = Bodies.find(ctx.dominantBodyId)
-	local atmosphere = if body then body.Atmosphere else nil
 	if atmosphere == nil then
 		return 1
 	end
@@ -328,6 +383,13 @@ function SkyCube.update(ctx: RenderContext.RenderContext, surfaceMode: boolean, 
 		end
 	end
 	local forced = override
+	-- CHANGED (Solar system): the painted day sky (Mars); none in the map view (override)
+	local dominant = Bodies.find(ctx.dominantBodyId)
+	local tint = if dominant and dominant.Atmosphere and not forced then dominant.Atmosphere.SkyColor else nil
+	local amount = if tint and dominant then daySkyAmount(ctx, dominant) else 0
+	if tint ~= skyTint or math.abs(amount - skyAmount) > SKY_COLOR_STEP or (amount == 0 and skyAmount ~= 0) then
+		setSky(amount, tint)
+	end
 	local target = if forced then forced.opacity else spaceOpacity(ctx, surfaceMode, handover)
 	if target <= 0 then
 		if shown then
@@ -350,7 +412,10 @@ function SkyCube.update(ctx: RenderContext.RenderContext, surfaceMode: boolean, 
 		layout(h)
 	end
 	-- universe axes (stars fixed in space), centred on the camera
-	local base = CFrame.new(ctx.camera.Position) * ctx.frame.refRotInv
+	-- CHANGED (Solar system): Sol's axes (the heliocentric frame), whatever body the pocket is on
+	local base = CFrame.new(ctx.camera.Position)
+		* ctx.frame.refRotInv
+		* Universe.axesRotation(Bodies.ROOT, ctx.frame.refBodyId, ctx.ut)
 	for index, panel in panels do
 		cframes[index] = base * panel.localCFrame
 	end

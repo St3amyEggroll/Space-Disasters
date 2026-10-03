@@ -24,13 +24,20 @@
 	beyond the limb fewer shells overlap the farther out you look, so the halo fades outward (pale near the ground,
 	deeper blue above). Low keeps the single original shell.
 
+	CHANGED (Solar system): Mars. Base images 64 px on every tier (24 x 16 KB: a reddish dot from Earth needs no
+	more; ~370 m per pixel from low Mars orbit, sharper than Earth's 128 px Low base), detail slots 2 x 256 on
+	Medium and 2 x 512 on High (only while Mars is the dominant body; Earth's slots stay the largest). Mars' thin
+	air gets its own thinner, butterscotch shells (atmosphereLayersFor). Totals: Low 3.4 MB, Medium 5.4 MB, High
+	13.4 MB.
+
 	API:
 		PlanetDetail.tierSpec(tier): TierSpec
 		PlanetDetail.baseTexture(tier, bodyId): TextureSpec          CHANGED (Memory budget): per tier
 		PlanetDetail.slotTexture(tier, bodyId): TextureSpec?        nil: no detail slots for that body
 		PlanetDetail.slotCount(tier, bodyId): number                CHANGED (Memory budget): slots on that body
 		PlanetDetail.cloudTexture(tier): TextureSpec?               nil: no clouds on this tier
-		PlanetDetail.atmosphereLayers(tier): { AtmosphereLayer }    innermost first
+		PlanetDetail.atmosphereLayers(tier): { AtmosphereLayer }    innermost first (Earth's)
+		PlanetDetail.atmosphereLayersFor(tier, bodyId)              CHANGED (Solar system): that body's shells
 		PlanetDetail.closeness(m, ux, uy, uz): number               cos of the angle from u to patch m (1 inside it)
 		PlanetDetail.desiredPatches(rotations, ux, uy, uz, count): { number }   nearest patches to unit direction u
 		PlanetDetail.slotsWanted(altitude, radius): boolean          is the camera low enough for detail slots
@@ -70,14 +77,17 @@ local BASE_TEXTURES: { [Tier]: { [number]: TextureSpec } } = {
 	Low = {
 		[Bodies.HOMEWORLD] = { size = 128, cells = 32, detail = 1 },
 		[Bodies.MOON] = { size = 128, cells = 32, detail = 1 },
+		[Bodies.MARS] = { size = 64, cells = 16, detail = 1 }, -- CHANGED (Solar system)
 	},
 	Medium = {
 		[Bodies.HOMEWORLD] = { size = 128, cells = 32, detail = 1 },
 		[Bodies.MOON] = { size = 128, cells = 32, detail = 1 },
+		[Bodies.MARS] = { size = 64, cells = 16, detail = 1 }, -- CHANGED (Solar system)
 	},
 	High = {
 		[Bodies.HOMEWORLD] = { size = 256, cells = 64, detail = 1 },
 		[Bodies.MOON] = { size = 128, cells = 32, detail = 1 },
+		[Bodies.MARS] = { size = 64, cells = 16, detail = 1 }, -- CHANGED (Solar system)
 	},
 }
 local DEFAULT_BASE_TEXTURE: TextureSpec = { size = 128, cells = 32, detail = 1 }
@@ -86,16 +96,18 @@ local SLOT_TEXTURES: { [Tier]: { [number]: TextureSpec } } = {
 	Medium = {
 		[Bodies.HOMEWORLD] = { size = 512, cells = 128, detail = 2 },
 		[Bodies.MOON] = { size = 256, cells = 64, detail = 2 },
+		[Bodies.MARS] = { size = 256, cells = 64, detail = 2 }, -- CHANGED (Solar system)
 	},
 	High = {
 		[Bodies.HOMEWORLD] = { size = 512, cells = 128, detail = 3 },
 		[Bodies.MOON] = { size = 256, cells = 64, detail = 3 },
+		[Bodies.MARS] = { size = 512, cells = 128, detail = 3 }, -- CHANGED (Solar system)
 	},
 }
 local SLOT_COUNTS: { [Tier]: { [number]: number } } = {
 	Low = {},
-	Medium = { [Bodies.HOMEWORLD] = 2, [Bodies.MOON] = 2 },
-	High = { [Bodies.HOMEWORLD] = 4, [Bodies.MOON] = 2 },
+	Medium = { [Bodies.HOMEWORLD] = 2, [Bodies.MOON] = 2, [Bodies.MARS] = 2 }, -- CHANGED (Solar system): Mars
+	High = { [Bodies.HOMEWORLD] = 4, [Bodies.MOON] = 2, [Bodies.MARS] = 2 },
 }
 local CLOUD_TEXTURES: { [Tier]: TextureSpec } = {
 	High = { size = 128, cells = 32, detail = 1 },
@@ -120,6 +132,22 @@ local ATMOSPHERE: { [Tier]: { AtmosphereLayer } } = {
 		{ scale = 1.045, transparency = 0.94, color = Color3.fromRGB(95, 145, 250) },
 	},
 }
+-- CHANGED (Solar system): other bodies' shells, innermost first: thinner (Mars' air is 5 km deep, a twelfth of its
+-- radius against Earth's 8 km for 60 km) and tinted from the body's AtmosphereColor (`tint` = share of that colour)
+local THIN_ATMOSPHERE: { [Tier]: { { scale: number, transparency: number, tint: number } } } = {
+	Low = { { scale = 1.03, transparency = 0.84, tint = 1 } },
+	Medium = {
+		{ scale = 1.01, transparency = 0.9, tint = 0.7 },
+		{ scale = 1.03, transparency = 0.9, tint = 1 },
+	},
+	High = {
+		{ scale = 1.005, transparency = 0.93, tint = 0.55 },
+		{ scale = 1.012, transparency = 0.93, tint = 0.75 },
+		{ scale = 1.021, transparency = 0.94, tint = 0.9 },
+		{ scale = 1.03, transparency = 0.95, tint = 1 },
+	},
+}
+local THIN_PALE = Color3.fromRGB(245, 225, 205) -- the inner shells blend toward this (a pale haze near the ground)
 local ATMOSPHERE_MAX_LAYERS = 4
 local MAX_SHELL_SCALE = 1.045 -- the largest shell of any tier (ScaledSpace sizes proxies so it fits 2048 studs)
 local PATCHES = 24
@@ -167,6 +195,30 @@ end
 
 function PlanetDetail.atmosphereLayers(tier: Tier): { AtmosphereLayer }
 	return ATMOSPHERE[tier] or ATMOSPHERE[FALLBACK_TIER]
+end
+
+-- CHANGED (Solar system): a body's atmosphere shells (Earth: atmosphereLayers; others: thin, in their own colour).
+local thinCache: { [string]: { AtmosphereLayer } } = {}
+function PlanetDetail.atmosphereLayersFor(tier: Tier, bodyId: number): { AtmosphereLayer }
+	if bodyId == Bodies.HOMEWORLD then
+		return PlanetDetail.atmosphereLayers(tier)
+	end
+	local key = `{tier}:{bodyId}`
+	local cached = thinCache[key]
+	if cached then
+		return cached
+	end
+	local color = Bodies.get(bodyId).AtmosphereColor or THIN_PALE
+	local layers: { AtmosphereLayer } = {}
+	for _, layer in THIN_ATMOSPHERE[tier] or THIN_ATMOSPHERE[FALLBACK_TIER] do
+		table.insert(layers, {
+			scale = layer.scale,
+			transparency = layer.transparency,
+			color = THIN_PALE:Lerp(color, layer.tint),
+		})
+	end
+	thinCache[key] = layers
+	return layers
 end
 
 -- Angular closeness of unit direction (ux, uy, uz) to patch `m` (row-major cube rotation): the cosine of the angle

@@ -54,6 +54,8 @@ local MAX_TRANSITIONS_PER_ADVANCE = 4
 local TRANSITION_GUARD_S = 1 -- s after an SOI change before the boundary just crossed is searched again
 local PREDICT_ORBITS = 2 -- elliptic patches are searched this many periods ahead for events
 local PREDICT_HORIZON = 40000 -- s; open orbits (and long periods) are searched this far ahead
+-- CHANGED (Solar system): ... around Sol (infinite SOI) this far: an Earth -> Mars transfer takes ~41,500 s
+local PREDICT_HORIZON_ROOT = 150000
 local CLEAR_FLAGS = bit32.bor(FlightModel.FLAG_BURNING, FlightModel.FLAG_CONTACT)
 -- CHANGED (Night review): terrain impacts (predict's `terrain` option)
 local TERRAIN_MAX_STEPS = 1500 -- samples of the height above the ground per patch at most (map: every 0.5 s)
@@ -310,8 +312,14 @@ function Rails.transition(rails: Rails, ut: number): Rails
 	if newBody == rails.bodyId then
 		return Rails.rebase(rails, ut)
 	end
-	local newVel = Vec3d.add(s.vel, Universe.bodyVelocityOffset(rails.bodyId, newBody, ut))
-	return Rails.new(newBody, ut, newPos, newVel, s.rot, rails.angVel, rails.com, rails.throttle, rails.flags)
+	-- CHANGED (Solar system): velocity and attitude in the new body's axes too (Universe.transferState)
+	local _, newVel, rotation = Universe.transferState(rails.bodyId, newBody, ut, s.pos, s.vel)
+	local rot, angVel = s.rot, rails.angVel
+	if rotation then
+		rot = rotation * rot
+		angVel = rotation:VectorToWorldSpace(angVel)
+	end
+	return Rails.new(newBody, ut, newPos, newVel, rot, angVel, rails.com, rails.throttle, rails.flags)
 end
 
 --[[
@@ -446,7 +454,11 @@ function Rails.predict(bodyId: number, pos: Vec3d, vel: Vec3d, ut: number, optio
 		local body = Bodies.get(currentBody)
 		local mu = body.Mu
 		local el = Kepler.elements(mu, r, v)
-		local window = if el.kind == "Elliptic" then math.min(el.period * orbits, horizon) else horizon
+		-- CHANGED (Solar system): a longer horizon around Sol unless the caller set one
+		local bodyHorizon = if opts.horizon == nil and body.SoiRadius == math.huge
+			then math.max(horizon, PREDICT_HORIZON_ROOT)
+			else horizon
+		local window = if el.kind == "Elliptic" then math.min(el.period * orbits, bodyHorizon) else bodyHorizon
 		local guard = if index > 1 then TRANSITION_GUARD_S else 0
 		local endT = math.huge
 		local reason: PatchEnd = "None"
@@ -512,8 +524,8 @@ function Rails.predict(bodyId: number, pos: Vec3d, vel: Vec3d, ut: number, optio
 		local target = nextBody :: number
 		local rs, vs = Kepler.propagate(mu, r, v, endT)
 		local tAbs = currentUT + endT
-		local newPos = Vec3d.add(rs, Universe.bodyOffset(currentBody, target, tAbs))
-		local newVel = Vec3d.add(vs, Universe.bodyVelocityOffset(currentBody, target, tAbs))
+		-- CHANGED (Solar system): full conversion (Earth, Sol and Mars have their own axes)
+		local newPos, newVel = Universe.transferState(currentBody, target, tAbs, rs, vs)
 		justLeft = if reason == "Exit" then currentBody else nil
 		currentBody, currentUT, r, v = target, tAbs, newPos, newVel
 	end

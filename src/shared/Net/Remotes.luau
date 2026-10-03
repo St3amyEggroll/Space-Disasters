@@ -90,6 +90,9 @@ local DEFINITIONS: { [string]: Kind } = {
 	--   pocket triggered a seat prompt on the cosmetic copy of a craft flying in another pocket; seatBlockId is the
 	--   id of the block holding the seat (one seat per block). The server checks everything, seats the player in the
 	--   real model and sends them an identity PocketTransfer base -> flight pocket (it placed the character itself).
+	-- CHANGED (Solar system): the admin panel (AdminService, rules in Shared/Sim/AdminSpawn)
+	AdminSpawn = "Reliable", -- client -> server ({ bodyId: number, mode: "Orbit" | "Landed", altitudeKm: number,
+	--   spot: string }) an admin spawns his ship in orbit or landed; answered with Notify
 }
 
 local Remotes = {}
