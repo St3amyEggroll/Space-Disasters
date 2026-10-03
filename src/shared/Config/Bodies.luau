@@ -57,7 +57,9 @@ local SUN_DESTROY_RADII = 2.5 -- crafts closer than this many Sol radii from its
 local EARTH_ORBIT_RADIUS = 10000000 -- m (10,000 km)
 local EARTH_SOI_TARGET = 1000000 -- m: Sol's mu is derived so Earth's Laplace SOI is exactly this (2.2x Mun orbit)
 local EARTH_ORBIT_PHASE_AT_UT0 = math.rad(180) -- rad around Sol from +X toward +Z (Earth on Sol's -X side)
-local EARTH_DAY_TILT_DEG = 15 -- the sun's declination over Earth's equator (the old SUN_ELEVATION)
+-- CHANGED (No tilt): Steamy: "get rid of the solar system tilt, dont like it". Every planet's equator lies in the plane of
+-- the orbits around Sol, so the map shows one flat solar system (was 15 deg: the old SUN_ELEVATION)
+local EARTH_DAY_TILT_DEG = 0 -- the sun's declination over Earth's equator
 local EARTH_DAY_PHASE_AT_UT0 = math.rad(30) -- the sun's hour angle at UT 0 (the old SUN_PHASE_AT_UT0: morning)
 local MARS_RADIUS = 30000 -- m, half of Earth's
 local MARS_SURFACE_G = 3.73 -- m/s^2, 0.38 g
@@ -70,7 +72,7 @@ local MARS_ATMO_RHO0 = 0.025 -- kg/m^3 (2% of Earth's: drag and heating are weak
 local MARS_ATMO_SCALE_HEIGHT = 1000 -- m
 local MARS_HEAT_SPEED_SCALE = 0.44 -- re-entry glow speed gate x this (Mars' orbit speed is 0.44 x Earth's)
 local MARS_DAY_S = 1230 -- s: a Mars day is a little longer than Earth's, as in real life
-local MARS_DAY_TILT_DEG = 20 -- the sun's declination over Mars' equator (northern summer)
+local MARS_DAY_TILT_DEG = 0 -- the sun's declination over Mars' equator (CHANGED (No tilt): was 20)
 local MARS_DAY_PHASE_AT_UT0 = math.rad(-20)
 --============================================================================
 

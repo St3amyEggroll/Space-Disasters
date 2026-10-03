@@ -100,27 +100,23 @@ return function(t: TestKit.Context)
 		t.expectTrue(MUN_ORBIT.Period < EARTH_ORBIT.Period / math.sqrt(3) / 2, "Mun orbit stable")
 	end)
 
-	t.test(
-		"lighting: Sol's real direction from Earth is exactly the old Earth sun (day and night unchanged)",
-		function()
-			for _, ut in { 0, 123.4, 600, 5000, 40000, 123456.7 } do
-				local fromEarth = Universe.sunDirectionFrom(Bodies.HOMEWORLD, Vec3d.zero(), ut)
-				local phi = math.rad(30) + 2 * math.pi * ut / 1200
-				local c = math.cos(math.rad(15))
-				local old = Vec3d.new(c * math.cos(phi), math.sin(math.rad(15)), c * math.sin(phi))
-				t.expectNear(Vec3d.distance(fromEarth, old), 0, 1e-9)
-				t.expectNear(Vec3d.distance(Universe.sunDirection(ut), old), 0, 1e-12)
-			end
-			-- noon / midnight at the base, seen from the base itself (0.3 degrees of parallax at most)
-			local base = Vec3d.scale(Frames.surfaceUp(0, 0), EARTH.Radius)
-			local ut = 777
-			Universe.setSunPhaseOffset(Universe.sunOffsetForBaseHour(12, ut))
-			t.expectTrue(Vec3d.dot(Universe.sunDirectionFrom(Bodies.HOMEWORLD, base, ut), Vec3d.new(1, 0, 0)) > 0.9)
-			Universe.setSunPhaseOffset(Universe.sunOffsetForBaseHour(0, ut))
-			t.expectTrue(Vec3d.dot(Universe.sunDirectionFrom(Bodies.HOMEWORLD, base, ut), Vec3d.new(1, 0, 0)) < -0.9)
-			Universe.setSunPhaseOffset(0)
+	t.test("lighting: Sol's real direction from Earth is the old Earth sun, now on the equator (no tilt)", function()
+		for _, ut in { 0, 123.4, 600, 5000, 40000, 123456.7 } do
+			local fromEarth = Universe.sunDirectionFrom(Bodies.HOMEWORLD, Vec3d.zero(), ut)
+			local phi = math.rad(30) + 2 * math.pi * ut / 1200
+			local old = Vec3d.new(math.cos(phi), 0, math.sin(phi)) -- CHANGED (No tilt): declination 0 (was 15 deg)
+			t.expectNear(Vec3d.distance(fromEarth, old), 0, 1e-9)
+			t.expectNear(Vec3d.distance(Universe.sunDirection(ut), old), 0, 1e-12)
 		end
-	)
+		-- noon / midnight at the base, seen from the base itself (0.3 degrees of parallax at most)
+		local base = Vec3d.scale(Frames.surfaceUp(0, 0), EARTH.Radius)
+		local ut = 777
+		Universe.setSunPhaseOffset(Universe.sunOffsetForBaseHour(12, ut))
+		t.expectTrue(Vec3d.dot(Universe.sunDirectionFrom(Bodies.HOMEWORLD, base, ut), Vec3d.new(1, 0, 0)) > 0.9)
+		Universe.setSunPhaseOffset(Universe.sunOffsetForBaseHour(0, ut))
+		t.expectTrue(Vec3d.dot(Universe.sunDirectionFrom(Bodies.HOMEWORLD, base, ut), Vec3d.new(1, 0, 0)) < -0.9)
+		Universe.setSunPhaseOffset(0)
+	end)
 
 	t.test("lighting: Mars has days, the Mun shares Earth's sky, Sol lights everything around it", function()
 		local day = (MARS.Spin :: Bodies.Spin).DayLengthS

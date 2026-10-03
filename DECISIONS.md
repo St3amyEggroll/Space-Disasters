@@ -752,6 +752,12 @@ Steamy: "make the solar system and mars", and instead of time warp for now "do a
   - Astronauts on EVA near Sol do not burn up (crafts do).
   - Crossing an SOI edge between Earth, Sol and Mars turns the chase camera's view once (its orbit is kept in the body's axes, which change there); the craft itself is continuous.
 
+### D51b. No axial tilt (Steamy, 2026-10-03)
+- Steamy: "get rid of the solar system tilt, dont like it".
+- Earth's and Mars' `TiltDeg` (the sun's declination over the equator) are now 0. They were 15 and 20 degrees.
+- Every equator lies in the plane of the orbits around Sol, so the map shows one flat solar system.
+- The sun now always crosses the sky over the equator. Day length and `/time` are unchanged.
+
 ## Phase 0 spike results
 
 Steamy ran all ten spikes in Studio on 2026-09-30. The raw `[SPIKE ...]` output is summarized here.
