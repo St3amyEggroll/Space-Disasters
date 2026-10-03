@@ -211,12 +211,14 @@
 	draw distance), and only ONE uniform scale about the camera keeps the order from every camera, so wherever a
 	true-scale ridge or crater rim hides farther ground, that ground, drawn shrunk, lands in front of it. Now, as in
 	KSP, the far ground is a separate layer behind every real 3D object (Render/FarLayer):
-	  * while FarLayer.active() (mode "layer": the default on Medium / High; Low keeps "mesh" for phones), a plan
-	    builds every band as TRUE geometry (no depth map, no bulge / profile culling: Plan.layer, BandMesh.layer);
+	  * while FarLayer.active() (mode "layer"; CHANGED (Far layer fix): "mesh" is every tier's default until Studio
+	    confirms the layer draws, /farground switches), a plan builds every band as TRUE geometry (no depth map,
+	    no bulge / profile culling: Plan.layer, BandMesh.layer);
 	    a band built for the other mode is rebuilt (FarLayer.consumeChanged: /farground or a tier change re-plans)
-	  * placeBands gives FarLayer every band (its part, centre minus camera, rotation, true size; a stale band pushed
-	    back as before); FarLayer draws copies of them in ViewportFrames on a cube of panels around the camera, all at
-	    one scale about the eye (exact picture and depth order from any camera), behind everything real
+	  * placeBands gives FarLayer every band (its part, its EditableMesh (CHANGED (Far layer fix): the copies are
+	    made from it), centre minus camera, rotation, true size; a stale band pushed back as before); FarLayer
+	    draws copies of them in ViewportFrames on a cube of panels around the camera, all at one scale about the
+	    eye (exact picture and depth order from any camera), behind everything real
 	  * a band drawn scaled (k < TRUE_SCALE) is left out of the 3D world (BandMesh.backdrop: unparented); the near
 	    band at true scale stays (rocket, base, players and props stand on it), and its copy in the backdrop hides
 	    the far ground behind near ridges inside the picture too
@@ -1936,8 +1938,9 @@ placeBands = function(ctx: RenderContext.RenderContext)
 		table.insert(moveCFrames, CFrame.new(camWs + v * bm.appliedScale) * rotWs * bm.rot)
 		if layerOn then
 			-- CHANGED (Far layer): its backdrop copy (a stale band pushed back the same way: same image, deeper)
+			-- CHANGED (Far layer fix): + its EditableMesh (the copies are made from it, not cloned)
 			local push = if bm.stale then 1 + PUSH_BACK else 1
-			FarLayer.setBand(bm.id, bm.part, v * push, rotWs * bm.rot, bm.size * push)
+			FarLayer.setBand(bm.id, bm.part, bm.mesh, v * push, rotWs * bm.rot, bm.size * push)
 		end
 	end
 	-- CHANGED (Depth order fix): a depth-mapped band is drawn at C + k (C0 - C) + its mapped geometry (C: the camera,

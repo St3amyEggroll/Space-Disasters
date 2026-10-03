@@ -27,6 +27,15 @@
 	  pose(offset, scale)                   a band's place in the backdrop: offset (band centre - camera) x scale
 	  newModeState() / modeOf(state, tierMode) / toggle(state, tierMode) / consumeChanged(state, active)
 	                                        the /farground switch: the tier's default until the player picks
+	CHANGED (Far layer fix): Studio drew no far ground in layer mode; the diagnostics' pure parts:
+	  reach(halfSize, overlap)              the farthest panel point from the eye (a cube corner): other bodies'
+	                                        proxies beyond it are hidden by the picture's ground, seen in its sky
+	  FACE_NAMES                            "+X" ... "-Z" (the F3 line, the panel labels)
+	  faceList(visible)                     the visible faces' names, e.g. "+X-Z-Y"
+	  kickDue(age, kicks, delays)           a copy parented `age` s ago and re-parented `kicks` times is due another
+	                                        re-parent (ViewportFrames may skip a mesh added before it loaded)
+	  verdict(stats)                        the first thing wrong, in a few words (F3 line, [FarLayer] report)
+	  clip(text, chars)                     one line of at most `chars` characters
 ]]
 
 local FarLayerMath = {}
@@ -189,6 +198,72 @@ function FarLayerMath.consumeChanged(state: ModeState, active: boolean): boolean
 	end
 	state.reported = active
 	return last ~= nil or active
+end
+
+--============================================================================
+-- CHANGED (Far layer fix): diagnostics and the backdrop's reach
+--============================================================================
+
+-- The farthest point of the panels from the eye: a corner of the cube (the panels are `overlap` larger).
+function FarLayerMath.reach(halfSize: number, overlap: number): number
+	return halfSize * (1 + overlap) * math.sqrt(3)
+end
+
+FarLayerMath.FACE_NAMES = table.freeze({ "+X", "-X", "+Y", "-Y", "+Z", "-Z" }) :: { string }
+
+function FarLayerMath.faceList(visible: { boolean }): string
+	local names = {}
+	for i, name in FarLayerMath.FACE_NAMES do
+		if visible[i] then
+			table.insert(names, name)
+		end
+	end
+	return if #names > 0 then table.concat(names) else "none"
+end
+
+function FarLayerMath.kickDue(age: number, kicks: number, delays: { number }): boolean
+	local next = delays[kicks + 1]
+	return next ~= nil and age >= next
+end
+
+-- What the backdrop holds right now (FarLayer counts it for the F3 line and the [FarLayer] report).
+export type Stats = {
+	shown: boolean, -- the cube is in the world
+	bands: number, -- bands TerrainMesh gave since clear()
+	faces: number, -- faces drawn
+	copies: number, -- band copies made (in the drawn faces)
+	valid: number, -- ... of them with a mesh the engine reports (MeshContent set, MeshSize > 0)
+	pending: number, -- CreateMeshPartAsync calls still running
+	failed: number, -- copies that could not be made at all
+}
+
+-- The first thing wrong, in the order the pipeline runs; "copies ok" when every count is right, so a picture
+-- without ground then means the ViewportFrames do not draw the copies (Studio's screenshot tells).
+function FarLayerMath.verdict(s: Stats): string
+	if not s.shown then
+		return "hidden"
+	elseif s.bands == 0 then
+		return "no bands from TerrainMesh"
+	elseif s.faces == 0 then
+		return "no face drawn"
+	elseif s.copies == 0 then
+		return if s.pending > 0 then "copies loading" else "no copies made"
+	elseif s.valid < s.copies then
+		return string.format("%d copies without a mesh", s.copies - s.valid)
+	elseif s.failed > 0 then
+		return string.format("%d copies failed", s.failed)
+	elseif s.pending > 0 then
+		return "copies loading"
+	end
+	return "copies ok"
+end
+
+function FarLayerMath.clip(text: string, chars: number): string
+	local line = string.gsub(text, "%s+", " ")
+	if #line <= chars then
+		return line
+	end
+	return string.sub(line, 1, math.max(chars - 3, 0)) .. "..."
 end
 
 return table.freeze(FarLayerMath)

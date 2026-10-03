@@ -10,8 +10,11 @@
 	                          it (or above a hilly spot of another body) to test landings on slopes
 	  /bands                  CHANGED (Far slabs fix): toggle your terrain debug view (each terrain band in a flat
 	                          colour, plates white, the launch-site copy cyan; DebugView remote, client only)
-	  /farground              CHANGED (Far layer): switch your far ground between the backdrop layer (default) and
-	                          the scaled 3D bands, to compare (DebugView remote, client only; F3 "Terrain:" line)
+	  /farground              CHANGED (Far layer): switch your far ground between the backdrop layer and the scaled
+	                          3D bands ("mesh", the default), to compare (DebugView remote, client only; F3 "Terrain:")
+	  /farground test         CHANGED (Far layer fix): reference objects in the backdrop (a red cube +Z, a green ball +X,
+	                          a plain mesh -Z), tinted labelled panels; turns the layer on (again: off)
+	  /farground tex          CHANGED (Far layer fix): the backdrop copies' white texture on / off
 	"Your craft" = the craft you pilot, else the craft whose pocket you are in.
 	CHANGED (Solar system): bodies are earth/homeworld, mun/moon, mars and sol/sun (orbit only: /hover over Sol
 	burns the craft up). The two placements are exported for the admin panel (AdminService), so it uses exactly
@@ -259,7 +262,11 @@ local function onChatted(player: Player, message: string)
 	elseif command == "bands" then
 		debugView:FireClient(player, "bands") -- CHANGED (Far slabs fix): the client toggles its terrain band view
 	elseif command == "farground" then
-		debugView:FireClient(player, "farground") -- CHANGED (Far layer): the client switches its far ground mode
+		-- CHANGED (Far layer): the client switches its far ground mode
+		-- CHANGED (Far layer fix): "/farground test" (reference objects) and "/farground tex" (white texture)
+		local option = args[2]
+		local view = if option == "test" or option == "tex" then "farground " .. option else "farground"
+		debugView:FireClient(player, view)
 	end
 end
 

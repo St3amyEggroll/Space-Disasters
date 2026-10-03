@@ -342,7 +342,11 @@ local function step(dt: number)
 	end
 
 	timed("ScaledSpace", function()
-		ScaledSpace.setGroundReach(Surface.groundReach()) -- CHANGED (Behind the ground): last frame's reach
+		-- CHANGED (Behind the ground): last frame's reach
+		-- CHANGED (Far layer fix): or the far ground backdrop's panels (their farthest corner) while it is shown: a
+		-- proxy beyond them is hidden by the picture's ground and seen through its clear sky (groundReach itself is 0
+		-- then, for the SkyCube)
+		ScaledSpace.setGroundReach(math.max(Surface.groundReach(), FarLayer.reach()))
 		ScaledSpace.update(ctx)
 	end)
 	updateShadowGate() -- CHANGED (Rocket shudder / orbit shadows)
@@ -468,6 +472,7 @@ function UniverseRenderer.Init()
 	end)
 	DebugOverlay.addLine("effects", 24.5, Effects.summary) -- CHANGED (Phase 10): after "map" (24)
 	DebugOverlay.addLine("terrain", 22.5, Surface.summary) -- CHANGED (Phase 8): after "universe" (22)
+	DebugOverlay.addLine("farlayer", 22.6, FarLayer.details) -- CHANGED (Far layer fix): the backdrop's diagnostics
 	DebugOverlay.addLine("editable", 22.7, EditableBudget.summary) -- CHANGED (Memory budget): Editable memory in use
 end
 
@@ -489,6 +494,13 @@ function UniverseRenderer.Start()
 			-- CHANGED (Far layer): far ground as the backdrop layer ("layer") or as scaled 3D bands ("mesh"); the
 			-- terrain rebuilds its bands for the mode, the F3 "Terrain:" line shows it
 			print("[Terrain] /farground: far ground drawn as " .. FarLayer.toggle())
+		elseif view == "farground test" then
+			-- CHANGED (Far layer fix): reference objects in the backdrop (turns the layer on); F3 / Output tell
+			local on = FarLayer.toggleTest()
+			print("[Terrain] /farground test: " .. (if on then "on (far ground: " .. FarLayer.mode() .. ")" else "off"))
+		elseif view == "farground tex" then
+			-- CHANGED (Far layer fix): the backdrop copies' white texture on / off
+			print("[Terrain] /farground tex: white texture " .. (if FarLayer.toggleTexture() then "on" else "off"))
 		end
 	end)
 	RunService:BindToRenderStep(RENDER_STEP_NAME, RENDER_PRIORITY, step)

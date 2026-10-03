@@ -5,6 +5,8 @@
 -- visible include every face the view can show, the cube stays inside the draw distance and in front of the
 -- SkyCube with one part per face, the backdrop's one scale keeps every direction and depth order and fits the part
 -- limit, and the /farground switch.
+-- CHANGED (Far layer fix): + the backdrop's reach (ScaledSpace keeps other bodies beyond it), the diagnostics (face
+-- list, re-parent timing, the verdict's order, error clipping) and where /farground test's reference objects land.
 
 local TestKit = require(script.Parent.TestKit)
 local Render = game:GetService("StarterPlayer").StarterPlayerScripts.Client.Render
@@ -21,6 +23,9 @@ local MARGIN = math.rad(12) -- VISIBLE_MARGIN
 local SAMPLES = 3000 -- random directions
 local DENSE = 41 -- rays across the view in the visibility check
 local SEED = 7
+-- CHANGED (Far layer fix): /farground test's reference objects (FarLayer's TEST) and the copies' re-parents
+local TEST_DISTANCE, TEST_LIFT, TEST_SIZE = 700, 90, 90
+local KICK_DELAYS = { 0.3, 2 }
 --============================================================================
 
 -- deterministic generator (LCG; Lune has no Random)
@@ -257,5 +262,81 @@ return function(t: TestKit.Context)
 		t.expectTrue(not FarLayerMath.consumeChanged(low, false), "starting in mesh mode changes nothing")
 		t.expectEqual(FarLayerMath.toggle(low, "mesh"), "layer", "Low: /farground turns the layer on")
 		t.expectTrue(FarLayerMath.consumeChanged(low, true), "reported")
+	end)
+
+	-- CHANGED (Far layer fix)
+	t.test("reach: every panel point lies within it, the cube's corners at it", function()
+		for _, h in { 300, 640, 1020 } do
+			local reach = FarLayerMath.reach(h, OVERLAP)
+			local farthest = 0
+			for _, face in FarLayerMath.FACES do
+				for _, x in { -1, -0.5, 0, 0.5, 1 } do
+					for _, y in { -1, -0.5, 0, 0.5, 1 } do
+						local p = FarLayerMath.panelPoint(face, h, x * (1 + OVERLAP), y * (1 + OVERLAP))
+						farthest = math.max(farthest, p.Magnitude)
+						t.expectTrue(p.Magnitude <= reach + 1e-6, `h {h}: panel point within the reach`)
+					end
+				end
+			end
+			-- the panel's corner: the face's normal at h plus the overlapped half-sides
+			t.expectTrue(farthest <= reach + 1e-6 and farthest >= h * math.sqrt(3) - 1e-6, `h {h}: corner`)
+			t.expectTrue(reach <= 1.01 * 1020 * math.sqrt(3), "at most ~1.77 km (inside a 3000-stud draw distance)")
+		end
+	end)
+
+	t.test("diagnostics: face list, re-parent timing, error clipping", function()
+		t.expectEqual(FarLayerMath.faceList({ true, false, false, true, true, false }), "+X-Y+Z", "names in order")
+		t.expectEqual(FarLayerMath.faceList({ false, false, false, false, false, false }), "none", "none")
+		t.expectTrue(not FarLayerMath.kickDue(0.1, 0, KICK_DELAYS), "too early")
+		t.expectTrue(FarLayerMath.kickDue(0.3, 0, KICK_DELAYS), "first re-parent")
+		t.expectTrue(not FarLayerMath.kickDue(1, 1, KICK_DELAYS), "second: not yet")
+		t.expectTrue(FarLayerMath.kickDue(2.5, 1, KICK_DELAYS), "second")
+		t.expectTrue(not FarLayerMath.kickDue(100, 2, KICK_DELAYS), "never a third")
+		t.expectEqual(FarLayerMath.clip("short", 20), "short", "kept")
+		local long = FarLayerMath.clip("CreateMeshPartAsync:\n" .. string.rep("x", 200), 40)
+		t.expectEqual(#long, 40, "clipped to the width")
+		t.expectTrue(string.find(long, "\n") == nil, "one line")
+	end)
+
+	t.test("verdict: the first thing wrong, in pipeline order", function()
+		local function stats(over: { [string]: any }): FarLayerMath.Stats
+			local s: FarLayerMath.Stats =
+				{ shown = true, bands = 5, faces = 3, copies = 15, valid = 15, pending = 0, failed = 0 }
+			for key, value in over do
+				(s :: any)[key] = value
+			end
+			return s
+		end
+		t.expectEqual(FarLayerMath.verdict(stats({})), "copies ok", "all right")
+		t.expectEqual(FarLayerMath.verdict(stats({ shown = false, bands = 0 })), "hidden", "hidden first")
+		t.expectEqual(FarLayerMath.verdict(stats({ bands = 0, copies = 0 })), "no bands from TerrainMesh", "bands")
+		t.expectEqual(FarLayerMath.verdict(stats({ faces = 0, copies = 0 })), "no face drawn", "faces")
+		t.expectEqual(FarLayerMath.verdict(stats({ copies = 0, valid = 0, pending = 4 })), "copies loading", "loading")
+		t.expectEqual(FarLayerMath.verdict(stats({ copies = 0, valid = 0 })), "no copies made", "none made")
+		t.expectEqual(FarLayerMath.verdict(stats({ valid = 12 })), "3 copies without a mesh", "meshless copies")
+		t.expectEqual(FarLayerMath.verdict(stats({ failed = 2 })), "2 copies failed", "failures")
+		t.expectEqual(FarLayerMath.verdict(stats({ pending = 1 })), "copies loading", "still loading")
+	end)
+
+	t.test("/farground test: each reference object lies whole inside one face camera's view", function()
+		local half = math.sqrt(3) * TEST_SIZE / 2 -- the objects' bounding sphere
+		local refs = {
+			{ at = Vector3.new(0, TEST_LIFT, TEST_DISTANCE), face = 5, name = "red cube +Z" },
+			{ at = Vector3.new(TEST_DISTANCE, TEST_LIFT, 0), face = 1, name = "green ball +X" },
+			{ at = Vector3.new(0, TEST_LIFT, -TEST_DISTANCE), face = 6, name = "plain mesh -Z" },
+		}
+		local fov = FarLayerMath.fieldOfView(OVERLAP)
+		for _, ref in refs do
+			t.expectEqual(FarLayerMath.faceOf(ref.at), ref.face, ref.name .. ": its face")
+			local face = FarLayerMath.FACES[ref.face]
+			local cam = FarLayerMath.faceCamera(face)
+			for _, d in { Vector3.xAxis, Vector3.yAxis, Vector3.zAxis } do
+				for _, sign in { -1, 1 } do
+					local x, y, ahead = screen(cam, fov, ref.at + d * sign * half)
+					t.expectTrue(ahead and math.abs(x) < 1 and math.abs(y) < 1, ref.name .. ": inside the view")
+				end
+			end
+			t.expectTrue(ref.at.Y - half > 0, ref.name .. ": above the eye's horizon")
+		end
 	end)
 end
