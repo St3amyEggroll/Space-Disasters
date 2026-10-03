@@ -41,6 +41,13 @@
 	tested for every body except stars (Sol never shadows itself), with the camera re-expressed relative to each body
 	in the pocket's axes (Universe.bodyOffset), so Earth, the Mun and Mars all cast shadows from wherever you are.
 	On a body whose air has a SkyColor (Mars' butterscotch sky) the daylight ambient is tinted toward that colour.
+
+	CHANGED (Map planets): the map's flat light (updateMap, called by UniverseRenderer instead of update while the
+	map is open). The map shows several bodies around Sol at once and Roblox has one global light, so the map's
+	planets are flat-lit and carry their own day / night shading (Render/MapBodies' night shells): no direct light
+	(Brightness MAP_BRIGHTNESS), no sky reflections, an even ambient. The pocket itself is hidden behind the map's
+	opaque star box meanwhile. The sun solve keeps running (warm, cheap), so closing the map needs no cold solve; the
+	next update() writes the flight values back (every property it owns is compared with Lighting's current value).
 ]]
 
 local Lighting = game:GetService("Lighting")
@@ -107,6 +114,13 @@ local ENVIRONMENT_SPECULAR_SCALE = 0.6
 local FOG_END = 1e6
 local STAR_COUNT = 3000 -- Roblox's own night stars (ground level at night; SkyCube draws space)
 local MOON_ANGULAR_SIZE = 0.5 -- degrees; the disc is hidden anyway (CelestialBodiesShown = false)
+
+-- CHANGED (Map planets): the map's flat light (header). Guesses to tune in Studio: Roblox may add Ambient and
+-- OutdoorAmbient in the open (then ~0.86 of a texture's colour shows) or blend them (~0.6).
+local MAP_AMBIENT = Color3.fromRGB(70, 70, 70)
+local MAP_OUTDOOR_AMBIENT = Color3.fromRGB(150, 150, 150)
+local MAP_BRIGHTNESS = 0
+local MAP_ENVIRONMENT_SCALE = 0 -- diffuse and specular sky light off: nothing depends on the pocket's sky
 
 -- Write thresholds (avoid touching Lighting properties that did not really change)
 local NUMBER_EPSILON = 1e-3
@@ -550,6 +564,13 @@ local function updateLighting(air: number, shadow: number, skyColor: Color3?)
 	if Lighting.FogEnd < FOG_END then
 		Lighting.FogEnd = FOG_END
 	end
+	-- CHANGED (Map planets): the map's flat light turns these off; back to the flight values
+	if numberChanged(Lighting.EnvironmentDiffuseScale, ENVIRONMENT_DIFFUSE_SCALE) then
+		Lighting.EnvironmentDiffuseScale = ENVIRONMENT_DIFFUSE_SCALE
+	end
+	if numberChanged(Lighting.EnvironmentSpecularScale, ENVIRONMENT_SPECULAR_SCALE) then
+		Lighting.EnvironmentSpecularScale = ENVIRONMENT_SPECULAR_SCALE
+	end
 end
 
 function SkyLighting.update(ctx: RenderContext.RenderContext)
@@ -570,6 +591,29 @@ function SkyLighting.update(ctx: RenderContext.RenderContext)
 		if currentSky.SkyboxOrientation ~= Vector3.zero then
 			currentSky.SkyboxOrientation = Vector3.zero
 		end
+	end
+end
+
+-- CHANGED (Map planets): the map's flat light while the map is open (header). Writes only what changed.
+function SkyLighting.updateMap(ctx: RenderContext.RenderContext)
+	if not initialized then
+		SkyLighting.init()
+	end
+	updateSun(ctx.sunDirection)
+	if colorChanged(Lighting.Ambient, MAP_AMBIENT) then
+		Lighting.Ambient = MAP_AMBIENT
+	end
+	if colorChanged(Lighting.OutdoorAmbient, MAP_OUTDOOR_AMBIENT) then
+		Lighting.OutdoorAmbient = MAP_OUTDOOR_AMBIENT
+	end
+	if numberChanged(Lighting.Brightness, MAP_BRIGHTNESS) then
+		Lighting.Brightness = MAP_BRIGHTNESS
+	end
+	if numberChanged(Lighting.EnvironmentDiffuseScale, MAP_ENVIRONMENT_SCALE) then
+		Lighting.EnvironmentDiffuseScale = MAP_ENVIRONMENT_SCALE
+	end
+	if numberChanged(Lighting.EnvironmentSpecularScale, MAP_ENVIRONMENT_SCALE) then
+		Lighting.EnvironmentSpecularScale = MAP_ENVIRONMENT_SCALE
 	end
 end
 

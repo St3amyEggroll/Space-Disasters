@@ -46,6 +46,14 @@
 	time, so patched conics through Earth -> Sol -> Mars join up. Focus buttons (Sol, Earth, Mun, Mars, Craft) and
 	zoom buttons (- / +, also for touch) sit under the title card; Tab cycles the focus too. A body picked with a
 	button or Tab is framed: the zoom fits its SOI (Sol: the planets' orbits).
+
+	CHANGED (Map planets): Steamy: "planets dont look good". The bodies are drawn by Render/MapBodies instead of flat
+	Neon balls: the same textured surfaces as the flight view (ScaledSpace's images, turned by each body's real
+	axes), a night shell that darkens the side away from Sol with a soft terminator, an atmosphere rim on Earth and
+	Mars, Sol's smooth glow, and a KSP-style icon (dot + name, clickable) instead of a ball smaller than a few pixels.
+	The body labels moved into MapBodies (a ball's name sits under its limb). SkyLighting gives the map a flat light
+	(UniverseRenderer's map mode). The camera is placed before the bodies each frame (they need its screen sizes).
+	SOI spheres, the Mun ghost, lines, crafts' and apsis markers are unchanged.
 ]]
 
 local GuiService = game:GetService("GuiService")
@@ -64,6 +72,7 @@ local Universe = require(ReplicatedStorage.Shared.Sim.Universe)
 local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime)
 local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local DebugOverlay = require(script.Parent.DebugOverlay)
+local MapBodies = require(script.Parent.Parent.Render.MapBodies) -- CHANGED (Map planets)
 local Keybinds = require(script.Parent.Parent.Settings.Keybinds) -- CHANGED (Phase 11)
 local Settings = require(script.Parent.Parent.Settings.Settings) -- CHANGED (Phase 11)
 local UIState = require(script.Parent.Parent.UI.UIState) -- CHANGED (Phase 11)
@@ -110,7 +119,7 @@ local DENT_ORBIT_SEGMENTS = 128
 local MAX_BALL_SIZE = 2040 -- studs (part size limit 2048)
 local LINE_WIDTH_FOCUS = 0.7 -- studs (the camera distance is fixed, so this is ~2 px)
 local LINE_WIDTH_OTHER = 0.4
-local BODY_BRIGHTNESS = 0.55 -- Neon colour multiplier for bodies (unlit, readable day or night)
+local BODY_BRIGHTNESS = 0.55 -- Neon colour multiplier for the Mun ghost (CHANGED (Map planets): bodies: MapBodies)
 local PATCH_COLORS = {
 	Color3.fromRGB(80, 200, 255),
 	Color3.fromRGB(255, 170, 60),
@@ -118,7 +127,6 @@ local PATCH_COLORS = {
 }
 local OTHER_COLOR = Color3.fromRGB(150, 160, 190)
 local MOON_ORBIT_COLOR = Color3.fromRGB(110, 112, 125)
-local ATMOSPHERE_COLOR = Color3.fromRGB(120, 170, 255)
 local SOI_COLOR = Color3.fromRGB(180, 180, 200)
 -- CHANGED (Phase 11): label colours and fonts from UI/Theme
 local OWN_COLOR = Theme.Colors.Warning
@@ -162,13 +170,11 @@ type Line = {
 	rotation: CFrame, -- CHANGED (Solar system): the anchor body's axes in the map body's axes (at the anchor time)
 }
 
+-- CHANGED (Map planets): the ball, air shell and label moved to Render/MapBodies
 type BodyVisual = {
 	body: Bodies.Body,
-	ball: Part,
-	shell: Part?,
 	soi: Part?,
 	ghost: Part?,
-	gui: BillboardGui,
 }
 
 type Marker = {
@@ -555,26 +561,12 @@ local function buildMap()
 	folder = Instance.new("Folder")
 	folder.Name = "MapView"
 	root = newPart({ Name = "MapRoot", Size = Vector3.one * 0.2, Transparency = 1 }, folder)
+	-- CHANGED (Map planets): balls, air shells and body labels are MapBodies' (its balls keep the BodyId pick)
+	MapBodies.build(folder, root, function(bodyId: number)
+		setFocus("Body", bodyId)
+	end)
 	for _, body in Bodies.physicalBodies() do
 		local color = dim(body.Color, BODY_BRIGHTNESS)
-		local ball = newPart({
-			Name = body.Name,
-			Shape = Enum.PartType.Ball,
-			Size = Vector3.one,
-			Color = color,
-			CanQuery = true, -- picked by clicks (raycasts include only this folder)
-		}, folder)
-		ball:SetAttribute("BodyId", body.Id)
-		local shell: Part? = nil
-		if body.Atmosphere then
-			shell = newPart({
-				Name = body.Name .. "Air",
-				Shape = Enum.PartType.Ball,
-				Size = Vector3.one,
-				Color = dim(body.AtmosphereColor or ATMOSPHERE_COLOR, 0.6),
-				Transparency = 0.82,
-			}, folder)
-		end
 		local soi: Part? = nil
 		local ghost: Part? = nil
 		if body.Orbit then
@@ -594,19 +586,7 @@ local function buildMap()
 			}, folder)
 			moonLines[body.Id] = newLine(DENT_ORBIT_SEGMENTS, MOON_ORBIT_COLOR, LINE_WIDTH_OTHER)
 		end
-		local marker = newMarker(body.Name, CRAFT_COLOR, true)
-		marker.attachment:Destroy()
-		marker.gui.Adornee = ball
-		marker.dot.Visible = false
-		marker.button.Position = UDim2.fromScale(0.5, 0)
-		marker.button.Size = UDim2.fromScale(1, 0.5)
-		marker.button.Text = body.DisplayName
-		marker.button.TextColor3 = Theme.Colors.DigitText -- CHANGED (Phase 11)
-		local bodyId = body.Id
-		marker.button.Activated:Connect(function()
-			setFocus("Body", bodyId)
-		end)
-		bodyVisuals[body.Id] = { body = body, ball = ball, shell = shell, soi = soi, ghost = ghost, gui = marker.gui }
+		bodyVisuals[body.Id] = { body = body, soi = soi, ghost = ghost } -- CHANGED (Map planets)
 	end
 	for index = 1, MAX_PATCHES do
 		patchLines[index] = newLine(FOCUS_SEGMENTS, PATCH_COLORS[(index - 1) % #PATCH_COLORS + 1], LINE_WIDTH_FOCUS)
@@ -942,6 +922,19 @@ local function setBall(part: Part?, center: Vector3, radius: number, visible: bo
 end
 
 local function updateBodies(ut: number, focusAbs: Vec3d)
+	-- CHANGED (Map planets): balls, surfaces, night shells, rims, glow and icons
+	local camera = Workspace.CurrentCamera
+	if camera then
+		MapBodies.update({
+			ut = ut,
+			mapBodyId = mapBodyId,
+			focusAbs = focusAbs,
+			scale = scale,
+			origin = origin,
+			extent = EXTENT,
+			camera = camera,
+		})
+	end
 	local encounterUT: { [number]: number } = {}
 	for index, patch in patches do
 		if index > 1 and encounterUT[patch.bodyId] == nil then
@@ -951,11 +944,6 @@ local function updateBodies(ut: number, focusAbs: Vec3d)
 	for id, visual in bodyVisuals do
 		local body = visual.body
 		local center = toMap(Universe.bodyOffset(id, mapBodyId, ut), focusAbs) -- CHANGED (Solar system)
-		setBall(visual.ball, center, body.Radius * scale, true)
-		local atmosphere = body.Atmosphere
-		if atmosphere then
-			setBall(visual.shell, center, (body.Radius + atmosphere.Top) * scale, true)
-		end
 		if body.SoiRadius < math.huge then
 			setBall(visual.soi, center, body.SoiRadius * scale, true)
 		end
@@ -968,7 +956,6 @@ local function updateBodies(ut: number, focusAbs: Vec3d)
 				setBall(visual.ghost, Vector3.zero, 0, false)
 			end
 		end
-		visual.gui.Enabled = visual.ball.Parent ~= nil
 	end
 end
 
@@ -1113,9 +1100,9 @@ local function step(dt: number)
 	for _, line in otherLines do
 		placeLine(line, ut, focusAbs)
 	end
+	updateCamera() -- CHANGED (Map planets): before the bodies (MapBodies measures them on screen)
 	updateBodies(ut, focusAbs)
 	updateMarkers(ut, focusAbs)
-	updateCamera()
 
 	focusLabel.Text = `MAP  <font color="{FOCUS_HEX}">{focusName}</font>` -- CHANGED (Phase 11): Theme title colour
 	-- CHANGED (Phase 11): the help line names the current map key
@@ -1260,6 +1247,7 @@ function MapViewController.open()
 	end
 	folder.Parent = Workspace
 	overlay.Enabled = true
+	MapBodies.open() -- CHANGED (Map planets)
 	local cube = math.min(EXTENT + CAMERA_DISTANCE + CUBE_MARGIN, UniverseRenderer.drawDistance() * CUBE_DRAW_FRACTION)
 	UniverseRenderer.setMapMode(true, cube)
 	RunService:BindToRenderStep(RENDER_STEP_NAME, RENDER_PRIORITY, step)
@@ -1296,9 +1284,7 @@ function MapViewController.close()
 	for _, apsis in apsides do
 		apsis.marker.gui.Enabled = false
 	end
-	for _, visual in bodyVisuals do
-		visual.gui.Enabled = false
-	end
+	MapBodies.close() -- CHANGED (Map planets): icons off, ScaledSpace's map listener off
 	endDrag() -- CHANGED (Phase 11): shared with the input block
 	local camera = Workspace.CurrentCamera
 	if camera then
@@ -1331,11 +1317,12 @@ function MapViewController.Init()
 		end
 		local f = focus
 		return string.format(
-			"Map: focus %s %d  scale %.5f stud/m  patches %d",
+			"Map: focus %s %d  scale %.5f stud/m  patches %d  %s", -- CHANGED (Map planets): MapBodies' state
 			if f then f.kind else "-",
 			if f then f.id else 0,
 			scale,
-			#patches
+			#patches,
+			MapBodies.summary()
 		)
 	end)
 end
