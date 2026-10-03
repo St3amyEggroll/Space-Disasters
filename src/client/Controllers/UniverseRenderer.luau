@@ -19,6 +19,8 @@
 	ScaledSpace and Surface folders and the RemoteCrafts copies are unparented and not updated) and the SkyCube
 	becomes a fully opaque starry box of a fixed size around the map camera, in universe axes. SkyLighting keeps
 	lighting the pocket as seen from the craft.
+	CHANGED (Map planets): in map mode SkyLighting gives the map its flat light instead (SkyLighting.updateMap: the
+	map's planets carry their own day / night shading, Render/MapBodies); the pocket is hidden behind the star box.
 
 	CHANGED (Phase 11): view override for the main menu (setViewOverride, driven by Render/MenuScene). While a frame
 	is set, ScaledSpace, Surface, SkyCube (automatic opacity) and SkyLighting are drawn with THAT frame and the real
@@ -328,7 +330,7 @@ local function step(dt: number)
 		mapCtx.camera = camera.CFrame
 		SkyCube.update(mapCtx, false, 0)
 		timed("SkyLighting", function()
-			SkyLighting.update(ctx)
+			SkyLighting.updateMap(ctx) -- CHANGED (Map planets): the map's flat light
 		end)
 		-- CHANGED (Phase 10): effects keep ageing (their folder is hidden in map view)
 		timed("Effects", function()

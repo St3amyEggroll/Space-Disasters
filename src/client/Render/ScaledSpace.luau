@@ -85,6 +85,13 @@
 	axes (Universe.axesRotation: Earth, Mars and Sol each turn their own way; the Mun shares Earth's), and the
 	detail slots follow the camera in that body's axes. Mars is textured like Earth and the Mun (Biome / BiomeMars,
 	its own sizes and thin butterscotch shells in PlanetDetail); from Earth it is a small reddish dot.
+
+	CHANGED (Map planets): the map (Render/MapBodies) shows the same planet surfaces. It clones the shared patch mesh
+	(mapSurface) and shows the SAME base EditableImages on its own patch parts (mapPatch), so it adds no Editable
+	memory for surfaces. While the map is open (setMapView) every body's base images are wanted (the painter keeps
+	painting / restoring them at their usual priorities, nothing is released: update() does not run in map mode) and
+	the map's listener hears every base image that appears or is about to be destroyed, so a map patch never shows a
+	destroyed image and swaps in a texture the moment it is painted. Detail slots and clouds stay flight-only.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -420,6 +427,9 @@ local visuals: { Visual } = {}
 local visualById: { [number]: Visual } = {}
 local surfaceMode = false
 local surfaceBodyId: number? = nil
+-- CHANGED (Map planets): the map view is open (every base image wanted) and its listener (body id, patch index)
+local mapActive = false
+local mapListener: ((bodyId: number, patch: number) -> ())? = nil
 
 -- per-frame scratch (no allocation in the hot path beyond Universe's own)
 local sortedEntries: { Entry } = {}
@@ -891,6 +901,19 @@ local function applyCloudAlpha(visual: Visual)
 	end
 end
 
+-- CHANGED (Map planets): tells the map that a base image of `visual` changed (painted, or about to be destroyed).
+local function notifyMap(visual: Visual, patch: number)
+	local listener = mapListener
+	if listener then
+		local ok, err = pcall(function()
+			listener(visual.id, patch)
+		end)
+		if not ok then
+			warn("[ScaledSpace] map texture listener failed: " .. tostring(err))
+		end
+	end
+end
+
 --[[
 	CHANGED (Memory budget): gives a base image back: the patch shows its detail slot if it has one, else its own
 	average colour. Its pixels stay in baseCache (a Restore job brings it back without repainting).
@@ -903,6 +926,7 @@ local function releaseBase(visual: Visual, patch: number)
 	if part and visual.slotOn[patch] == nil then
 		setTexture(part, nil)
 	end
+	notifyMap(visual, patch) -- CHANGED (Map planets): before the image is destroyed
 	EditableBudget.destroy(handle)
 end
 
@@ -973,7 +997,8 @@ end
 -- CHANGED (Memory budget): only while the proxy is (about to be) drawn; a patch whose pixels are cached is restored
 -- (Restore) instead of repainted, unless base images wait after a budget refusal
 local function nextBaseJob(visual: Visual?): TextureJob?
-	if visual == nil or visual.kind ~= "Patches" or texturesDisabled or not visual.wanted then
+	-- CHANGED (Map planets): or while the map shows it
+	if visual == nil or visual.kind ~= "Patches" or texturesDisabled or not (visual.wanted or mapActive) then
 		return nil
 	end
 	local spec = PlanetDetail.baseTexture(tier, visual.id)
@@ -1224,7 +1249,7 @@ local function applyJob(job: TextureJob, buf: buffer): boolean
 		visual.baseCache[patch] = copy
 	end
 	if job.kind == "Base" or job.kind == "Restore" then
-		if visual.baseImage[patch] or not visual.wanted then
+		if visual.baseImage[patch] or not (visual.wanted or mapActive) then -- CHANGED (Map planets)
 			return true
 		end
 	elseif job.kind == "Cloud" then
@@ -1262,6 +1287,7 @@ local function applyJob(job: TextureJob, buf: buffer): boolean
 		if handle then
 			visual.baseHandle[patch] = handle
 		end
+		notifyMap(visual, patch) -- CHANGED (Map planets)
 		if visual.slotOn[patch] == nil then
 			return setTexture(visual.groundPart[patch], image)
 		end
@@ -1642,6 +1668,54 @@ function ScaledSpace.proxyMinAltitude(bodyId: number): number
 		return 0
 	end
 	return proxyMinAlt(body.Radius, limits)
+end
+
+--[[
+	CHANGED (Map planets): what the map needs to draw the planets' surfaces with the same mesh and images (header):
+	the unparented patch template (clone it), the 24 patch rotations (CFrames and row-major matrices, patch index
+	order), and the patch's bounding-box centre / size on the unit sphere. nil while the proxies are Ball fallbacks
+	(no EditableMesh) or before init.
+]]
+export type MapSurface = {
+	template: MeshPart,
+	rotations: { CFrame },
+	matrices: { { number } },
+	centre: Vector3,
+	size: Vector3,
+}
+
+function ScaledSpace.mapSurface(): MapSurface?
+	local template = patchTemplate
+	if template == nil or not initialised then
+		return nil
+	end
+	return {
+		template = template,
+		rotations = patchRotations,
+		matrices = patchMatrixList,
+		centre = patchCentre,
+		size = patchSize,
+	}
+end
+
+-- CHANGED (Map planets): a body's base image of one patch (nil: none right now) and the patch's own average colour
+-- (what ScaledSpace shows while it has no image; nil for Sol / unknown bodies).
+function ScaledSpace.mapPatch(bodyId: number, patch: number): (EditableImage?, Color3?)
+	local visual = visualById[bodyId]
+	if visual == nil or visual.kind ~= "Patches" then
+		return nil, nil
+	end
+	return visual.baseImage[patch], visual.patchColor[patch]
+end
+
+--[[
+	CHANGED (Map planets): the map opens (active, with its listener) or closes (false, nil). While active every body's
+	base images are painted / restored and kept; the listener is called with (body id, patch) whenever one appears
+	or is about to be destroyed.
+]]
+function ScaledSpace.setMapView(active: boolean, listener: ((bodyId: number, patch: number) -> ())?)
+	mapActive = active
+	mapListener = if active then listener else nil
 end
 
 -- Pure helpers for offline tests (Lune has no EditableMesh / BulkMoveTo).

@@ -21,6 +21,25 @@ Phase 2 is split into 2a/2b so you can playtest halfway through (agreed with Ste
 
 ---
 
+## 2026-10-03: the map's planets look real now (see D52)
+- **Real planets on the map (M).** Earth, the Mun and Mars show the same ground as when you fly past them: oceans, land, ice, craters, Mars' red dust and ice caps. They turn slowly with their day.
+- **Day and night side.** The side facing away from Sol is dark, with a soft edge between day and night, so each planet looks round. Sol is not dark: it glows.
+- **Air glow.** Earth has a thin blue glow around its edge, Mars a thinner orange-pink one, brighter on the sunny side. The Mun has none.
+- **Icons when far away.** When a planet would be smaller than a few pixels, it becomes a round dot in its colour with its name, like in KSP. Click or tap the dot or the name to focus it. When the planet is big, its name sits just under it.
+- Pictures (before and after): `scratchpad/mapviews/final/compare-before-after.png`.
+
+## 2026-10-03: how to test (map planets)
+1. **Earth:** launch (or F7, Earth, Orbit). Press M. You see Earth with land and oceans, one side dark, and a blue glow around the edge. Drag to look around: the dark side stays on the side away from Sol.
+2. **Zoom in** (wheel or +): Earth gets big and sharp, and the dark side has a soft edge. Zoom out (wheel or -): Earth and the Mun turn into dots with names before they get too small to see.
+3. **Sol button:** you see Sol glowing in the middle and Earth and Mars as coloured dots with names. Click the Earth dot: the map focuses Earth. The Mun's dot hides when it sits on top of Earth's.
+4. **Mars:** F7, Mars, Orbit, Spawn. Press M, then the Mars button: a red planet with ice caps, a dark side and a thin orange glow. Zoom in close.
+5. **The Mun button:** grey with craters, a dark side, no glow.
+6. **Wait a minute with the map open:** the day and night line moves slowly as the planets turn.
+7. **Everything else still works:** your orbit line and Ap / Pe, other players' rockets and their orbits, the Mun ghost, Tab, the buttons, closing with M or Esc.
+8. **Graphics quality:** try the Roblox graphics slider low (1-3), middle and high, then open the map again. Low still shows planets with a dark side; the glow is an even ring there.
+9. **Phones:** zoom with the - / + buttons and tap the planet dots or names to focus them.
+10. **Press F3 with the map open:** the Map line shows `bodies: ground 72/72 shell on rims 2 glow on` once everything is painted (ground counts textured patches; it can take a few seconds the first time).
+
 ## 2026-10-03: the solar system and Mars (see D51)
 - **Sol is a real sun now.** Earth (with the Mun) and Mars go around it. Earth is 10,000 km from Sol, Mars 15,000 km.
 - **Mars:** half as big as Earth, gravity about a third, thin air (parachutes and air brakes barely work, engines work almost like in space).
