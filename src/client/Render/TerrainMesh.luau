@@ -211,12 +211,14 @@
 	draw distance), and only ONE uniform scale about the camera keeps the order from every camera, so wherever a
 	true-scale ridge or crater rim hides farther ground, that ground, drawn shrunk, lands in front of it. Now, as in
 	KSP, the far ground is a separate layer behind every real 3D object (Render/FarLayer):
-	  * while FarLayer.active() (mode "layer"; CHANGED (Far layer fix): "mesh" is every tier's default until Studio
-	    confirms the layer draws, /farground switches), a plan builds every band as TRUE geometry (no depth map,
+	  * while FarLayer.active() (mode "layer"; CHANGED (Far layer smooth): the default on Medium and High again, Low
+	    keeps "mesh", /farground switches), a plan builds every band as TRUE geometry (no depth map,
 	    no bulge / profile culling: Plan.layer, BandMesh.layer);
 	    a band built for the other mode is rebuilt (FarLayer.consumeChanged: /farground or a tier change re-plans)
 	  * placeBands gives FarLayer every band (its part, its EditableMesh (CHANGED (Far layer fix): the copies are
-	    made from it), centre minus camera, rotation, true size; a stale band pushed back as before); FarLayer
+	    made from it), CHANGED (Far layer smooth): its centre and rotation in body coordinates, true size, the stale
+	    push, whether it is in the 3D world, and the body-to-workspace rotation: FarLayer's scene stands still and
+	    only its face cameras move); FarLayer
 	    draws copies of them in ViewportFrames on a cube of panels around the camera, all at one scale about the
 	    eye (exact picture and depth order from any camera), behind everything real
 	  * a band drawn scaled (k < TRUE_SCALE) is left out of the 3D world (BandMesh.backdrop: unparented); the near
@@ -295,8 +297,11 @@ local UNION_DROP_PER_SPACING = 0.15 -- ... plus this x their vertex spacing
 local RESELECT_INTERVAL = 0.2 -- s between quadtree selections
 local RESELECT_MIN_MOVE = 3 -- m the camera must move before a new selection ...
 local RESELECT_MOVE_FRACTION = 0.01 -- ... or this fraction of its height above the ground
-local HORIZON_LEAD_MIN = 30 -- m: meshes reach the horizon seen from this much higher than the camera ...
-local HORIZON_LEAD_FRACTION = 0.15 -- ... or this fraction of its height (it may climb while they build)
+-- CHANGED (Far layer smooth): one table (was HORIZON_LEAD_MIN / HORIZON_LEAD_FRACTION: the 200-locals limit)
+local HORIZON_LEAD = table.freeze({
+	MIN = 30, -- m: meshes reach the horizon seen from this much higher than the camera ...
+	FRACTION = 0.15, -- ... or this fraction of its height (it may climb while they build)
+})
 local STALE_MIN = 1500 -- m: the displayed meshes cover the view while the camera stays this close to where ...
 local STALE_HEIGHT_FRACTION = 0.6 -- ... they were chosen, or this fraction of its height (else plates show)
 local CHUNK_CACHE_MAX = 600 -- cached chunk geometries (~4 KB each)
@@ -885,18 +890,50 @@ local function configureBandPart(part: MeshPart, id: number, shadow: boolean)
 end
 
 --[[
+	CHANGED (Far layer smooth): the plan thread's time slicer (selection and band builds). Steamy: the rocket "sometimes"
+	jitters: a slice used to yield only AFTER the step that crossed the budget, so one slow step (a chunk of noise, a
+	depth-mapped chunk, 8 of them between checks) ran the slice to several times its budget. It now yields BEFORE a
+	step whose cost (taken as the last step's) would cross it, and every slice's length goes to the F3 "Terrain:"
+	line (average / peak, PeakMeter). slices.new(p) returns `due()`: true once the plan was aborted.
+]]
+-- (one local: the module is at the 200-locals limit)
+local slices = (function()
+	local PeakMeter = require(script.Parent.PeakMeter)
+	local meter = PeakMeter.new(1)
+	local function new(p: Plan): () -> boolean
+		local sliceStart = os.clock()
+		local last = sliceStart
+		return function(): boolean
+			local now = os.clock()
+			if now - sliceStart + (now - last) >= buildBudget() then -- CHANGED (Memory budget): load boost
+				PeakMeter.add(meter, now, (now - sliceStart) * 1000)
+				task.wait()
+				sliceStart = os.clock()
+				now = sliceStart
+			end
+			last = now
+			return p.aborted
+		end
+	end
+	-- the F3 part: average / peak slice (ms) and the budget
+	local function summary(): string
+		local now = os.clock()
+		return string.format(
+			"slice %.1f/%.1f ms (%.1f)",
+			PeakMeter.average(meter, now),
+			PeakMeter.peak(meter, now),
+			buildBudget() * 1000
+		)
+	end
+	return { new = new, summary = summary }
+end)()
+
+--[[
 	Builds one band mesh from `leaves` (those in `sunk` are lowered: outgoing leaves of a union). Yields whenever the
 	frame's time budget is spent. Returns the BandMesh, or nil (with p.failed / p.error set unless aborted).
 ]]
 local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: { [number]: boolean }?): BandMesh?
-	local sliceStart = os.clock()
-	local function due(): boolean
-		if os.clock() - sliceStart >= buildBudget() then -- CHANGED (Memory budget): load boost
-			task.wait()
-			sliceStart = os.clock()
-		end
-		return p.aborted
-	end
+	local due = slices.new(p) -- CHANGED (Far layer smooth): yields before a step would overrun the frame's budget
 	-- 1. chunk geometry (cached across plans)
 	local chunks: { Chunk } = {}
 	local nodes: { Node } = {}
@@ -948,7 +985,7 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 			kept[index] = cc
 			culled += n
 			left += cc.triangleCount
-			if index % 8 == 0 and due() then
+			if due() then -- CHANGED (Far layer smooth): every chunk (was every 8th)
 				return nil
 			end
 		end
@@ -999,7 +1036,7 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 			local mc, cn, cf = TerrainMath.depthChunk(c, p.depthCam, p.depthMap, shade)
 			mapped[index] = mc
 			near, far = math.min(near, cn), math.max(far, cf)
-			if index % 8 == 0 and due() then
+			if due() then -- CHANGED (Far layer smooth): every chunk (was every 8th)
 				return nil
 			end
 		end
@@ -1496,17 +1533,21 @@ end
 
 -- The plan's thread: chooses the leaves (time-sliced), then builds and swaps the changed bands.
 local function selectAndRun(p: Plan)
-	local sliceStart = os.clock()
+	-- CHANGED (Far layer smooth): starts after this frame's render step (it was spawned from it and ran a whole
+	-- slice there, after the camera but before the frame was drawn)
+	task.wait()
+	if p.aborted then
+		return
+	end
 	local selectParams = params()
 	selectParams.bandCount = bandCount
 	selectParams.near = p.near -- CHANGED (Night review)
 	selectParams.rings = p.rings -- CHANGED (Terrain polish)
-	selectParams.horizonLead = math.max(HORIZON_LEAD_MIN, HORIZON_LEAD_FRACTION * heightAboveGround(p.config, p.cam))
+	selectParams.horizonLead = math.max(HORIZON_LEAD.MIN, HORIZON_LEAD.FRACTION * heightAboveGround(p.config, p.cam))
+	-- CHANGED (Far layer smooth): the shared slicer (yields before overrunning)
+	local due = slices.new(p)
 	local function pause()
-		if os.clock() - sliceStart >= buildBudget() then -- CHANGED (Memory budget): load boost
-			task.wait()
-			sliceStart = os.clock()
-		end
+		due()
 	end
 	selectParams.pause = pause
 	local selection = TerrainMath.select(p.config, p.cam, selectParams, split)
@@ -1939,8 +1980,10 @@ placeBands = function(ctx: RenderContext.RenderContext)
 		if layerOn then
 			-- CHANGED (Far layer): its backdrop copy (a stale band pushed back the same way: same image, deeper)
 			-- CHANGED (Far layer fix): + its EditableMesh (the copies are made from it, not cloned)
+			-- CHANGED (Far layer smooth): body coordinates (the backdrop's scene stands still; FarLayer.commit gets
+			-- the body-to-workspace rotation for its face cameras) and whether it is in the 3D world too
 			local push = if bm.stale then 1 + PUSH_BACK else 1
-			FarLayer.setBand(bm.id, bm.part, bm.mesh, v * push, rotWs * bm.rot, bm.size * push)
+			FarLayer.setBand(bm.id, bm.part, bm.mesh, bm.origin, bm.rot, bm.size, push, not bm.backdrop)
 		end
 	end
 	-- CHANGED (Depth order fix): a depth-mapped band is drawn at C + k (C0 - C) + its mapped geometry (C: the camera,
@@ -1985,7 +2028,8 @@ placeBands = function(ctx: RenderContext.RenderContext)
 			bm.part.Parent = folder
 		end
 	end
-	FarLayer.commit(ctx) -- CHANGED (Far layer): draws the bands given above (none: hidden)
+	-- CHANGED (Far layer): draws the bands given above (none: hidden); CHANGED (Far layer smooth): + rotWs
+	FarLayer.commit(ctx, rotWs)
 end
 
 --============================================================================
@@ -2682,8 +2726,9 @@ function TerrainMesh.summary(): string
 		end
 	end
 	local p = plan
+	-- CHANGED (Far layer smooth): + the build slices' length (ms, average / peak over ~1 s; the budget)
 	return string.format(
-		"Terrain: %s  %d leaves  %.1fk tris  [%s]  %s  cam %.0f m/s  %d builds/min  %s  meshes %d (bands <= %d)  cache %d%s",
+		"Terrain: %s  %d leaves  %.1fk tris  [%s]  %s  cam %.0f m/s  %d builds/min  %s  %s  meshes %d (bands <= %d)  cache %d%s",
 		tierName,
 		leaves,
 		triangles / 1000,
@@ -2691,6 +2736,7 @@ function TerrainMesh.summary(): string
 		FarLayer.summary(), -- CHANGED (Far layer): was "map" (the depth map, used in "mesh" mode)
 		camSpeed.value,
 		recent,
+		slices.summary(),
 		if p then string.format("building %s (%d/%d)", p.current, p.builds, p.steps) else "idle",
 		liveMeshes,
 		bandCount,

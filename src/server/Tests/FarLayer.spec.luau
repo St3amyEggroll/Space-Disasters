@@ -8,9 +8,14 @@
 -- CHANGED (Far layer fix): + the backdrop's reach (ScaledSpace keeps other bodies beyond it), the diagnostics (face
 -- list, re-parent timing, the verdict's order, error clipping) and where /farground test's reference objects land.
 
+-- CHANGED (Far layer smooth): + the static scene (a band's place and the face cameras reproduce the picture from
+-- any eye and pocket rotation; standing still and small moves rewrite nothing, visible moves do), the light match,
+-- the clear background's colour, the faces' hold, and Render/PeakMeter (the F3 peaks).
+
 local TestKit = require(script.Parent.TestKit)
 local Render = game:GetService("StarterPlayer").StarterPlayerScripts.Client.Render
 local FarLayerMath = require(Render.FarLayerMath)
+local PeakMeter = require(Render.PeakMeter) -- CHANGED (Far layer smooth)
 
 --============================================================================
 -- Tunables (the values Render/FarLayer uses)
@@ -26,6 +31,11 @@ local SEED = 7
 -- CHANGED (Far layer fix): /farground test's reference objects (FarLayer's TEST) and the copies' re-parents
 local TEST_DISTANCE, TEST_LIFT, TEST_SIZE = 700, 90, 90
 local KICK_DELAYS = { 0.3, 2 }
+-- CHANGED (Far layer smooth): FarLayer's thresholds and light match
+local PIXEL_TOLERANCE = 0.5
+local NEAREST_FLOOR = 60
+local SEAM_GAIN = { 1.12, 1.09, 1.54 }
+local SEAM_DARK, SEAM_LIT = -0.05, 0.25
 --============================================================================
 
 -- deterministic generator (LCG; Lune has no Random)
@@ -338,5 +348,152 @@ return function(t: TestKit.Context)
 			end
 			t.expectTrue(ref.at.Y - half > 0, ref.name .. ": above the eye's horizon")
 		end
+	end)
+	-- CHANGED (Far layer smooth)
+	t.test("static scene: the face cameras show every band where the old eye-centred picture did", function()
+		for _ = 1, 200 do
+			local toWorkspace = CFrame.fromAxisAngle(randomDir(), uniform(0, math.pi))
+			local anchor = { x = uniform(-6e5, 6e5), y = uniform(-6e5, 6e5), z = uniform(-6e5, 6e5) }
+			local cam = {
+				x = anchor.x + uniform(-4000, 4000),
+				y = anchor.y + uniform(-4000, 4000),
+				z = anchor.z + uniform(-4000, 4000),
+			}
+			local scale = uniform(0.05, 1)
+			local push = if uniform(0, 1) < 0.3 then 1.004 else 1
+			local offset = randomDir() * uniform(100, 30000) -- band centre - eye, body axes
+			local origin = { x = cam.x + offset.X, y = cam.y + offset.Y, z = cam.z + offset.Z }
+			local at = FarLayerMath.scenePoint(origin, cam, anchor, push, scale)
+			local eye = Vector3.new(cam.x - anchor.x, cam.y - anchor.y, cam.z - anchor.z) * scale
+			-- the old picture: the band at offset x push x scale about the eye, workspace axes
+			local wanted = toWorkspace:VectorToWorldSpace(offset * push * scale)
+			for _, face in FarLayerMath.FACES do
+				local seen = FarLayerMath.sceneCamera(face, toWorkspace, eye):PointToObjectSpace(at)
+				local old = FarLayerMath.faceCamera(face):PointToObjectSpace(wanted)
+				t.expectTrue(
+					(seen - old).Magnitude < 1e-3 * math.max(old.Magnitude, 1),
+					"same place in the face camera"
+				)
+			end
+		end
+		-- a band that is not stale stands still while the eye moves
+		local anchor = { x = 1000, y = 2000, z = 3000 }
+		local origin = { x = 5000, y = 2500, z = -7000 }
+		local a = FarLayerMath.scenePoint(origin, { x = 1200, y = 2000, z = 3100 }, anchor, 1, 0.3)
+		local b = FarLayerMath.scenePoint(origin, { x = 4200, y = 2900, z = 1100 }, anchor, 1, 0.3)
+		t.expectTrue((a - b).Magnitude < 1e-9, "unpushed band: static")
+	end)
+
+	t.test("change thresholds: standing still writes nothing, sub-pixel moves wait, visible ones do not", function()
+		local tolerance = FarLayerMath.pixelAngle(PIXEL_TOLERANCE, 70, 1080)
+		t.expectNear(tolerance, PIXEL_TOLERANCE * 2 * math.tan(math.rad(35)) / 1080, 1e-12, "0.5 px at 1080p, 70 deg")
+		local nearest = 800 -- e.g. the near band's edge at the pads
+		t.expectTrue(not FarLayerMath.viewDue(0, 0, nearest, tolerance), "still: nothing")
+		t.expectTrue(not FarLayerMath.viewDue(0.2, 0, nearest, tolerance), "a fifth of a stud at 800: under 0.5 px")
+		t.expectTrue(FarLayerMath.viewDue(1, 0, nearest, tolerance), "a stud at 800: over 0.5 px")
+		t.expectTrue(FarLayerMath.viewDue(0, math.rad(0.1), nearest, tolerance), "a 0.1 degree turn: over 0.5 px")
+		-- the move's shift really is at most moved / nearest: ground `nearest` away, eye moved sideways
+		local shift = math.atan(1 / nearest)
+		t.expectTrue(shift <= 1 / nearest + 1e-12, "shift bound")
+		-- turnAngle: between ~0.8 and 1 x the true angle
+		for _ = 1, 100 do
+			local angle = uniform(0, 0.5)
+			local a = CFrame.fromAxisAngle(randomDir(), uniform(0, 3))
+			local b = a * CFrame.fromAxisAngle(randomDir(), angle)
+			local got = FarLayerMath.turnAngle(a, b)
+			t.expectTrue(got <= angle + 1e-6 and got >= 0.8 * angle - 1e-6, "turn angle bound")
+		end
+		-- nearest ground: the near band's edge (in the world), the height above it, the floor
+		local size = Vector3.new(2000, 300, 2000)
+		t.expectNear(
+			FarLayerMath.nearestGround(Vector3.new(200, 0, -100), size, true, NEAREST_FLOOR),
+			800,
+			1e-9,
+			"edge"
+		)
+		t.expectNear(
+			FarLayerMath.nearestGround(Vector3.new(200, 750, -100), size, true, NEAREST_FLOOR),
+			math.sqrt(800 ^ 2 + 600 ^ 2),
+			1e-9,
+			"edge and height"
+		)
+		t.expectNear(
+			FarLayerMath.nearestGround(Vector3.new(200, 750, -100), size, false, NEAREST_FLOOR),
+			600,
+			1e-9,
+			"height only"
+		)
+		t.expectNear(
+			FarLayerMath.nearestGround(Vector3.new(990, 0, 0), size, true, NEAREST_FLOOR),
+			NEAREST_FLOOR,
+			1e-9,
+			"floor"
+		)
+	end)
+
+	t.test("light match: the seam gain by day, the old light at night, flat ground exact, never above 1", function()
+		local function lit(ambient: Color3, light: Color3, up: number): { number }
+			return { ambient.R + light.R * up, ambient.G + light.G * up, ambient.B + light.B * up }
+		end
+		local base = {
+			outdoor = Color3.fromRGB(128, 128, 132),
+			brightness = 2.5,
+			sunUp = 0.6,
+			perBrightness = 0.4,
+			floor = 0.25,
+			gain = { 1, 1, 1 },
+			dark = SEAM_DARK,
+			lit = SEAM_LIT,
+		}
+		local a0, l0 = FarLayerMath.viewportLight(base)
+		local matched = table.clone(base)
+		matched.gain = SEAM_GAIN
+		local a1, l1 = FarLayerMath.viewportLight(matched)
+		local before, after = lit(a0, l0, 0.6), lit(a1, l1, 0.6)
+		local outdoor = { 128 / 255, 128 / 255, 132 / 255 }
+		for c = 1, 3 do
+			local a = math.max(outdoor[c], 0.25)
+			local g = SEAM_GAIN[c]
+			-- exact (the old light x the gain) unless the ambient would pass 1 (blue at noon): then 1 + the sun
+			local want = if a * g + (g - 1) * 0.6 <= 1 then (a + 0.6) * g else 1 + 0.6
+			t.expectNear(after[c], want, 1e-6, "flat ground by day, channel " .. c)
+			t.expectNear(before[c], a + 0.6, 1e-6, "the old light, channel " .. c)
+		end
+		for _, colour in { a1, l1 } do
+			t.expectTrue(colour.R <= 1 and colour.G <= 1 and colour.B <= 1, "at most 1")
+		end
+		local night = table.clone(matched)
+		night.sunUp = -0.3
+		local a2, l2 = FarLayerMath.viewportLight(night)
+		local night0 = table.clone(base)
+		night0.sunUp = -0.3
+		local a3, l3 = FarLayerMath.viewportLight(night0)
+		t.expectTrue(a2 == a3 and l2 == l3, "night: the old light")
+		-- the clear background: the body's colour lit like flat ground
+		local bg = FarLayerMath.shade(Color3.new(0.4, 0.5, 0.3), a0, l0, 0.6)
+		t.expectNear(bg.G, math.min(0.5 * before[2], 1), 1e-6, "background lit like flat ground")
+		-- faces stay drawn a while after they left the view
+		t.expectTrue(FarLayerMath.faceHeld(true, -math.huge, 10, 2), "visible")
+		t.expectTrue(FarLayerMath.faceHeld(false, 9, 10, 2), "held")
+		t.expectTrue(not FarLayerMath.faceHeld(false, 7, 10, 2), "released")
+	end)
+
+	t.test("PeakMeter: a spike stays one to two windows, the average is the last full window's", function()
+		local m = PeakMeter.new(1)
+		for i = 0, 59 do
+			PeakMeter.add(m, i / 60, if i == 30 then 12 else 1)
+		end
+		t.expectNear(PeakMeter.peak(m, 59 / 60), 12, 1e-9, "the spike shows")
+		for i = 60, 119 do
+			PeakMeter.add(m, i / 60, 1)
+		end
+		t.expectNear(PeakMeter.peak(m, 119 / 60), 12, 1e-9, "still shown in the next window")
+		t.expectNear(PeakMeter.average(m, 119 / 60), (59 + 12) / 60, 1e-9, "average of the full window")
+		for i = 120, 180 do
+			PeakMeter.add(m, i / 60, 1)
+		end
+		t.expectNear(PeakMeter.peak(m, 3), 1, 1e-9, "gone after two windows")
+		t.expectNear(PeakMeter.count(m, 3), 60, 1.5, "samples per second")
+		t.expectNear(PeakMeter.peak(m, 10), 0, 1e-9, "nothing measured for a while: 0")
 	end)
 end

@@ -4,7 +4,8 @@
 	A text panel with live diagnostics. Other controllers add their own lines and timings:
 
 		DebugOverlay.addLine("pocket", 30, function() return "Pocket: 3 CRAFT_ALIGNED epoch 7" end)
-		DebugOverlay.recordTiming("Universe", elapsedMs)   -- shown as a smoothed average
+		DebugOverlay.recordTiming("Universe", elapsedMs)   -- shown as a smoothed average (CHANGED (Far layer smooth):
+		                                                     -- and the peak of the last ~1 s: a hitch shows)
 		DebugOverlay.countBytes("CraftStates", bytes)      -- CHANGED (Phase 3): received bytes/s per stream
 
 	Built-in lines: UT, warp rate, FPS / frame time, ping, network in/out, memory, part counts, character position.
@@ -19,6 +20,7 @@ local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
+local PeakMeter = require(script.Parent.Parent.Render.PeakMeter) -- CHANGED (Far layer smooth): peaks (hitches)
 local UniverseTime = require(ReplicatedStorage.Shared.Sim.UniverseTime)
 
 --============================================================================
@@ -28,6 +30,7 @@ local TOGGLE_KEY = Enum.KeyCode.F3
 local REFRESH_S = GameConfig.DEBUG_OVERLAY_REFRESH
 local PART_COUNT_REFRESH_S = 2 -- counting descendants is not free
 local SMOOTHING = 0.1 -- exponential moving average factor for FPS and timings
+local PEAK_WINDOW_S = 1 -- CHANGED (Far layer smooth): the peaks shown are of the last one to two of these
 local FONT = Enum.Font.Code
 local TEXT_SIZE = 14
 local BACKGROUND = Color3.fromRGB(10, 12, 18)
@@ -50,6 +53,8 @@ local DebugOverlay = {}
 
 local lines: { Line } = {}
 local timings: { [string]: number } = {}
+local timingPeaks: { [string]: PeakMeter.Meter } = {} -- CHANGED (Far layer smooth)
+local framePeak = PeakMeter.new(PEAK_WINDOW_S) -- CHANGED (Far layer smooth): the longest frame
 local timingOrder: { string } = {}
 local visible = false
 local gui: ScreenGui? = nil
@@ -102,8 +107,15 @@ function DebugOverlay.removeLine(key: string)
 	end
 end
 
--- Records how long a system took this frame (ms); displayed as a smoothed average.
+-- Records how long a system took this frame (ms); displayed as a smoothed average. CHANGED (Far layer smooth): and
+-- the peak of the last ~1 s (Steamy's "the rocket sometimes jitters": one slow frame hides in an average)
 function DebugOverlay.recordTiming(name: string, ms: number)
+	local peak = timingPeaks[name]
+	if peak == nil then
+		peak = PeakMeter.new(PEAK_WINDOW_S)
+		timingPeaks[name] = peak
+	end
+	PeakMeter.add(peak, os.clock(), ms)
 	local previous = timings[name]
 	if previous == nil then
 		timings[name] = ms
@@ -186,9 +198,19 @@ local function buildText(): string
 		table.insert(out, if ok then tostring(text) else `{line.key}: <error {text}>`)
 	end
 	if #timingOrder > 0 then
-		table.insert(out, "Timings (ms):")
+		table.insert(out, "Timings (ms, average / peak ~1 s):") -- CHANGED (Far layer smooth): + the peak
+		local now = os.clock()
 		for _, name in timingOrder do
-			table.insert(out, string.format("  %-18s %6.3f", name, timings[name]))
+			local peak = timingPeaks[name]
+			table.insert(
+				out,
+				string.format(
+					"  %-18s %6.3f / %6.2f",
+					name,
+					timings[name],
+					if peak then PeakMeter.peak(peak, now) else 0
+				)
+			)
 		end
 	end
 	return table.concat(out, "\n")
@@ -242,7 +264,13 @@ local function addBuiltInLines()
 		return string.format("Warp %gx", UniverseTime.warpRate())
 	end)
 	DebugOverlay.addLine("fps", 3, function()
-		return string.format("FPS %.0f  (%.2f ms)", 1000 / math.max(smoothedFrameMs, 1e-3), smoothedFrameMs)
+		-- CHANGED (Far layer smooth): + the longest frame of the last ~1 s (a hitch)
+		return string.format(
+			"FPS %.0f  (%.2f ms, longest %.1f ms)",
+			1000 / math.max(smoothedFrameMs, 1e-3),
+			smoothedFrameMs,
+			PeakMeter.peak(framePeak, os.clock())
+		)
 	end)
 	DebugOverlay.addLine("net", 4, function()
 		local ping = Players.LocalPlayer:GetNetworkPing() * 1000
@@ -311,6 +339,7 @@ function DebugOverlay.Start()
 
 	RunService.PreRender:Connect(function(dt: number)
 		smoothedFrameMs += (dt * 1000 - smoothedFrameMs) * SMOOTHING
+		PeakMeter.add(framePeak, os.clock(), dt * 1000) -- CHANGED (Far layer smooth)
 	end)
 
 	while true do
