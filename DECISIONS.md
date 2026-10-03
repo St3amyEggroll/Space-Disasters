@@ -697,9 +697,9 @@ Steamy: "make the solar system and mars", and instead of time warp for now "do a
 - **Lighting:** the sun direction of every view is from the camera to Sol's real position (`Universe.sunDirectionFrom`). ScaledSpace draws Sol at its true direction and distance, with its true size (at least 0.3 degrees), so planets in front hide it. Planet shadows are tested for every body except stars. Around Sol a pocket's up is simply toward Sol.
 - **Mars (`Sim/BiomeMars`, registered in Biome and Relief):**
   - Rust-orange dust, butterscotch highlands, large dark regions and wind streaks.
-  - Polar ice caps (the northern one larger) on low domes.
+  - Polar ice caps (north of about 73 degrees, south of about 76) on low domes.
   - Craters at three sizes, duller than the Mun's.
-  - The **Big Canyon** (about 50 km long, 2.7 km wide, 1.9 km deep, layered walls) and the **Big Volcano** (12 km wide, about 4 km high, with a caldera).
+  - The **Big Canyon** (about 50 km long, 3.3 km wide, 1.9 km deep, layered walls) and the **Big Volcano** (12 km wide, about 4 km high, with a caldera).
   - Heights -2.6..+4.6 km, under the 5 km rails floor.
   - Reddish boulders (prop `RedBoulder`).
   - Terrain, collision and props use the existing per-body path. TerrainMath, TerrainMesh and Surface are unchanged (Mars' haze comes from its AtmosphereColor).
@@ -735,6 +735,7 @@ Steamy: "make the solar system and mars", and instead of time warp for now "do a
   - Focused on a planet, heliocentric lines turn slowly with its day.
   - Interest and puppets across axes groups are approximate or off (only at SOI edges).
   - Astronauts on EVA near Sol do not burn up (crafts do).
+  - Crossing an SOI edge between Earth, Sol and Mars turns the chase camera's view once (its orbit is kept in the body's axes, which change there); the craft itself is continuous.
 
 ## Phase 0 spike results
 

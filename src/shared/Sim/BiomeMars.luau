@@ -12,7 +12,7 @@
 	    streaks and grain; the north is a little lower than the south (the real planet's dichotomy)
 	  * polar ice caps (white with a pink tint), the northern one larger, on a low dome
 	  * craters at three sizes (bowl, raised rim, ejecta), duller than the Mun's: dust fills the small ones
-	  * the Big Canyon: a ~60 km long chasm near the equator, ~2.7 km wide and ~1.9 km deep, flat floored with
+	  * the Big Canyon: a ~50 km long chasm near the equator, ~3.3 km wide and ~1.9 km deep, flat floored with
 	    steep layered walls
 	  * the Big Volcano: a ~12 km wide shield rising ~4 km, with a 1 km wide caldera on top
 	Heights stay inside [MIN_HEIGHT, MAX_HEIGHT] (below the 5 km rails floor: Mars' air top).
@@ -60,20 +60,20 @@ local STREAK_FREQ = 9 -- wind streaks (stretched east-west)
 local STREAK = 0.05
 
 -- Polar caps (|y| = sin latitude)
-local NORTH_CAP0 = 0.885
-local NORTH_CAP1 = 0.915
-local SOUTH_CAP0 = 0.925
-local SOUTH_CAP1 = 0.95
-local CAP_NOISE = 0.03
+local NORTH_CAP0 = 0.955 -- ~73 degrees north
+local NORTH_CAP1 = 0.97
+local SOUTH_CAP0 = 0.972 -- ~76 degrees south (the southern cap is smaller)
+local SOUTH_CAP1 = 0.982
+local CAP_NOISE = 0.015
 local CAP_DOME = 220 -- m
 
 -- Big Canyon: a great-circle arc between two points (lat, lon in degrees), with wiggle
 local CANYON_A = { -7, -100 }
 local CANYON_B = { -10, -0 }
-local CANYON_HALF_WIDTH = 0.045 -- rad (~1.35 km)
+local CANYON_HALF_WIDTH = 0.055 -- rad (~1.65 km)
 local CANYON_WIDTH_VAR = 0.3 -- +/- share of the half width
 local CANYON_FLOOR_SHARE = 0.4 -- inner share of the half width that is flat floor
-local CANYON_WIGGLE = 0.012 -- rad
+local CANYON_WIGGLE = 0.016 -- rad
 local CANYON_TAPER = 0.15 -- rad at each end over which the canyon narrows to nothing
 local CANYON_DEPTH = 1900 -- m
 local CANYON_BANDS = 9 -- layer bands in the walls
@@ -100,7 +100,7 @@ local MAX_HEIGHT = 4600 -- m (Mars' rails floor is its 5 km air top)
 -- Craters, per scale: cells per cube-face edge, chance per cell, rim radius range (share of a cell), colour
 -- strength, bowl depth / rim radius, depth cap (m), rim height / rim radius, rim cap (m)
 local CRATER_CELLS = { 5, 14, 36 }
-local CRATER_PROB = { 0.55, 0.5, 0.42 }
+local CRATER_PROB = { 0.35, 0.3, 0.28 }
 local CRATER_RMIN = { 0.16, 0.14, 0.12 }
 local CRATER_RMAX = { 0.36, 0.34, 0.3 }
 local CRATER_SHADE = { 0.9, 0.7, 0.5 }
