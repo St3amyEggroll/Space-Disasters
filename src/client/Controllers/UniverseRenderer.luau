@@ -66,6 +66,7 @@ local Vec3d = require(ReplicatedStorage.Shared.Math.Vec3d)
 local DebugOverlay = require(script.Parent.DebugOverlay)
 local EditableBudget = require(script.Parent.Parent.Render.EditableBudget) -- CHANGED (Memory budget)
 local Effects = require(script.Parent.Parent.Render.Effects) -- CHANGED (Phase 10)
+local FarLayer = require(script.Parent.Parent.Render.FarLayer) -- CHANGED (Far layer): /farground
 local PocketController = require(script.Parent.PocketController)
 local RemoteCraftRenderer = require(script.Parent.RemoteCraftRenderer)
 local RenderContext = require(script.Parent.Parent.Render.RenderContext)
@@ -349,7 +350,13 @@ local function step(dt: number)
 		Surface.update(ctx, ScaledSpace.isSurfaceMode(), ScaledSpace.proxyMinAltitude(ctx.dominantBodyId))
 	end)
 	-- CHANGED (Phase 2a playtest 4): black starry space in front of Roblox's sky
-	SkyCube.update(ctx, ScaledSpace.isSurfaceMode(), ScaledSpace.proxyMinAltitude(ctx.dominantBodyId))
+	-- CHANGED (Far layer): + how far the 3D ground reaches (an airless body's sky is space on the ground too)
+	SkyCube.update(
+		ctx,
+		ScaledSpace.isSurfaceMode(),
+		ScaledSpace.proxyMinAltitude(ctx.dominantBodyId),
+		Surface.groundReach()
+	)
 	timed("SkyLighting", function()
 		SkyLighting.update(ctx)
 	end)
@@ -477,6 +484,10 @@ function UniverseRenderer.Start()
 	Remotes.event("DebugView").OnClientEvent:Connect(function(view: unknown)
 		if view == "bands" then
 			Surface.setDebugTint(not Surface.debugTint())
+		elseif view == "farground" then
+			-- CHANGED (Far layer): far ground as the backdrop layer ("layer") or as scaled 3D bands ("mesh"); the
+			-- terrain rebuilds its bands for the mode, the F3 "Terrain:" line shows it
+			print("[Terrain] /farground: far ground drawn as " .. FarLayer.toggle())
 		end
 	end)
 	RunService:BindToRenderStep(RENDER_STEP_NAME, RENDER_PRIORITY, step)

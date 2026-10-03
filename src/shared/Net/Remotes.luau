@@ -35,7 +35,7 @@ local DEFINITIONS: { [string]: Kind } = {
 	SaveSlots = "Reliable", -- (names: { [number]: string }) slot index -> design name for filled slots
 	Notify = "Reliable", -- (text: string, kind: "Info" | "Error")
 	DebugView = "Reliable", -- CHANGED (Far slabs fix): server -> client (view: "bands") a debug chat command toggles a
-	--   client-only debug view (DebugService)
+	--   client-only debug view (DebugService); CHANGED (Far layer): + "farground" (the far ground's mode)
 	-- CHANGED (Phase 2a): flight
 	RequestStage = "Reliable", -- (craftId) pilot pressed Space: launch from the pad, or fire the next stage
 	LeaveSeat = "Reliable", -- () pilot/passenger pressed F

@@ -85,6 +85,7 @@
 		Surface.isReady(): boolean                          -- CHANGED (Terrain polish): ground meshes on screen
 		Surface.isSettled(): boolean                        -- CHANGED (Memory budget): ground built, no plan running
 		Surface.setLoadBoost(mode?)                         -- CHANGED (Memory budget): "Menu" / "Cover" / nil
+		Surface.groundReach(): number                       -- CHANGED (Far layer): studs the 3D ground reaches
 		Surface.setDebugTint(on) / Surface.debugTint()      -- CHANGED (Far slabs fix): the /bands debug view
 
 	CHANGED (Far slabs fix): Steamy's screenshot over the pads showed big dark-green rectangles with lighter lines
@@ -597,6 +598,12 @@ end
 -- CHANGED (Memory budget): the terrain around the camera is built (ScaledSpace holds its other textures until then).
 function Surface.isSettled(): boolean
 	return TerrainMesh.isSettled()
+end
+
+-- CHANGED (Far layer): studs from the camera the ground drawn in the 3D world reaches (SkyCube: an airless body's
+-- space sky on the ground stays behind it; TerrainMesh.groundReach).
+function Surface.groundReach(): number
+	return TerrainMesh.groundReach()
 end
 
 -- CHANGED (Memory budget): "Menu" / "Cover" (the main menu / its black cover is up: build the ground faster) / nil.

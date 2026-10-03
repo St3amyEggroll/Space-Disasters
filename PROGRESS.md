@@ -21,6 +21,19 @@ Phase 2 is split into 2a/2b so you can playtest halfway through (agreed with Ste
 
 ---
 
+## 2026-10-03: far ground fixed for real (see D53)
+- **Far hills and craters no longer show through nearer ground.** The far ground is now drawn like a picture behind everything (like KSP), with its own correct order inside. Your rocket, the base and players are always in front of it.
+- **The Mun's sky is black space with stars**, day and night, also when you stand on it.
+- Pictures (before and after): `scratchpad/layer/before_after.png`.
+
+## 2026-10-03: how to test (far ground)
+1. Stand on the pads, zoom the camera out and turn it around (also at night). Look at the ridge and mountains past the base: no far ground on top of nearer ground.
+2. Press F3: the "Terrain:" line shows `far: layer 3/6 faces ...` (the new picture). Type `/farground` to switch to the old way (`far: mesh`), and again to switch back, to compare.
+3. If the far ground is missing (only the ground near you shows) in `layer`, type `/farground` and tell me.
+4. `/bands` still colours the bands in both modes.
+5. Mun: F7, Mun, Landed. The sky is black with stars; walk around the craters and look across them.
+6. Mars: the butterscotch sky still shows above the far ground.
+
 ## 2026-10-03: the map's planets look real now (see D52)
 - **Real planets on the map (M).** Earth, the Mun and Mars show the same ground as when you fly past them: oceans, land, ice, craters, Mars' red dust and ice caps. They turn slowly with their day.
 - **Day and night side.** The side facing away from Sol is dark, with a soft edge between day and night, so each planet looks round. Sol is not dark: it glows.

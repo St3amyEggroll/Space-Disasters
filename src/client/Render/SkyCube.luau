@@ -12,6 +12,8 @@
 
 	Opacity (0 = Roblox's sky shows, 1 = black space):
 	  * in surface mode (the true-scale ground is drawn): 0, so far ground tiles are never hidden behind the cube;
+	    CHANGED (Far layer): except on bodies without air (the Mun): 1 while the ground drawn in the 3D world lies
+	    inside the cube (the far ground's backdrop, Render/FarLayer, is in front of it), so their sky is space;
 	  * bodies without air: 1 above the ground view;
 	  * with air: smoothstep from the proxy handover altitude to the top of the atmosphere.
 	Below the handover the ground view is drawn and Roblox's skybox is the sky (blue by day, starry by night).
@@ -37,7 +39,10 @@
 
 	API:
 		SkyCube.init(parent)                                  -- parent: workspace.ClientUniverse
-		SkyCube.update(ctx, surfaceMode, handoverAltitude)    -- every frame, after ScaledSpace
+		SkyCube.update(ctx, surfaceMode, handoverAltitude, groundReach?)
+		                                                      -- every frame, after ScaledSpace and Surface;
+		                                                      -- CHANGED (Far layer): groundReach: studs the 3D
+		                                                      -- world's ground reaches (Surface.groundReach)
 		SkyCube.setOverride(opacity?, halfSize?)              -- CHANGED (Phase 5): fixed opacity / size (map view);
 		                                                      -- nil restores the automatic behaviour
 ]]
@@ -80,6 +85,9 @@ local SKY_DAY_ELEVATION0 = -0.08 -- sin of the sun's elevation where the day sky
 local SKY_DAY_ELEVATION1 = 0.12 -- ... and is full
 local SKY_AIR_POWER = 0.7 -- sky amount = day * air^this (as Roblox's sky thins with height)
 local SKY_COLOR_STEP = 0.01 -- rewrite panel colours only when the sky amount moved more than this
+-- CHANGED (Far layer): an airless body's sky is space on the ground too while the 3D world's ground stays within
+-- this x the cube's half-size (SkyCube.update's groundReach)
+local GROUND_CLEARANCE = 0.97
 --============================================================================
 
 local SkyCube = {}
@@ -342,13 +350,26 @@ end
 
 -- Space opacity for this frame (header).
 -- CHANGED (Solar system): a body with a SkyColor (Mars) is always fully covered (the cube paints its day sky too).
-local function spaceOpacity(ctx: RenderContext.RenderContext, surfaceMode: boolean, handover: number): number
+-- CHANGED (Far layer): a body without air is space on the ground too (Steamy: "mun should be space cause it has no
+-- atmophere": Roblox's blue sky showed there), as long as the ground drawn in the 3D world lies inside the cube
+-- (groundReach < GROUND_CLEARANCE x h): the far ground's backdrop sits in front of the cube; "mesh" mode's 3D bands
+-- reach ~1.7 km (Low's 1500-stud draw distance gives a 1350-stud cube: Roblox's sky stays there)
+local function spaceOpacity(
+	ctx: RenderContext.RenderContext,
+	surfaceMode: boolean,
+	handover: number,
+	h: number,
+	groundReach: number?
+): number
 	local body = Bodies.find(ctx.dominantBodyId)
 	local atmosphere = if body then body.Atmosphere else nil
 	if atmosphere and atmosphere.SkyColor then
 		return 1
 	end
 	if surfaceMode then
+		if body and atmosphere == nil and groundReach ~= nil and groundReach < GROUND_CLEARANCE * h then
+			return 1
+		end
 		return 0
 	end
 	if atmosphere == nil then
@@ -367,7 +388,12 @@ function SkyCube.setOverride(value: number?, halfSize: number?)
 	end
 end
 
-function SkyCube.update(ctx: RenderContext.RenderContext, surfaceMode: boolean, handover: number)
+function SkyCube.update(
+	ctx: RenderContext.RenderContext,
+	surfaceMode: boolean,
+	handover: number,
+	groundReach: number? -- CHANGED (Far layer): studs the 3D world's ground reaches (Surface.groundReach)
+)
 	local f = folder
 	if f == nil then
 		return
@@ -390,7 +416,11 @@ function SkyCube.update(ctx: RenderContext.RenderContext, surfaceMode: boolean, 
 	if tint ~= skyTint or math.abs(amount - skyAmount) > SKY_COLOR_STEP or (amount == 0 and skyAmount ~= 0) then
 		setSky(amount, tint)
 	end
-	local target = if forced then forced.opacity else spaceOpacity(ctx, surfaceMode, handover)
+	-- CHANGED (Far layer): the half-size first (an airless body's ground must lie inside the cube)
+	local h = if forced
+		then forced.halfSize
+		else math.clamp(ctx.drawDistance * HALF_SIZE_FRACTION, HALF_SIZE_MIN, HALF_SIZE_MAX)
+	local target = if forced then forced.opacity else spaceOpacity(ctx, surfaceMode, handover, h, groundReach)
 	if target <= 0 then
 		if shown then
 			shown = false
@@ -405,9 +435,6 @@ function SkyCube.update(ctx: RenderContext.RenderContext, surfaceMode: boolean, 
 	if math.abs(target - opacity) > OPACITY_STEP or (target >= 1 and opacity < 1) then
 		setOpacity(target)
 	end
-	local h = if forced
-		then forced.halfSize
-		else math.clamp(ctx.drawDistance * HALF_SIZE_FRACTION, HALF_SIZE_MIN, HALF_SIZE_MAX)
 	if math.abs(h - halfSize) > RESIZE_THRESHOLD * halfSize then
 		layout(h)
 	end

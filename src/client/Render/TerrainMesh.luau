@@ -205,6 +205,26 @@
 	0.03 / 0.04 / 0.00 % -> 0.45 / 0.54 / 0.55 % (drift at the horizon of a fast, low climb and of 700 m/s low
 	flight; none standing), base covered ~0 %, no memory refusals, band builds about the same.
 
+	CHANGED (Far layer): Steamy, after four fixes, still saw far terrain through nearer terrain, "even when not flying ...
+	craters and mountains mess it up". The seam no fix above can close: the near band (where the rocket, the base and
+	the players stand) must stay at true scale, the far bands must be drawn shrunk (Roblox draws nothing beyond its
+	draw distance), and only ONE uniform scale about the camera keeps the order from every camera, so wherever a
+	true-scale ridge or crater rim hides farther ground, that ground, drawn shrunk, lands in front of it. Now, as in
+	KSP, the far ground is a separate layer behind every real 3D object (Render/FarLayer):
+	  * while FarLayer.active() (mode "layer": the default on Medium / High; Low keeps "mesh" for phones), a plan
+	    builds every band as TRUE geometry (no depth map, no bulge / profile culling: Plan.layer, BandMesh.layer);
+	    a band built for the other mode is rebuilt (FarLayer.consumeChanged: /farground or a tier change re-plans)
+	  * placeBands gives FarLayer every band (its part, centre minus camera, rotation, true size; a stale band pushed
+	    back as before); FarLayer draws copies of them in ViewportFrames on a cube of panels around the camera, all at
+	    one scale about the eye (exact picture and depth order from any camera), behind everything real
+	  * a band drawn scaled (k < TRUE_SCALE) is left out of the 3D world (BandMesh.backdrop: unparented); the near
+	    band at true scale stays (rocket, base, players and props stand on it), and its copy in the backdrop hides
+	    the far ground behind near ridges inside the picture too
+	  * mode "mesh" (/farground) is the depth-mapped 3D bands of the Flight depth fix, unchanged
+	  * summary(): the far ground's mode in place of "map"; setDebugTint: the backdrop's copies too
+	MAX_MESH_TRIANGLES / MAX_MESH_VERTICES became one table (MAX_MESH): the module is at Roblox's 200-locals limit.
+	Offline audit: see D53.
+
 	API (driven by Surface):
 		TerrainMesh.init(parent)
 		TerrainMesh.update(ctx, show, prebuild)   show: draw this frame (surface mode); prebuild: build but keep hidden
@@ -223,6 +243,7 @@
 		TerrainMesh.isSettled(): boolean           CHANGED (Memory budget): no plan running for built ground
 		TerrainMesh.setLoadBoost(mode?)            CHANGED (Memory budget): "Menu" / "Cover" / nil: build time per frame
 		TerrainMesh.summary(): string              F3 debug line
+		TerrainMesh.groundReach(): number          CHANGED (Far layer): studs the 3D world's ground reaches (SkyCube)
 		TerrainMesh.setDebugTint(on)               CHANGED (Far slabs fix): the /bands view (a flat colour per band)
 		TerrainMesh.debugTint(): boolean           CHANGED (Far slabs fix)
 		TerrainMesh.tintBand(part, id)             CHANGED (Far slabs fix): (internal) one band's /bands tint
@@ -235,6 +256,7 @@ local Workspace = game:GetService("Workspace")
 local Biome = require(ReplicatedStorage.Shared.Sim.Biome)
 local Bodies = require(ReplicatedStorage.Shared.Config.Bodies) -- CHANGED (Terrain polish)
 local EditableBudget = require(script.Parent.EditableBudget) -- CHANGED (Memory budget)
+local FarLayer = require(script.Parent.FarLayer) -- CHANGED (Far layer): the far ground's backdrop
 local Frames = require(ReplicatedStorage.Shared.Math.Frames)
 local Quality = require(script.Parent.Quality)
 local RenderContext = require(script.Parent.RenderContext)
@@ -256,8 +278,9 @@ type Near = TerrainMath.Near -- CHANGED (Night review)
 -- CHANGED (Memory budget): the bands per tier are TierParams.maxBands (High / Medium 4, Low 3), fewer when the
 -- Editable memory budget has no room (EditableBudget.room); one more mesh is built at a time
 local MIN_BANDS = 2 -- the fewest bands a starved budget plans with (the near band and one more)
-local MAX_MESH_TRIANGLES = 20000 -- EditableMesh limits: a band beyond them is never attempted ...
-local MAX_MESH_VERTICES = 60000
+-- EditableMesh limits: a band beyond them is never attempted ...
+-- CHANGED (Far layer): one table (was MAX_MESH_TRIANGLES / MAX_MESH_VERTICES: the module is at the 200-locals limit)
+local MAX_MESH = table.freeze({ TRIANGLES = 20000, VERTICES = 60000 })
 local MAX_MESH_LEAVES = 100 -- leaves per mesh (192 triangles each: under EditableMesh's 20,000 triangles)
 local PART_LIMIT = 2040 -- studs per MeshPart axis (engine limit 2048)
 local MESH_STORE_EXTENT = 512 -- mesh units across a band's box (vertices are stored normalised; Size scales them)
@@ -376,6 +399,9 @@ local CULL = table.freeze({
 	BUILD_FIRST_S = 0.2, -- s: the estimate before the first build
 	VELOCITY_SMOOTH_S = 0.3, -- s: time constant of the camera velocity estimate (the lead's direction)
 	RATE_WINDOW_S = 60, -- s: summary()'s band builds per minute are counted over this window
+	-- CHANGED (Far layer): studs from the camera the 3D world's ground can reach in "mesh" mode (groundReach): the
+	-- near band's true-scale corners (~1.4-1.6 km), the depth-mapped bands within ~1010 studs
+	GROUND_REACH = 1700,
 })
 -- CHANGED (Far slabs fix): the /bands debug view (setDebugTint): a flat colour per band (Highlight fill; the near
 -- band keeps its colours), plates white. One table with its state (`on`, the module is at Roblox's 200-locals limit).
@@ -464,6 +490,9 @@ type BandMesh = {
 	-- depthError is per metre the camera is from it; and the map itself (its plan's, CULL.DEPTH_MAP widened)
 	depthCam: Vec3d,
 	depthMap: TerrainMath.DepthMap,
+	-- CHANGED (Far layer): built for the backdrop (true geometry: no depth map, no culling; FarLayer)
+	layer: boolean,
+	backdrop: boolean, -- drawn only in the backdrop this frame (a scaled band while the layer is on)
 }
 
 type Plan = {
@@ -503,6 +532,7 @@ type Plan = {
 	-- its uniform zone widened for the camera's height: TerrainMath.depthStart)
 	depthCam: Vec3d,
 	depthMap: TerrainMath.DepthMap,
+	layer: boolean, -- CHANGED (Far layer): FarLayer draws the scaled bands (true geometry, one scale, no culling)
 }
 
 type Plate = {
@@ -946,7 +976,8 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 			b = hb,
 		}
 	end
-	if id ~= TerrainMath.NEAR_BAND then -- CHANGED (Flight depth fix): always (was: only while p.mapped)
+	-- CHANGED (Far layer): not for the backdrop: FarLayer draws true geometry at one scale (exact from any camera)
+	if id ~= TerrainMath.NEAR_BAND and not p.layer then -- CHANGED (Flight depth fix): always (was: only while p.mapped)
 		local h = haze
 		local shade = if h
 			then function(x: number, y: number, z: number, r: number, g: number, b: number): (number, number, number)
@@ -992,7 +1023,7 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 		vertices += c.vertexCount
 		triangleCount += c.triangleCount
 	end
-	if triangleCount > MAX_MESH_TRIANGLES or vertices > MAX_MESH_VERTICES then
+	if triangleCount > MAX_MESH.TRIANGLES or vertices > MAX_MESH.VERTICES then
 		-- ... (a crowded selection with few bands): handled like a budget refusal (keep, plan again later)
 		p.failed = true
 		p.refusal = "budget"
@@ -1108,6 +1139,8 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 		depthError = depthError,
 		depthCam = Vec3d.clone(p.depthCam), -- CHANGED (Flight depth fix)
 		depthMap = p.depthMap,
+		layer = p.layer, -- CHANGED (Far layer)
+		backdrop = false,
 	}
 end
 
@@ -1416,7 +1449,9 @@ local function preparePlan(p: Plan, selection: Selection)
 				rebuild = Vec3d.distance(p.depthCam, old.depthCam) * old.depthError > tolerance
 			end
 			if not rebuild and id ~= TerrainMath.NEAR_BAND then
-				rebuild = old.depthK <= 0 or old.depthMap.dist[1] ~= p.depthMap.dist[1] -- or another uniform zone
+				-- CHANGED (Far layer): or built for the other mode (/farground: the backdrop's true geometry)
+				rebuild = old.layer ~= p.layer
+					or (not p.layer and (old.depthK <= 0 or old.depthMap.dist[1] ~= p.depthMap.dist[1])) -- or another uniform zone
 			end
 			-- CHANGED (See-through fix): or its bulge culling is no longer sure for this camera (or misses ground the
 			-- bulge hides now)
@@ -1753,6 +1788,7 @@ local function maybeSelect(config: Config, cam: Vec3d)
 		stitch = {},
 		light = lightNow, -- CHANGED (Review 3)
 		depthMap = CULL.DEPTH_MAP, -- CHANGED (Flight depth fix): widened below
+		layer = FarLayer.active(), -- CHANGED (Far layer)
 		-- CHANGED (Flight depth fix): the depth map's centre: the camera LEAD_BUILDS band builds ahead (was `mapped`)
 		depthCam = TerrainMath.depthCentre(
 			cam,
@@ -1763,16 +1799,19 @@ local function maybeSelect(config: Config, cam: Vec3d)
 			CULL.LEAD_HEIGHT * math.max(SurfaceHeight.height(config.bodyId, cam), 0)
 		),
 		-- CHANGED (See-through fix): what the bulge hides from every camera within the reach (speed and height)
-		occluder = TerrainMath.bulgeOccluder(
-			config,
-			cam,
-			math.max(
-				CULL.REACH_MIN,
-				CULL.REACH_HEIGHT * heightAboveGround(config, cam),
-				CULL.REACH_SPEED_S * camSpeed.value,
-				CULL.ZOOM_COVER * math.min(camSpeed.zoom, CULL.ZOOM_MAX)
-			)
-		),
+		-- CHANGED (Far layer): none for the backdrop (its depth order is exact: nothing to cull, no reach to keep)
+		occluder = if FarLayer.active()
+			then nil
+			else TerrainMath.bulgeOccluder(
+				config,
+				cam,
+				math.max(
+					CULL.REACH_MIN,
+					CULL.REACH_HEIGHT * heightAboveGround(config, cam),
+					CULL.REACH_SPEED_S * camSpeed.value,
+					CULL.ZOOM_COVER * math.min(camSpeed.zoom, CULL.ZOOM_MAX)
+				)
+			),
 	}
 	-- CHANGED (Flight depth fix): the plan's uniform zone: as wide as the protected depth (placeBands' rule, at this
 	-- height) allows for the nearest scaled ground (outside the near square's inner edge, or under a camera outside it)
@@ -1815,6 +1854,7 @@ local function setMeshesShown(shown: boolean)
 		for _, bm in bands do
 			bm.part.Parent = nil
 		end
+		FarLayer.hide() -- CHANGED (Far layer)
 	end
 	-- shown: placeBands parents each band after posing it
 end
@@ -1837,8 +1877,13 @@ placeBands = function(ctx: RenderContext.RenderContext)
 	-- CHANGED (Depth order fix): depth-mapped bands are posed apart (below); a scaled true-geometry band (the near
 	-- band at altitude) is kept in front of them: at most the depth map's factor at its farthest ground
 	local mappedCap = 1
+	-- CHANGED (Far layer): while the layer is on, every true-geometry band goes to the backdrop (FarLayer: one
+	-- scale about the camera, exact order) and only the bands at true scale stay in the 3D world
+	local layerOn = FarLayer.active()
+	FarLayer.clear()
 	for _, bm in bands do
 		bm.nearestNow = math.max(bm.nearest - Vec3d.distance(cam, bm.planCam), MIN_BAND_RADIUS)
+		bm.backdrop = false
 		if bm.depthK > 0 then
 			continue
 		end
@@ -1872,6 +1917,7 @@ placeBands = function(ctx: RenderContext.RenderContext)
 			k = math.min(k, mappedCap) -- CHANGED (Depth order fix)
 		end
 		bm.scale = k
+		bm.backdrop = layerOn and k < TRUE_SCALE -- CHANGED (Far layer)
 		if bm.stale then
 			-- outgoing leaves lose every overlap with the incoming ones (exact: same image, a little deeper)
 			local pushed = k * (1 + PUSH_BACK)
@@ -1888,6 +1934,11 @@ placeBands = function(ctx: RenderContext.RenderContext)
 		table.insert(moveParts, bm.part)
 		-- CHANGED (Night review): * the band frame (bands are stored in a tangent frame, not universe axes)
 		table.insert(moveCFrames, CFrame.new(camWs + v * bm.appliedScale) * rotWs * bm.rot)
+		if layerOn then
+			-- CHANGED (Far layer): its backdrop copy (a stale band pushed back the same way: same image, deeper)
+			local push = if bm.stale then 1 + PUSH_BACK else 1
+			FarLayer.setBand(bm.id, bm.part, v * push, rotWs * bm.rot, bm.size * push)
+		end
 	end
 	-- CHANGED (Depth order fix): a depth-mapped band is drawn at C + k (C0 - C) + its mapped geometry (C: the camera,
 	-- C0: its build camera, k: depthPose), shrunk about the camera only if its box exceeds the part limit (beyond
@@ -1922,10 +1973,16 @@ placeBands = function(ctx: RenderContext.RenderContext)
 	for id, bm in bands do
 		-- CHANGED (Review 3): a band hidden under the launch site's plate stays hidden (hideScaledAt decides again
 		-- this frame, right after)
-		if bm.part.Parent ~= folder and holeHidden[id] ~= bm then
+		-- CHANGED (Far layer): a backdrop band is not in the 3D world
+		if bm.backdrop then
+			if bm.part.Parent ~= nil then
+				bm.part.Parent = nil
+			end
+		elseif bm.part.Parent ~= folder and holeHidden[id] ~= bm then
 			bm.part.Parent = folder
 		end
 	end
+	FarLayer.commit(ctx) -- CHANGED (Far layer): draws the bands given above (none: hidden)
 end
 
 --============================================================================
@@ -2146,6 +2203,7 @@ function TerrainMesh.init(parent: Folder)
 	meshes.Name = "TerrainMesh"
 	meshes.Parent = parent
 	meshFolder = meshes
+	FarLayer.init(parent) -- CHANGED (Far layer)
 	local platesFolderInstance = Instance.new("Folder")
 	platesFolderInstance.Name = "TerrainPlates"
 	plateFolder = platesFolderInstance
@@ -2192,6 +2250,9 @@ function TerrainMesh.update(ctx: RenderContext.RenderContext, show: boolean, pre
 	hiddenSince = nil
 	activeLast = true -- CHANGED (Memory budget)
 	setHidden(false)
+	if FarLayer.consumeChanged() then
+		forceSelect = true -- CHANGED (Far layer): /farground or a tier change: the bands are rebuilt for the mode
+	end
 	-- CHANGED (Terrain polish): the draw budget (placeBands and the ring layout of the next plan)
 	local dd = ctx.drawDistance
 	if dd ~= dd or dd <= 0 or dd > DRAW_DISTANCE_CAP then
@@ -2551,7 +2612,7 @@ function TerrainMesh.hideScaledAt(points: { Vec3d }?)
 			bm.part.Parent = nil
 		elseif holeHidden[bandId] ~= nil then
 			holeHidden[bandId] = nil
-			if meshesShown and bm.part.Parent ~= folder then
+			if meshesShown and bm.part.Parent ~= folder and not bm.backdrop then -- CHANGED (Far layer)
 				bm.part.Parent = folder
 			end
 		end
@@ -2561,6 +2622,22 @@ function TerrainMesh.hideScaledAt(points: { Vec3d }?)
 			holeHidden[bandId] = nil
 		end
 	end
+end
+
+--[[
+	CHANGED (Far layer): how far from the camera (studs) the ground drawn in the 3D world, and not by the backdrop,
+	can reach: 0 while the backdrop is on screen (its panels sit in front of the SkyCube and show all ground beyond
+	them) or nothing is drawn, CULL.GROUND_REACH for the 3D bands ("mesh" mode), huge for plates. The SkyCube makes
+	an airless body's sky black space on the ground when this lies inside it (Steamy: "mun should be space").
+]]
+function TerrainMesh.groundReach(): number
+	if platesShown then
+		return math.huge
+	end
+	if not meshesShown or FarLayer.isShown() then
+		return 0
+	end
+	return CULL.GROUND_REACH
 end
 
 -- F3 debug line.
@@ -2603,11 +2680,12 @@ function TerrainMesh.summary(): string
 	end
 	local p = plan
 	return string.format(
-		"Terrain: %s  %d leaves  %.1fk tris  [%s]  map  cam %.0f m/s  %d builds/min  %s  meshes %d (bands <= %d)  cache %d%s",
+		"Terrain: %s  %d leaves  %.1fk tris  [%s]  %s  cam %.0f m/s  %d builds/min  %s  meshes %d (bands <= %d)  cache %d%s",
 		tierName,
 		leaves,
 		triangles / 1000,
 		table.concat(parts, " "),
+		FarLayer.summary(), -- CHANGED (Far layer): was "map" (the depth map, used in "mesh" mode)
 		camSpeed.value,
 		recent,
 		if p then string.format("building %s (%d/%d)", p.current, p.builds, p.steps) else "idle",
@@ -2632,6 +2710,7 @@ function TerrainMesh.setDebugTint(on: boolean)
 	for id, bm in bands do
 		TerrainMesh.tintBand(bm.part, id)
 	end
+	FarLayer.setTint(on, DEBUG_TINT.BANDS, DEBUG_TINT.FURTHER) -- CHANGED (Far layer): the backdrop's copies too
 	releaseAllPlates()
 end
 
