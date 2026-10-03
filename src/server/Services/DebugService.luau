@@ -15,6 +15,8 @@
 	  /farground test         CHANGED (Far layer fix): reference objects in the backdrop (a red cube +Z, a green ball +X,
 	                          a plain mesh -Z), tinted labelled panels; turns the layer on (again: off)
 	  /farground tex          CHANGED (Far layer fix): the backdrop copies' white texture on / off
+	  /farground probe        CHANGED (Far layer probe): six labelled test objects in front of the camera (a part,
+	                          SurfaceGui panels near and far, a ViewportFrame): which kinds Roblox draws here
 	"Your craft" = the craft you pilot, else the craft whose pocket you are in.
 	CHANGED (Solar system): bodies are earth/homeworld, mun/moon, mars and sol/sun (orbit only: /hover over Sol
 	burns the craft up). The two placements are exported for the admin panel (AdminService), so it uses exactly
@@ -265,7 +267,12 @@ local function onChatted(player: Player, message: string)
 		-- CHANGED (Far layer): the client switches its far ground mode
 		-- CHANGED (Far layer fix): "/farground test" (reference objects) and "/farground tex" (white texture)
 		local option = args[2]
-		local view = if option == "test" or option == "tex" then "farground " .. option else "farground"
+		-- CHANGED (Far layer probe): "/farground probe" (six test objects in front of the camera)
+		local view = if option == "test"
+				or option == "tex"
+				or option == "probe"
+			then "farground " .. option
+			else "farground"
 		debugView:FireClient(player, view)
 	end
 end

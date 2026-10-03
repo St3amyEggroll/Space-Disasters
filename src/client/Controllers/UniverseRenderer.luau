@@ -67,6 +67,7 @@ local DebugOverlay = require(script.Parent.DebugOverlay)
 local EditableBudget = require(script.Parent.Parent.Render.EditableBudget) -- CHANGED (Memory budget)
 local Effects = require(script.Parent.Parent.Render.Effects) -- CHANGED (Phase 10)
 local FarLayer = require(script.Parent.Parent.Render.FarLayer) -- CHANGED (Far layer): /farground
+local LayerProbe = require(script.Parent.Parent.Render.LayerProbe) -- CHANGED (Far layer probe): /farground probe
 local PocketController = require(script.Parent.PocketController)
 local RemoteCraftRenderer = require(script.Parent.RemoteCraftRenderer)
 local RenderContext = require(script.Parent.Parent.Render.RenderContext)
@@ -498,6 +499,9 @@ function UniverseRenderer.Start()
 			-- CHANGED (Far layer fix): reference objects in the backdrop (turns the layer on); F3 / Output tell
 			local on = FarLayer.toggleTest()
 			print("[Terrain] /farground test: " .. (if on then "on (far ground: " .. FarLayer.mode() .. ")" else "off"))
+		elseif view == "farground probe" then
+			-- CHANGED (Far layer probe): six labelled test objects in front of the camera (which kinds Roblox draws)
+			print("[Terrain] /farground probe: " .. (if LayerProbe.toggle() then "on (A-F in front of you)" else "off"))
 		elseif view == "farground tex" then
 			-- CHANGED (Far layer fix): the backdrop copies' white texture on / off
 			print("[Terrain] /farground tex: white texture " .. (if FarLayer.toggleTexture() then "on" else "off"))
