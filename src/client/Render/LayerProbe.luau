@@ -14,6 +14,9 @@
 	     ViewportFrame with a blue cube (blue frame around it)
 	  F  a 2040-stud SurfaceGui panel 1020 studs ahead, faint      the backdrop's exact panel size and distance
 	     yellow over the whole view, with a label at its centre
+	CHANGED (Far layer probe 2): Steamy saw B, C, D and E but not F. Added, 1000 studs ahead and 20 degrees up:
+	  G / H / I / J  strips 100 studs wide and 800 / 1200 / 1600 / 2040 tall (white / cyan / pink / brown)
+	  K  a 2040-stud square with a 1024 px canvas, 1600 studs ahead, opaque purple behind everything
 
 	Each panel says its letter. Nothing exists while the probe is off.
 
@@ -41,7 +44,7 @@ local LayerProbe = {}
 local folder: Folder? = nil
 local probes: { Probe } = {}
 
-local function newPart(name: string, size: number, transparency: number): Part
+local function newPart(name: string, size: number, transparency: number, height: number?): Part
 	local part = Instance.new("Part")
 	part.Name = name
 	part.Anchored = true
@@ -50,18 +53,24 @@ local function newPart(name: string, size: number, transparency: number): Part
 	part.CanTouch = false
 	part.CastShadow = false
 	part.Transparency = transparency
-	part.Size = Vector3.new(size, size, 1)
+	part.Size = Vector3.new(size, height or size, 1)
 	return part
 end
 
-local function newGui(part: BasePart, color: Color3, text: string, frameTransparency: number): SurfaceGui
+local function newGui(
+	part: BasePart,
+	color: Color3,
+	text: string,
+	frameTransparency: number,
+	canvas: Vector2?
+): SurfaceGui
 	local gui = Instance.new("SurfaceGui")
 	gui.Face = Enum.NormalId.Front
 	gui.LightInfluence = 0
 	gui.AlwaysOnTop = false
 	gui.MaxDistance = MAX_GUI_DISTANCE
 	gui.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
-	gui.CanvasSize = Vector2.new(CANVAS, CANVAS)
+	gui.CanvasSize = canvas or Vector2.new(CANVAS, CANVAS)
 	gui.Adornee = part
 	local frame = Instance.new("Frame")
 	frame.Size = UDim2.fromScale(1, 1)
@@ -141,6 +150,24 @@ local function build(): Folder
 	local panel = newPart("F", 2040, 1)
 	newGui(panel, Color3.fromRGB(255, 230, 0), "F", 0.8)
 	add(f, panel, 1020, 0, 0)
+
+	-- CHANGED (Far layer probe 2): B-E drew, F (2040 studs) did not: which size stops a SurfaceGui. Tall strips
+	-- 100 studs wide, 1000 studs ahead, above the horizon, left to right: G 800, H 1200, I 1600, J 2040 tall
+	local strips: { { name: string, tall: number, yaw: number, color: Color3 } } = {
+		{ name = "G", tall = 800, yaw = -24, color = Color3.fromRGB(255, 255, 255) },
+		{ name = "H", tall = 1200, yaw = -16, color = Color3.fromRGB(0, 255, 255) },
+		{ name = "I", tall = 1600, yaw = 16, color = Color3.fromRGB(255, 0, 255) },
+		{ name = "J", tall = 2040, yaw = 24, color = Color3.fromRGB(140, 70, 20) },
+	}
+	for _, strip in strips do
+		local part = newPart(strip.name, 100, 1, strip.tall)
+		newGui(part, strip.color, strip.name, 0, Vector2.new(64, 256))
+		add(f, part, 1000, strip.yaw, 20)
+	end
+	-- K: 2040 square like F but with the backdrop's 1024 px canvas, farther (behind the rest), opaque purple
+	local k = newPart("K", 2040, 1)
+	newGui(k, Color3.fromRGB(110, 40, 160), "K", 0, Vector2.new(1024, 1024))
+	add(f, k, 1600, 0, 0)
 
 	return f
 end
