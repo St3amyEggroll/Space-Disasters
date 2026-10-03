@@ -35,7 +35,7 @@
 		MapBodiesMath.sunDirection(body: Vec3d, sol: Vec3d): Vector3?        unit, doubles subtracted first
 		MapBodiesMath.nightShellRotation(sun: Vector3): CFrame               rotation, +Y = sun
 		MapBodiesMath.shellKey(m): number                                    1..6: which shared shell image patch m uses
-		MapBodiesMath.paintShell(m, size, buf)                               RGBA8 pixels of patch m's shell image
+		MapBodiesMath.paintShell(m, size, buf, y0?, y1?)                     RGBA8 pixels of patch m's shell image
 		MapBodiesMath.pixelRadius(distance, radius, tanHalfFov, viewportHeight): number   math.huge when inside
 		MapBodiesMath.limbRadius(distance, radius): number                   limb radius in the centre's plane
 		MapBodiesMath.frontLimbRadius(distance, radius): number              same in the plane through the front point
@@ -44,9 +44,10 @@
 		MapBodiesMath.rimGradient(sunCam: Vector3): (rotationDeg, tNight, tDay)
 		MapBodiesMath.rimKeypoints(canvas): (number, number)                 gradient positions of the two limbs
 		MapBodiesMath.rimAlpha(rho, inner, outer): number                    rho in limb radii
-		MapBodiesMath.paintRim(size, color, inner, outer, peak, buf)
+		MapBodiesMath.paintRim(size, color, inner, outer, peak, buf, y0?, y1?)
 		MapBodiesMath.glowAlpha(t): number                                   t in glow radii
-		MapBodiesMath.paintGlow(size, color, buf)
+		MapBodiesMath.paintGlow(size, color, buf, y0?, y1?)
+	The painters fill rows y0..y1 (default: all), so a caller can spread an image over several frames.
 		MapBodiesMath.RIM_CANVAS
 ]]
 
@@ -92,6 +93,15 @@ end
 
 local function byte(x: number): number
 	return math.clamp(math.floor(x * 255 + 0.5), 0, 255)
+end
+
+-- One RGBA8 pixel; r, g, b, a in 0..1.
+local function writePixel(buf: buffer, size: number, px: number, py: number, r: number, g: number, b: number, a: number)
+	local offset = (py * size + px) * 4
+	buffer.writeu8(buf, offset, byte(r))
+	buffer.writeu8(buf, offset + 1, byte(g))
+	buffer.writeu8(buf, offset + 2, byte(b))
+	buffer.writeu8(buf, offset + 3, byte(a))
 end
 
 --============================================================================
@@ -144,16 +154,12 @@ end
 
 -- RGBA8 pixels (black, alpha = nightAlpha) of the shell image for patch `m`, in Biome's pixel <-> UV convention
 -- (pixel (px, py) at UV ((px + 0.5) / size, (py + 0.5) / size)), the one ScaledSpace's patch mesh and textures use.
-function MapBodiesMath.paintShell(m: { number }, size: number, buf: buffer)
-	for py = 0, size - 1 do
+function MapBodiesMath.paintShell(m: { number }, size: number, buf: buffer, y0: number?, y1: number?)
+	for py = y0 or 0, y1 or size - 1 do
 		for px = 0, size - 1 do
 			local s, t = Biome.uvToParam((px + 0.5) / size, (py + 0.5) / size)
 			local _, y = Biome.patchDirection(m, s, t)
-			local offset = (py * size + px) * 4
-			buffer.writeu8(buf, offset, 0)
-			buffer.writeu8(buf, offset + 1, 0)
-			buffer.writeu8(buf, offset + 2, 0)
-			buffer.writeu8(buf, offset + 3, byte(MapBodiesMath.nightAlpha(y)))
+			writePixel(buf, size, px, py, 0, 0, 0, MapBodiesMath.nightAlpha(y))
 		end
 	end
 end
@@ -230,9 +236,19 @@ function MapBodiesMath.rimAlpha(rho: number, inner: number, outer: number): numb
 end
 
 -- RGBA8 pixels of a rim image (size x size, RIM_CANVAS limb radii to each edge).
-function MapBodiesMath.paintRim(size: number, color: Color3, inner: number, outer: number, peak: number, buf: buffer)
+function MapBodiesMath.paintRim(
+	size: number,
+	color: Color3,
+	inner: number,
+	outer: number,
+	peak: number,
+	buf: buffer,
+	y0: number?,
+	y1: number?
+)
 	local half = size * 0.5
-	for py = 0, size - 1 do
+	local r0, g0, b0 = color.R, color.G, color.B
+	for py = y0 or 0, y1 or size - 1 do
 		for px = 0, size - 1 do
 			local dx, dy = (px + 0.5 - half) / half, (py + 0.5 - half) / half
 			local rho = math.sqrt(dx * dx + dy * dy) * RIM_CANVAS
@@ -240,12 +256,8 @@ function MapBodiesMath.paintRim(size: number, color: Color3, inner: number, oute
 			if rho >= RIM_CANVAS then
 				a = 0 -- nothing in the corners (the gradient's rotation must never show the image's square)
 			end
-			local c = color:Lerp(Color3.new(1, 1, 1), RIM_WHITEN * smoothstep(0.5 * peak, peak, a))
-			local offset = (py * size + px) * 4
-			buffer.writeu8(buf, offset, byte(c.R))
-			buffer.writeu8(buf, offset + 1, byte(c.G))
-			buffer.writeu8(buf, offset + 2, byte(c.B))
-			buffer.writeu8(buf, offset + 3, byte(a))
+			local w = RIM_WHITEN * smoothstep(0.5 * peak, peak, a)
+			writePixel(buf, size, px, py, r0 + (1 - r0) * w, g0 + (1 - g0) * w, b0 + (1 - b0) * w, a)
 		end
 	end
 end
@@ -266,19 +278,25 @@ function MapBodiesMath.glowAlpha(t: number): number
 end
 
 -- RGBA8 pixels of the glow image (size x size, the glow's radius to each edge).
-function MapBodiesMath.paintGlow(size: number, color: Color3, buf: buffer)
+function MapBodiesMath.paintGlow(size: number, color: Color3, buf: buffer, y0: number?, y1: number?)
 	local half = size * 0.5
-	for py = 0, size - 1 do
+	local r0, g0, b0 = color.R, color.G, color.B
+	for py = y0 or 0, y1 or size - 1 do
 		for px = 0, size - 1 do
 			local dx, dy = (px + 0.5 - half) / half, (py + 0.5 - half) / half
 			local t = math.sqrt(dx * dx + dy * dy)
 			local core = t / GLOW_CORE_WIDTH
-			local c = color:Lerp(Color3.new(1, 1, 1), GLOW_WHITEN * math.exp(-core * core))
-			local offset = (py * size + px) * 4
-			buffer.writeu8(buf, offset, byte(c.R))
-			buffer.writeu8(buf, offset + 1, byte(c.G))
-			buffer.writeu8(buf, offset + 2, byte(c.B))
-			buffer.writeu8(buf, offset + 3, byte(MapBodiesMath.glowAlpha(t)))
+			local w = GLOW_WHITEN * math.exp(-core * core)
+			writePixel(
+				buf,
+				size,
+				px,
+				py,
+				r0 + (1 - r0) * w,
+				g0 + (1 - g0) * w,
+				b0 + (1 - b0) * w,
+				MapBodiesMath.glowAlpha(t)
+			)
 		end
 	end
 end

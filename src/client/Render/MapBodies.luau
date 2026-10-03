@@ -34,7 +34,7 @@
 	16 KB = 72 KB), and Low's rim is an even ring (no gradient updates). Medium: shell 64, rim 128, glow 128
 	(96 + 128 + 64 = 288 KB); High: rim 256, glow 256 (96 + 512 + 256 = 864 KB). All through EditableBudget (OTHER_BASE
 	priority with release callbacks: a released image falls back as above and is asked for again IMAGE_RETRY_S
-	later). They are painted once, one per frame, by a background thread while the map is open, and kept.
+	later). They are painted once by a background thread while the map is open (PAINT_BUDGET_S a frame), and kept.
 	Parts: 48 per drawn planet / moon (24 ground + 24 shell) plus a ball; a body drawn as an icon has its parts
 	unparented. Nothing here runs while the map is closed (update() is called by the map's render step only).
 
@@ -121,6 +121,8 @@ local ICON_DOT_PX = 9
 local ICON_HIT_PX = 22 -- the dot's clickable square (touch)
 local ICON_GUI_SIZE = Vector2.new(160, 44)
 local IMAGE_RETRY_S = 5 -- s before a refused image is asked for again
+local PAINT_BUDGET_S = 0.002 -- image painting work per frame (s), in chunks of PAINT_ROWS rows
+local PAINT_ROWS = 4
 local IMAGE_PRIORITY = EditableBudget.PRIORITY.OTHER_BASE
 local OWNER = "MapBodies"
 --============================================================================
@@ -556,7 +558,7 @@ local function applyGlowImage(view: BodyView)
 end
 
 --============================================================================
--- Images (night shell, rims, glow): painted once, one per frame, kept
+-- Images (night shell, rims, glow): painted once in the background, kept
 --============================================================================
 
 local function releaseImage(entry: MapImage)
@@ -565,8 +567,29 @@ local function releaseImage(entry: MapImage)
 	EditableBudget.destroy(handle)
 end
 
--- Creates and paints one image; false when it could not be made now (refused / unavailable).
-local function makeImage(entry: MapImage, size: number, paint: (buffer) -> (), onRelease: () -> ()): boolean
+-- Paints rows 0..size-1 a few at a time, yielding whenever PAINT_BUDGET_S of work is done this frame.
+local function paintRows(size: number, paintRange: (y0: number, y1: number) -> ())
+	local sliceStart = os.clock()
+	for y0 = 0, size - 1, PAINT_ROWS do
+		paintRange(y0, math.min(y0 + PAINT_ROWS, size) - 1)
+		if os.clock() - sliceStart >= PAINT_BUDGET_S then
+			task.wait()
+			sliceStart = os.clock()
+		end
+	end
+end
+
+--[[
+	Paints one image's pixels (spread over frames) and only then creates it through the budget and writes it, so a
+	budget release can never hit a half-painted image. False when it could not be made now (refused, unavailable,
+	or the map closed meanwhile).
+]]
+local function makeImage(
+	entry: MapImage,
+	size: number,
+	paint: (buf: buffer, y0: number, y1: number) -> (),
+	onRelease: () -> ()
+): boolean
 	if entry.image and entry.size == size then
 		return true
 	end
@@ -574,6 +597,13 @@ local function makeImage(entry: MapImage, size: number, paint: (buffer) -> (), o
 		releaseImage(entry)
 	end
 	if os.clock() < entry.retryAt or imagesUnavailable then
+		return false
+	end
+	local buf = buffer.create(size * size * 4)
+	paintRows(size, function(y0: number, y1: number)
+		paint(buf, y0, y1)
+	end)
+	if not isOpen then
 		return false
 	end
 	local release = function()
@@ -590,8 +620,6 @@ local function makeImage(entry: MapImage, size: number, paint: (buffer) -> (), o
 		end
 		return false
 	end
-	local buf = buffer.create(size * size * 4)
-	paint(buf)
 	local ok = pcall(function()
 		image:WritePixelsBuffer(Vector2.zero, image.Size, buf)
 	end)
@@ -677,13 +705,12 @@ local function paintImages()
 					break
 				end
 				local matrix = m :: { number }
-				local done = makeImage(shellEntry(key), spec.shellSize, function(buf: buffer)
-					MapBodiesMath.paintShell(matrix, spec.shellSize, buf)
+				local done = makeImage(shellEntry(key), spec.shellSize, function(buf: buffer, y0: number, y1: number)
+					MapBodiesMath.paintShell(matrix, spec.shellSize, buf, y0, y1)
 				end, function()
 					setShellsShown(false)
 				end)
 				all = all and done
-				task.wait()
 			end
 			if isOpen then
 				setShellsShown(all)
@@ -696,19 +723,18 @@ local function paintImages()
 			if view.rimImage then
 				local rim = RIMS[view.id] or DEFAULT_RIM
 				local target = view
-				makeImage(rimEntry(view.id), spec.rimSize, function(buf: buffer)
-					MapBodiesMath.paintRim(spec.rimSize, rim.color, rim.inner, rim.outer, rim.peak, buf)
+				makeImage(rimEntry(view.id), spec.rimSize, function(buf: buffer, y0: number, y1: number)
+					MapBodiesMath.paintRim(spec.rimSize, rim.color, rim.inner, rim.outer, rim.peak, buf, y0, y1)
 				end, function()
 					applyRimImage(target)
 				end)
 				applyRimImage(view)
-				task.wait()
 			end
 		end
 		local sun = viewById[Bodies.SUN]
 		if isOpen and sun then
-			makeImage(glowImage, spec.glowSize, function(buf: buffer)
-				MapBodiesMath.paintGlow(spec.glowSize, GLOW_COLOR, buf)
+			makeImage(glowImage, spec.glowSize, function(buf: buffer, y0: number, y1: number)
+				MapBodiesMath.paintGlow(spec.glowSize, GLOW_COLOR, buf, y0, y1)
 			end, function()
 				applyGlowImage(sun)
 			end)
