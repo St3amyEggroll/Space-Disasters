@@ -671,6 +671,22 @@ Steamy asked for "an effects phase, to update effects of rockets and everything"
   - `/bands` chat command: tints each band (band 1 blue, band 2 red, band 3 yellow, further bands magenta; plates white, site copy cyan) so screenshots show which band is on top.
 - **Audit (High, 3000 draw distance, a climb):** far-over-near pixels went from 0.23% to 0.15% on average. The screenshot-like view went from 0.6-1.0% to 0.1-0.3%. No holes. Thin slivers remain along ridge lines and the horizon. Medium and Low were not re-audited.
 
+### D51a. Far terrain depth order by construction (2026-10-03)
+- **Report (Steamy, Studio, /bands on):** standing at the pads at night, band 3's mountains (yellow) were drawn over band 1 and over the true-scale ridge. With /bands off they showed as dark slabs, which Steamy read as "see through the earth".
+- **Cause:** D50's reach-based culling. With the camera zoomed out, its reach (2.5 × zoom, 75-375 m) was so large that it culled almost nothing.
+- **Fix:** every scaled band is stored through one shared radial depth map around the camera it was built from (C0). A point d metres away sits on the same ray at f(d) studs, with f continuous and strictly increasing (900 m → 520, 3 km → 940, 40 km → 1010 studs).
+  - From C0 the picture and the depth order are exactly the true ones.
+  - As the camera moves, a band is placed at C + k(C0 − C) and rebuilt once its drift reaches 0.003 rad. A still camera re-plans at once.
+  - Above 25 m/s (resuming below 12 m/s), the bands use D50's uniform scaling and culling, because rigid bands can't keep up with fast motion.
+- **Audit:**
+  - Standing at the pads: 0.23% → 0.03% far-over-near, no holes.
+  - In flight: about the same as before.
+  - Base coverage: still ~0%.
+- **Open:**
+  - Lift-off on Low and Medium can show a seam or horizon hole for 1-2 s during the switch to uniform scaling.
+  - Specks where the near square's corners lie beyond 520 studs.
+  - Exact order in fast flight would need per-vertex updates (Studio spike).
+
 ## Phase 0 spike results
 
 Steamy ran all ten spikes in Studio on 2026-09-30. The raw `[SPIKE ...]` output is summarized here.
