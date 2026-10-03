@@ -309,6 +309,18 @@ export type Profile = {
 
 export type Triangle = { number } -- ax, ay, az, bx, by, bz, cx, cy, cz (body-relative, m), counter-clockwise from above
 
+--[[
+	CHANGED (Depth order fix): the radial depth map every scaled band is baked with (depthMap / mapDepth / depthChunk):
+	a point d m from the band's build camera is stored at depth f(d) along the same ray. f runs through the anchors
+	(dist[i], depth[i]) as a power law between neighbours (linear below the first, the last segment's power beyond
+	the last): continuous and strictly increasing.
+]]
+export type DepthMap = {
+	dist: { number }, -- m, increasing
+	depth: { number }, -- studs, increasing
+	power: { number }, -- exponent of the segment from anchor i to i + 1 (the last one continues past the end)
+}
+
 local TerrainMath = {}
 
 TerrainMath.CHUNK = CHUNK
@@ -2586,6 +2598,148 @@ function TerrainMath.wedgePair(
 	local size1 = Vector3.new(thickness, height, math.abs(ac:Dot(back)))
 	local cf1 = CFrame.fromMatrix((a + c) / 2 + shift, -right, upAxis, -back)
 	return cf0, size0, cf1, size1
+end
+
+--============================================================================
+-- CHANGED (Depth order fix): radial depth map of the scaled bands
+--============================================================================
+--[[
+	Why: every scaled band used to be drawn uniformly scaled about the camera by its own factor k, and the part size
+	limit makes k fall outward (Studio's 3000-stud draw distance: ~1 / 0.40 / 0.12 / 0.034), so a farther band's hills
+	were drawn NEARER than nearer ground and showed through it wherever that ground hides them in truth. No set of
+	uniform factors can keep both the order and the part limit, and culling what nearer ground hides (D49, D50) only
+	holds for a camera "reach", which is huge for a zoomed-out camera on foot.
+	Now every scaled band stores each vertex at u * f(d) about its build camera C0 (u, d: the direction and distance
+	from C0), with ONE continuous, strictly increasing f shared by all scaled bands. Points on one ray from C0 keep
+	their order and their screen position, so from C0 the picture is the true one, depth order included: a nearer
+	ridge always hides the mountains behind it, inside a band and across bands. Bounded: f(d) <= the last anchor's
+	depth while d <= its distance (the ring around the camera fits the part limit). Normals stay the true ones.
+	depthPose gives the factor a band is posed with while the camera moves away from C0, and its error bound.
+]]
+
+-- A depth map through the anchors (dist[i] m -> depth[i] studs; both strictly increasing, depth[1] <= dist[1]).
+function TerrainMath.depthMap(dist: { number }, depth: { number }): DepthMap
+	assert(#dist >= 2 and #dist == #depth, "depthMap: two anchors or more")
+	local power: { number } = table.create(#dist, 1)
+	for i = 1, #dist - 1 do
+		assert(dist[i + 1] > dist[i] and depth[i + 1] > depth[i] and depth[i] > 0, "depthMap: increasing anchors")
+		power[i] = math.log(depth[i + 1] / depth[i]) / math.log(dist[i + 1] / dist[i])
+	end
+	power[#dist] = power[#dist - 1]
+	return table.freeze({ dist = table.clone(dist), depth = table.clone(depth), power = power })
+end
+
+-- The drawn depth (studs) of a point `d` m from the build camera.
+function TerrainMath.mapDepth(m: DepthMap, d: number): number
+	local dist, depth = m.dist, m.depth
+	if d <= dist[1] then
+		return depth[1] * math.max(d, 0) / dist[1]
+	end
+	local n = #dist
+	local i = 1
+	while i < n and d > dist[i + 1] do
+		i += 1
+	end
+	return depth[i] * (d / dist[i]) ^ m.power[i]
+end
+
+-- f(d) / d: the factor a point `d` m away is drawn at (seen from the build camera).
+function TerrainMath.depthFactor(m: DepthMap, d: number): number
+	if d <= m.dist[1] then
+		return m.depth[1] / m.dist[1]
+	end
+	return TerrainMath.mapDepth(m, d) / d
+end
+
+--[[
+	The factor k to pose a band holding ground `near`..`far` m from its build camera C0 with, and the error bound.
+	The band is drawn at C + k (C0 - C) (C: the camera now): a point at d then lies off its true ray from C by at most
+	|C - C0| x |k / f(d) - 1 / d| radians (to first order; the error of a band rebuilt for C is 0). Returns the k that
+	minimises the largest of those over [near, far] (sampled) and that largest value (radians per metre moved).
+]]
+function TerrainMath.depthPose(m: DepthMap, near: number, far: number): (number, number)
+	near = math.max(near, 1)
+	far = math.max(far, near)
+	local SAMPLES = 24
+	local ds: { number } = table.create(SAMPLES + 1, 0)
+	local fs: { number } = table.create(SAMPLES + 1, 0)
+	local lo, hi = math.huge, 0
+	for i = 0, SAMPLES do
+		local d = near * (far / near) ^ (i / SAMPLES)
+		local f = TerrainMath.mapDepth(m, d)
+		ds[i + 1], fs[i + 1] = d, f
+		lo = math.min(lo, f / d)
+		hi = math.max(hi, f / d)
+	end
+	local function worst(k: number): number
+		local e = 0
+		for i = 1, SAMPLES + 1 do
+			e = math.max(e, math.abs(k / fs[i] - 1 / ds[i]))
+		end
+		return e
+	end
+	-- convex in k (a max of |linear| terms): ternary search
+	for _ = 1, 40 do
+		local a = lo + (hi - lo) / 3
+		local b = hi - (hi - lo) / 3
+		if worst(a) <= worst(b) then
+			hi = b
+		else
+			lo = a
+		end
+	end
+	local k = (lo + hi) / 2
+	return k, worst(k)
+end
+
+--[[
+	`chunk` with every vertex moved along its ray from `cam` (body-relative) to depth mapDepth(m, d) (a new Chunk with
+	the same triangles, origin, normals; the box recomputed). `shade(x, y, z, r, g, b)`, if given, recolours each vertex
+	from its TRUE body-relative position (the haze). Also returns the nearest and farthest true distance (m).
+]]
+function TerrainMath.depthChunk(
+	chunk: Chunk,
+	cam: Vec3d,
+	m: DepthMap,
+	shade: ((number, number, number, number, number, number) -> (number, number, number))?
+): (Chunk, number, number)
+	local src = chunk.data
+	local data = buffer.create(buffer.len(src))
+	buffer.copy(data, 0, src)
+	local ox, oy, oz = chunk.ox, chunk.oy, chunk.oz
+	local cx, cy, cz = cam.x, cam.y, cam.z
+	local minX, minY, minZ = math.huge, math.huge, math.huge
+	local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
+	local near, far = math.huge, 0
+	for v = 1, chunk.vertexCount do
+		local o = (v - 1) * VERTEX_BYTES
+		local px, py, pz = buffer.readf32(src, o), buffer.readf32(src, o + 4), buffer.readf32(src, o + 8)
+		local wx, wy, wz = ox + px, oy + py, oz + pz
+		local vx, vy, vz = wx - cx, wy - cy, wz - cz
+		local d = math.sqrt(vx * vx + vy * vy + vz * vz)
+		local q = if d > 0 then TerrainMath.mapDepth(m, d) / d else 1
+		near = math.min(near, d)
+		far = math.max(far, d)
+		local nx, ny, nz = cx + vx * q - ox, cy + vy * q - oy, cz + vz * q - oz
+		buffer.writef32(data, o, nx)
+		buffer.writef32(data, o + 4, ny)
+		buffer.writef32(data, o + 8, nz)
+		minX, maxX = math.min(minX, nx), math.max(maxX, nx)
+		minY, maxY = math.min(minY, ny), math.max(maxY, ny)
+		minZ, maxZ = math.min(minZ, nz), math.max(maxZ, nz)
+		if shade then
+			local r, g, b =
+				shade(wx, wy, wz, buffer.readf32(src, o + 24), buffer.readf32(src, o + 28), buffer.readf32(src, o + 32))
+			buffer.writef32(data, o + 24, r)
+			buffer.writef32(data, o + 28, g)
+			buffer.writef32(data, o + 32, b)
+		end
+	end
+	local out = table.clone(chunk)
+	out.data = data
+	out.minX, out.minY, out.minZ = minX, minY, minZ
+	out.maxX, out.maxY, out.maxZ = maxX, maxY, maxZ
+	return out, near, far
 end
 
 return table.freeze(TerrainMath)
