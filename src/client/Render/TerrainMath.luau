@@ -314,6 +314,9 @@ export type Triangle = { number } -- ax, ay, az, bx, by, bz, cx, cy, cz (body-re
 	a point d m from the band's build camera is stored at depth f(d) along the same ray. f runs through the anchors
 	(dist[i], depth[i]) as a power law between neighbours (linear below the first, the last segment's power beyond
 	the last): continuous and strictly increasing.
+	CHANGED (Flight depth fix): below the first anchor f is a plain factor (f(d) = depth[1] / dist[1] x d), so ground
+	there is drawn uniformly scaled: depthPose poses a band holding any of it with exactly that factor (its picture
+	of that ground is exact from any camera, see depthPose), and the near band's seam lies in that zone.
 ]]
 export type DepthMap = {
 	dist: { number }, -- m, increasing
@@ -2656,6 +2659,13 @@ end
 	The band is drawn at C + k (C0 - C) (C: the camera now): a point at d then lies off its true ray from C by at most
 	|C - C0| x |k / f(d) - 1 / d| radians (to first order; the error of a band rebuilt for C is 0). Returns the k that
 	minimises the largest of those over [near, far] (sampled) and that largest value (radians per metre moved).
+	CHANGED (Flight depth fix): a band holding ground in the uniform zone (near <= dist[1]) is posed with that zone's
+	factor: there f(d) = k d, so a point p is drawn at C + k (C0 - C) + k (p - C0) = C + k (p - C), the exact picture
+	from any camera C (error 0 however far the camera moved). Its seams with the near band (true scale, or uniformly
+	scaled at altitude: exact too) and with the other bands in the zone then never open or overlap, so the depth step
+	at the near band's seam (the near band's ground is drawn at its true depth, this band's at k x d) can never put
+	this band over the near band. Its ground beyond the zone drifts (the returned bound); seams beyond the zone keep
+	one continuous f, so where a drift makes them overlap the nearer ground still wins (the minimax factor there).
 ]]
 function TerrainMath.depthPose(m: DepthMap, near: number, far: number): (number, number)
 	near = math.max(near, 1)
@@ -2678,6 +2688,11 @@ function TerrainMath.depthPose(m: DepthMap, near: number, far: number): (number,
 		end
 		return e
 	end
+	-- CHANGED (Flight depth fix): the uniform zone's own factor (exact there)
+	if near <= m.dist[1] then
+		local k = m.depth[1] / m.dist[1]
+		return k, worst(k)
+	end
 	-- convex in k (a max of |linear| terms): ternary search
 	for _ = 1, 40 do
 		local a = lo + (hi - lo) / 3
@@ -2690,6 +2705,65 @@ function TerrainMath.depthPose(m: DepthMap, near: number, far: number): (number,
 	end
 	local k = (lo + hi) / 2
 	return k, worst(k)
+end
+
+--[[
+	CHANGED (Flight depth fix): where a plan's uniform zone ends (m): as far out as the protected depth allows. The
+	zone's factor is base.depth[1] / start, so the nearest scaled ground (`nearest` m away) is drawn at least
+	`protect` studs away while start <= base.depth[1] x nearest / protect; never less than the base map's own zone.
+	Rounded down to a power of `step` times base.dist[1] (a climbing camera changes it in steps: every scaled band is
+	rebuilt with the new map). In flight the scaled ground starts kilometres away while only the craft needs
+	protecting (~160 studs), so the zone then holds every ring but the last: those rings are exact from any camera
+	(no drift however fast the camera), and only the last ring (beyond the zone) is compressed and drifts.
+]]
+function TerrainMath.depthStart(base: DepthMap, nearest: number, protect: number, step: number): number
+	local first = base.dist[1]
+	local wanted = base.depth[1] * math.max(nearest, 0) / math.max(protect, 1e-6)
+	if wanted <= first or step <= 1 then
+		return first
+	end
+	return first * step ^ math.floor(math.log(wanted / first) / math.log(step) + 1e-9)
+end
+
+--[[
+	CHANGED (Flight depth fix): `base` with its uniform zone widened to `start` m (>= base.dist[1]): the same depth at
+	the zone's end (base.depth[1] studs, now at `start`), then the base anchors that lie beyond it (or, past the last
+	one, the last anchor's depth at twice `start`). Continuous and strictly increasing like any depth map; `base`
+	itself when `start` is its own zone.
+]]
+function TerrainMath.widenDepthMap(base: DepthMap, start: number): DepthMap
+	if start <= base.dist[1] then
+		return base
+	end
+	local dist, depth = { start }, { base.depth[1] }
+	for i = 2, #base.dist do
+		if base.dist[i] > start * 1.05 then
+			table.insert(dist, base.dist[i])
+			table.insert(depth, base.depth[i])
+		end
+	end
+	if #dist == 1 then
+		table.insert(dist, 2 * start)
+		table.insert(depth, base.depth[#base.depth])
+	end
+	return TerrainMath.depthMap(dist, depth)
+end
+
+--[[
+	CHANGED (Flight depth fix): the centre a plan's scaled bands are depth-mapped about: the camera `cam` moved
+	`lead` s ahead along its velocity (vx, vy, vz, m/s), by at most `limit` m. A band is on screen from about one build
+	after its plan starts until its next rebuild, so mapping it about where the camera will be halfway through that
+	time halves its largest drift (|C - C0| x its error rate) and removes the build delay from it (a 300 m/s flight
+	moves ~100 m per band build). `limit` keeps the centre above the ground (a fraction of the camera's height).
+]]
+function TerrainMath.depthCentre(cam: Vec3d, vx: number, vy: number, vz: number, lead: number, limit: number): Vec3d
+	local speed = math.sqrt(vx * vx + vy * vy + vz * vz)
+	local reach = math.min(speed * math.max(lead, 0), math.max(limit, 0))
+	if speed <= 0 or reach <= 0 then
+		return Vec3d.clone(cam)
+	end
+	local s = reach / speed
+	return Vec3d.new(cam.x + vx * s, cam.y + vy * s, cam.z + vz * s)
 end
 
 --[[

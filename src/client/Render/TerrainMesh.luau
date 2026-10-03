@@ -181,6 +181,30 @@
 	true-scale ground beyond ~520 studs hides ring-1 ground), no holes. Fast flight is unchanged (uniform bands);
 	the switch at lift-off can show a hole along a seam or the horizon for a moment while the bands are rebuilt.
 
+	CHANGED (Flight depth fix): Steamy after the depth map: "i am still seeing terrain through other terrain", also
+	"even when i wasnt flying". Above 25 m/s the scaled bands fell back to the uniform factors (far mountains over
+	nearer ground: offline 0.15-0.5 % of the view in flight, up to 8-10 % at 700 m/s low over hills), the switch at
+	lift-off opened holes for 1-2 s, and on foot the stock camera's orbit / zoom (~200 studs/s at 150 studs of zoom)
+	or one jittery frame (the speed estimate rises at once) switched to them too. And a mapped ring 1 was drawn
+	~400 studs in front of the near band's edge, so wherever its drift moved it down it covered the near band
+	(offline, standing with the camera orbiting: up to 1-2 % far over near). Now:
+	  * ONE mode: every scaled band is always depth-mapped (MAP_SPEED / UNMAP_SPEED are gone)
+	  * f is a plain factor out to its first anchor (the uniform zone, CULL.DEPTH_MAP: 1.7 km on the ground, past the
+	    near square's corners): a band holding ground there is posed with that factor (TerrainMath.depthPose), so its
+	    picture of that ground is exact from any camera and its seams with the near band and the other rings there
+	    never move; beyond the zone a drift can only make bands overlap where the nearer ground wins (one f)
+	  * each plan widens the zone as far as the protected depth allows for its nearest scaled ground (depthStart /
+	    widenDepthMap, in DEPTH_STEP steps, ZONE_HIGH_HEIGHT): from ~150 m up every ring but the last is exact
+	    whatever the speed; a band built with another zone is rebuilt
+	  * the depth map's centre leads the camera by LEAD_BUILDS band builds along its velocity (depthCentre), so a fast
+	    flight's drift is centred on the band's life instead of growing from its build
+	  * summary(): "map", the camera speed estimate, each mapped band's drift now (~mrad) and band builds per minute
+	Offline audit (3000 / 2200 / 1500-stud draw distances, 122 views per tier: standing, camera orbiting on foot,
+	climbs, 95 m/s lift-offs, 300 m/s at 2 km, 700 m/s 300 m over the hills, 200 m/s toward the mountains, orbit /
+	zoom in flight): far over near 0.39 / 0.39 / 0.29 % -> 0.13 / 0.12 / 0.08 % (High / Medium / Low); holes
+	0.03 / 0.04 / 0.00 % -> 0.45 / 0.54 / 0.55 % (drift at the horizon of a fast, low climb and of 700 m/s low
+	flight; none standing), base covered ~0 %, no memory refusals, band builds about the same.
+
 	API (driven by Surface):
 		TerrainMesh.init(parent)
 		TerrainMesh.update(ctx, show, prebuild)   show: draw this frame (surface mode); prebuild: build but keep hidden
@@ -317,19 +341,41 @@ local CULL = table.freeze({
 	-- old protected depth near the ground (520 studs), everything beyond 3 km lies behind 940 studs (behind the near
 	-- band's ground: its square reaches ~960 m), and 40 km (beyond the farthest ring) stays within 1010 studs, so a
 	-- ring around the camera fits the 2040-stud part limit
-	DEPTH_MAP = TerrainMath.depthMap({ 900, 3000, 40000 }, { 520, 940, 1010 }),
+	-- CHANGED (Flight depth fix): was { 900, 3000, 40000 } -> { 520, 940, 1010 }. f is now a plain factor (0.5) out
+	-- to 1.7 km, past the near band's farthest ground on the ground (its square reaches ~1.4-1.6 km from the camera
+	-- at the corners): ring 1 is then posed with that factor (TerrainMath.depthPose), its picture there exact from
+	-- any camera, so its seam with the near band can no longer open or slide over the near band as the camera moves
+	-- (it did: ring 1 drawn ~400 studs in front of the near band's edge covered it wherever a drift moved it down).
+	-- Beyond, 6 km -> 935 and 40 km -> 1010: ~3 studs of depth per 5 % of distance at 5 km (was ~1.3: closer to
+	-- the depth buffer's resolution at 1000 studs)
+	DEPTH_MAP = TerrainMath.depthMap({ 1700, 6000, 40000 }, { 850, 935, 1010 }),
+	-- CHANGED (Flight depth fix): ... which is the map on the ground; each plan widens its uniform zone as far as the
+	-- protected depth (PROTECT_*) allows for its nearest scaled ground (TerrainMath.depthStart / widenDepthMap: from
+	-- ~500 m up every ring but the last is exact, whatever the speed), in steps of this ratio
+	DEPTH_STEP = 1.25,
+	-- m: ... with the protected depth falling from PROTECT_LOW_DEPTH to PROTECT_HIGH_DEPTH between PROTECT_LOW_HEIGHT and
+	-- this height (placeBands' near band uses PROTECT_HIGH_HEIGHT)
+	ZONE_HIGH_HEIGHT = 150,
 	-- radians a scaled band may drift off the true picture while the camera moves away from its build camera
 	-- (TerrainMath.depthPose: moved x the band's error per metre) before it is rebuilt for the new camera
 	DEPTH_ERROR = 0.003,
 	DEPTH_SETTLE = 0.0005, -- ... this many once the camera is still (slower than STILL_SPEED m/s): re-planned at once
 	STILL_SPEED = 2,
-	-- m/s: the scaled bands are depth-mapped while the camera is slower than MAP_SPEED (on foot, hovering, a slow
-	-- lift-off), and drawn uniformly scaled as before once it is faster than UNMAP_SPEED: a band is posed rigidly,
-	-- so a mapped band drifts off the true picture as the camera moves (|C - C0| x depthError) and a fast climb
-	-- outruns its rebuilds (offline, 95 m/s: cracks along the band seams and the horizon on 1-3 % of the pixels).
-	-- Fast, the depth order errors only last as long as the move, and the culling (REACH_SPEED_S) handles the rest
-	MAP_SPEED = 12,
-	UNMAP_SPEED = 25,
+	-- CHANGED (Flight depth fix): MAP_SPEED / UNMAP_SPEED are gone: the scaled bands are ALWAYS depth-mapped (one
+	-- mode). Above 25 m/s they used to fall back to the old per-band uniform factors (far mountains drawn over
+	-- nearer ground: 0.15-0.5 % of the view in flight, 1-8 % in mountain views), the switch at lift-off left holes
+	-- for 1-2 s, and in Studio an orbiting or zooming camera (the stock camera moves ~200 studs/s at 150 studs of
+	-- zoom) or one jittery frame (the speed estimate rises at once) switched a standing player to them as well.
+	-- A fast camera's drift is held down instead by mapping about where the camera will be (TerrainMath.depthCentre):
+	-- LEAD_BUILDS x the measured time of one band build (BUILD_SMOOTH) ahead along its velocity (VELOCITY_SMOOTH_S),
+	-- at most LEAD_MAX_S ahead and LEAD_HEIGHT x its height above the ground away
+	LEAD_BUILDS = 2.5,
+	LEAD_MAX_S = 3,
+	LEAD_HEIGHT = 0.5,
+	BUILD_SMOOTH = 0.3, -- weight of the latest band build in the build time estimate
+	BUILD_FIRST_S = 0.2, -- s: the estimate before the first build
+	VELOCITY_SMOOTH_S = 0.3, -- s: time constant of the camera velocity estimate (the lead's direction)
+	RATE_WINDOW_S = 60, -- s: summary()'s band builds per minute are counted over this window
 })
 -- CHANGED (Far slabs fix): the /bands debug view (setDebugTint): a flat colour per band (Highlight fill; the near
 -- band keeps its colours), plates white. One table with its state (`on`, the module is at Roblox's 200-locals limit).
@@ -414,6 +460,10 @@ type BandMesh = {
 	-- CHANGED (Depth order fix): baked with the depth map about planCam (0: true geometry, posed uniformly scaled)
 	depthK: number, -- the factor it is posed with (TerrainMath.depthPose)
 	depthError: number, -- rad per metre the camera moves from planCam
+	-- CHANGED (Flight depth fix): the depth map's centre C0 (the plan's camera moved ahead: TerrainMath.depthCentre);
+	-- depthError is per metre the camera is from it; and the map itself (its plan's, CULL.DEPTH_MAP widened)
+	depthCam: Vec3d,
+	depthMap: TerrainMath.DepthMap,
 }
 
 type Plan = {
@@ -448,7 +498,11 @@ type Plan = {
 	light: number, -- CHANGED (Review 3): the daylight step its bands' haze is baked for
 	occluder: TerrainMath.Occluder?, -- CHANGED (See-through fix): the bulge the scaled bands are culled against
 	profile: TerrainMath.Profile?, -- CHANGED (Far slabs fix): the drawn ground's horizon profile (the same reach)
-	mapped: boolean, -- CHANGED (Depth order fix): its scaled bands are depth-mapped (a slow camera: CULL.MAP_SPEED)
+	-- CHANGED (Flight depth fix): was `mapped` (a slow camera): the scaled bands are always depth-mapped, about this
+	-- point (the camera moved ahead along its velocity, TerrainMath.depthCentre), with this map (CULL.DEPTH_MAP with
+	-- its uniform zone widened for the camera's height: TerrainMath.depthStart)
+	depthCam: Vec3d,
+	depthMap: TerrainMath.DepthMap,
 }
 
 type Plate = {
@@ -508,8 +562,20 @@ local lightNow = 1 -- CHANGED (Review 3): the daylight step at the camera (Terra
 local holeHidden: { [number]: BandMesh } = {}
 -- CHANGED (See-through fix): the camera's speed (m/s, smoothed) and where it was last frame (cull reach)
 -- (and its distance from its focus, studs)
-local camSpeed: { value: number, cam: Vec3d?, time: number, zoom: number, mapped: boolean } =
-	{ value = 0, cam = nil, time = 0, zoom = 0, mapped = true }
+-- CHANGED (Flight depth fix): - mapped (one mode); + its smoothed velocity (m/s, body axes: the depth map's lead), the
+-- time one band build takes (s, smoothed: CULL.BUILD_SMOOTH) and when the recent builds finished (summary's rate)
+local camSpeed: {
+	value: number,
+	cam: Vec3d?,
+	time: number,
+	zoom: number,
+	vx: number,
+	vy: number,
+	vz: number,
+	buildS: number,
+	builds: { number },
+} =
+	{ value = 0, cam = nil, time = 0, zoom = 0, vx = 0, vy = 0, vz = 0, buildS = CULL.BUILD_FIRST_S, builds = {} }
 
 local chunkCache: { [number]: Chunk } = {}
 local chunkStamp: { [number]: number } = {}
@@ -880,7 +946,7 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 			b = hb,
 		}
 	end
-	if id ~= TerrainMath.NEAR_BAND and p.mapped then
+	if id ~= TerrainMath.NEAR_BAND then -- CHANGED (Flight depth fix): always (was: only while p.mapped)
 		local h = haze
 		local shade = if h
 			then function(x: number, y: number, z: number, r: number, g: number, b: number): (number, number, number)
@@ -896,7 +962,8 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 		local mapped: { Chunk } = table.create(#chunks)
 		local near, far = math.huge, 0
 		for index, c in chunks do
-			local mc, cn, cf = TerrainMath.depthChunk(c, p.cam, CULL.DEPTH_MAP, shade)
+			-- CHANGED (Flight depth fix): about the plan's depth centre (its camera moved ahead)
+			local mc, cn, cf = TerrainMath.depthChunk(c, p.depthCam, p.depthMap, shade)
 			mapped[index] = mc
 			near, far = math.min(near, cn), math.max(far, cf)
 			if index % 8 == 0 and due() then
@@ -905,7 +972,7 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 		end
 		chunks = mapped
 		haze = nil -- baked
-		depthK, depthError = TerrainMath.depthPose(CULL.DEPTH_MAP, near, far)
+		depthK, depthError = TerrainMath.depthPose(p.depthMap, near, far) -- CHANGED (Flight depth fix): the plan's map
 	end
 	local fx, fy, fz, size = TerrainMath.frameBounds(chunks, nodes, drops, axes, function()
 		due()
@@ -1039,6 +1106,8 @@ local function buildBand(p: Plan, id: number, leaves: { [number]: Node }, sunk: 
 		cullable = occluder ~= nil and (culled > 0 or farthest > horizon),
 		depthK = depthK, -- CHANGED (Depth order fix)
 		depthError = depthError,
+		depthCam = Vec3d.clone(p.depthCam), -- CHANGED (Flight depth fix)
+		depthMap = p.depthMap,
 	}
 end
 
@@ -1081,6 +1150,7 @@ local function buildAndSwap(p: Plan, id: number, leaves: { [number]: Node }, sun
 	local bm: BandMesh? = nil
 	if next(leaves) ~= nil then
 		p.current = (if sunk then "union " else "band ") .. id
+		local started = os.clock() -- CHANGED (Flight depth fix): how long a band build takes (the depth map's lead)
 		bm = buildBand(p, id, leaves, sunk)
 		if bm == nil then
 			releaseBuilding(p)
@@ -1090,6 +1160,14 @@ local function buildAndSwap(p: Plan, id: number, leaves: { [number]: Node }, sun
 			return false
 		end
 		p.builds += 1
+		-- CHANGED (Flight depth fix): the build time estimate (CULL.LEAD_BUILDS) and summary()'s rate
+		local now = os.clock()
+		camSpeed.buildS += (now - started - camSpeed.buildS) * CULL.BUILD_SMOOTH
+		local log = camSpeed.builds
+		table.insert(log, now)
+		while log[1] < now - CULL.RATE_WINDOW_S do
+			table.remove(log, 1)
+		end
 	end
 	if p.aborted then
 		-- the plan was dropped while this mesh was finishing
@@ -1329,14 +1407,16 @@ local function preparePlan(p: Plan, selection: Selection)
 					or Vec3d.distance(p.cam, old.planCam)
 						> HAZE_REBUILD_FRACTION * math.max(old.nearest, HAZE_REBUILD_MIN)
 				)
-			-- CHANGED (Depth order fix): or its depth-mapped picture drifted CULL.DEPTH_ERROR off the true one, or the
-			-- plan maps the scaled bands and it is not mapped (or the other way round)
+			-- CHANGED (Depth order fix): or its depth-mapped picture drifted CULL.DEPTH_ERROR off the true one
+			-- CHANGED (Flight depth fix): measured from its depth centre to this plan's (both lead the camera, so a
+			-- steady flight rebuilds a band once its centre lags the new one by the tolerance); - the mode switch
+			-- (every scaled band is mapped; one built before a body change has none: rebuilt)
 			if not rebuild and old.depthK > 0 then
 				local tolerance = if camSpeed.value < CULL.STILL_SPEED then CULL.DEPTH_SETTLE else CULL.DEPTH_ERROR
-				rebuild = Vec3d.distance(p.cam, old.planCam) * old.depthError > tolerance
+				rebuild = Vec3d.distance(p.depthCam, old.depthCam) * old.depthError > tolerance
 			end
 			if not rebuild and id ~= TerrainMath.NEAR_BAND then
-				rebuild = (old.depthK > 0) ~= p.mapped
+				rebuild = old.depthK <= 0 or old.depthMap.dist[1] ~= p.depthMap.dist[1] -- or another uniform zone
 			end
 			-- CHANGED (See-through fix): or its bulge culling is no longer sure for this camera (or misses ground the
 			-- bulge hides now)
@@ -1607,14 +1687,14 @@ local function maybeSelect(config: Config, cam: Vec3d)
 		if now - lastSelectTime < RESELECT_INTERVAL then
 			return
 		end
-		-- CHANGED (Depth order fix): a camera that slowed down (or sped up) re-plans where it is (mapped bands)
-		-- (or stopped: the mapped bands are made exact for where it stands)
-		local switch = camSpeed.mapped ~= (camSpeed.value < CULL.MAP_SPEED)
-			and camSpeed.mapped ~= (camSpeed.value <= CULL.UNMAP_SPEED)
-		if not switch and camSpeed.value < CULL.STILL_SPEED then
+		-- CHANGED (Depth order fix): a camera that stopped re-plans where it is (the mapped bands are made exact for
+		-- where it stands)
+		-- CHANGED (Flight depth fix): no speed switch any more (one mode); the drift is from each band's depth centre
+		local switch = false
+		if camSpeed.value < CULL.STILL_SPEED then
 			for _, bm in bands do
 				switch = switch
-					or (bm.depthK > 0 and Vec3d.distance(cam, bm.planCam) * bm.depthError > CULL.DEPTH_SETTLE)
+					or (bm.depthK > 0 and Vec3d.distance(cam, bm.depthCam) * bm.depthError > CULL.DEPTH_SETTLE)
 			end
 		end
 		if lastCam and not switch then
@@ -1672,8 +1752,16 @@ local function maybeSelect(config: Config, cam: Vec3d)
 		ringBounds = nil,
 		stitch = {},
 		light = lightNow, -- CHANGED (Review 3)
-		-- CHANGED (Depth order fix): depth-mapped scaled bands while the camera is slow (hysteresis)
-		mapped = if camSpeed.mapped then camSpeed.value <= CULL.UNMAP_SPEED else camSpeed.value < CULL.MAP_SPEED,
+		depthMap = CULL.DEPTH_MAP, -- CHANGED (Flight depth fix): widened below
+		-- CHANGED (Flight depth fix): the depth map's centre: the camera LEAD_BUILDS band builds ahead (was `mapped`)
+		depthCam = TerrainMath.depthCentre(
+			cam,
+			camSpeed.vx,
+			camSpeed.vy,
+			camSpeed.vz,
+			math.min(CULL.LEAD_BUILDS * camSpeed.buildS, CULL.LEAD_MAX_S),
+			CULL.LEAD_HEIGHT * math.max(SurfaceHeight.height(config.bodyId, cam), 0)
+		),
 		-- CHANGED (See-through fix): what the bulge hides from every camera within the reach (speed and height)
 		occluder = TerrainMath.bulgeOccluder(
 			config,
@@ -1686,7 +1774,33 @@ local function maybeSelect(config: Config, cam: Vec3d)
 			)
 		),
 	}
-	camSpeed.mapped = p.mapped -- CHANGED (Depth order fix)
+	-- CHANGED (Flight depth fix): the plan's uniform zone: as wide as the protected depth (placeBands' rule, at this
+	-- height) allows for the nearest scaled ground (outside the near square's inner edge, or under a camera outside it)
+	do
+		local height = math.max(SurfaceHeight.height(config.bodyId, cam), 0)
+		local t = math.clamp((height - PROTECT_LOW_HEIGHT) / (CULL.ZONE_HIGH_HEIGHT - PROTECT_LOW_HEIGHT), 0, 1)
+		local protect = PROTECT_LOW_DEPTH + (PROTECT_HIGH_DEPTH - PROTECT_LOW_DEPTH) * t
+		local side = 0
+		if near then
+			local u, v = TerrainMath.nearOffset(near, cam)
+			side = math.max(NEAR_HALF - NEAR_MAX_LEAF / 2 - math.max(math.abs(u), math.abs(v)), 0)
+		end
+		local nearest = math.sqrt(height * height + side * side)
+		local start = TerrainMath.depthStart(CULL.DEPTH_MAP, nearest, protect, CULL.DEPTH_STEP)
+		-- the map on screen stays while it is allowed and at most a step narrower than wanted (hysteresis: no
+		-- rebuild of every band for a camera bobbing about a step)
+		local allowed = math.max(CULL.DEPTH_MAP.dist[1], CULL.DEPTH_MAP.depth[1] * nearest / protect)
+		for _, bm in bands do
+			local shown = bm.depthMap.dist[1]
+			if bm.depthK > 0 and shown <= allowed and shown * CULL.DEPTH_STEP * CULL.DEPTH_STEP > allowed then
+				start = shown
+				p.depthMap = bm.depthMap
+			end
+		end
+		if p.depthMap.dist[1] ~= start then
+			p.depthMap = TerrainMath.widenDepthMap(CULL.DEPTH_MAP, start)
+		end
+	end
 	plan = p
 	task.spawn(selectAndRun, p)
 end
@@ -1736,7 +1850,12 @@ placeBands = function(ctx: RenderContext.RenderContext)
 			TerrainMath.bandScale(dist, dist + bm.radius, bm.maxExtent, budget, FAR_LIMIT, PART_LIMIT)
 		)
 		table.insert(placeNearest, bm.nearestNow)
-		mappedCap = math.min(mappedCap, TerrainMath.depthFactor(CULL.DEPTH_MAP, dist + bm.radius))
+		-- CHANGED (Flight depth fix): each mapped band's own map
+		for _, other in bands do
+			if other.depthK > 0 then
+				mappedCap = math.min(mappedCap, TerrainMath.depthFactor(other.depthMap, dist + bm.radius))
+			end
+		end
 	end
 	local height = SurfaceHeight.height(ctx.dominantBodyId, cam) -- above the ground under the camera
 	local t = math.clamp((height - PROTECT_LOW_HEIGHT) / (PROTECT_HIGH_HEIGHT - PROTECT_LOW_HEIGHT), 0, 1)
@@ -1788,7 +1907,7 @@ placeBands = function(ctx: RenderContext.RenderContext)
 			bm.part.Size = bm.size * shrink
 			bm.appliedScale = shrink
 		end
-		local c0, origin = bm.planCam, bm.origin
+		local c0, origin = bm.depthCam, bm.origin -- CHANGED (Flight depth fix): its depth centre
 		local vx = ((c0.x - cam.x) * k + origin.x - c0.x) * bm.appliedScale
 		local vy = ((c0.y - cam.y) * k + origin.y - c0.y) * bm.appliedScale
 		local vz = ((c0.z - cam.z) * k + origin.z - c0.z) * bm.appliedScale
@@ -2088,6 +2207,7 @@ function TerrainMesh.update(ctx: RenderContext.RenderContext, show: boolean, pre
 		nearSquare = nil -- CHANGED (Night review)
 		ringBounds = nil -- CHANGED (Terrain polish)
 		camSpeed.cam = nil -- CHANGED (See-through fix)
+		camSpeed.vx, camSpeed.vy, camSpeed.vz = 0, 0, 0 -- CHANGED (Flight depth fix)
 	end
 	local cam = ctx.cameraDominant
 	-- CHANGED (See-through fix): the camera's speed (the bulge culling's reach); a jump (another body, a teleport)
@@ -2101,6 +2221,11 @@ function TerrainMesh.update(ctx: RenderContext.RenderContext, show: boolean, pre
 			if v < CULL.SPEED_JUMP then
 				camSpeed.value =
 					math.max(v, camSpeed.value + (v - camSpeed.value) * math.min(dt / CULL.SPEED_SMOOTH_S, 1))
+				-- CHANGED (Flight depth fix): the velocity (the depth map's lead), smoothed both ways
+				local w = math.min(dt / CULL.VELOCITY_SMOOTH_S, 1)
+				camSpeed.vx += ((cam.x - last.x) / dt - camSpeed.vx) * w
+				camSpeed.vy += ((cam.y - last.y) / dt - camSpeed.vy) * w
+				camSpeed.vz += ((cam.z - last.z) / dt - camSpeed.vz) * w
 			end
 		end
 		camSpeed.cam = Vec3d.clone(cam)
@@ -2251,7 +2376,7 @@ function TerrainMesh.scaleAt(pos: Vec3d, margin: number): number?
 		scale = math.min(
 			scale,
 			if bm.depthK > 0
-				then bm.appliedScale * TerrainMath.depthFactor(CULL.DEPTH_MAP, Vec3d.distance(p, bm.planCam))
+				then bm.appliedScale * TerrainMath.depthFactor(bm.depthMap, Vec3d.distance(p, bm.depthCam))
 				else bm.scale
 		)
 	end
@@ -2274,7 +2399,7 @@ function TerrainMesh.depthScale(far: number): number
 		if bm.depthK > 0 then
 			-- CHANGED (Depth order fix): a depth-mapped band draws ground d m away f(d) studs away
 			local d = math.max(bm.nearestNow, far)
-			factor = math.min(factor, bm.appliedScale * TerrainMath.mapDepth(CULL.DEPTH_MAP, d) / far)
+			factor = math.min(factor, bm.appliedScale * TerrainMath.mapDepth(bm.depthMap, d) / far)
 		elseif bm.scale < TRUE_SCALE then
 			factor = math.min(factor, bm.scale * math.max(bm.nearestNow, far) / far)
 		end
@@ -2389,9 +2514,9 @@ function TerrainMesh.scaleOver(points: { Vec3d }): number?
 			-- CHANGED (Depth order fix): a depth-mapped band's factor where the points are (the nearest is drawn largest)
 			local nearest = math.huge
 			for _, point in points do
-				nearest = math.min(nearest, Vec3d.distance(point, bm.planCam))
+				nearest = math.min(nearest, Vec3d.distance(point, bm.depthCam)) -- CHANGED (Flight depth fix)
 			end
-			scale = math.min(scale, bm.appliedScale * TerrainMath.depthFactor(CULL.DEPTH_MAP, nearest))
+			scale = math.min(scale, bm.appliedScale * TerrainMath.depthFactor(bm.depthMap, nearest))
 		else
 			scale = math.min(scale, bm.scale)
 		end
@@ -2454,19 +2579,37 @@ function TerrainMesh.summary(): string
 	table.sort(ids)
 	local parts: { string } = {}
 	local leaves, triangles = 0, 0
+	-- CHANGED (Flight depth fix): + each depth-mapped band's drift off the true picture now (mrad: the camera's
+	-- distance from the band's depth centre x its error rate; it is rebuilt past CULL.DEPTH_ERROR), the depth map
+	-- (always on: "map", vs "uniform" before), the camera speed estimate and the band builds in the last minute
+	local cam = camSpeed.cam
 	for _, id in ids do
 		local bm = bands[id]
 		leaves += bm.count
 		triangles += bm.triangles
-		table.insert(parts, string.format("%d:%d x%.2f%s", id, bm.count, bm.scale, if bm.stale then "*" else ""))
+		local drift = if bm.depthK > 0 and cam
+			then string.format(" ~%.1f", 1000 * Vec3d.distance(cam, bm.depthCam) * bm.depthError)
+			else ""
+		table.insert(
+			parts,
+			string.format("%d:%d x%.2f%s%s", id, bm.count, bm.scale, drift, if bm.stale then "*" else "")
+		)
+	end
+	local recent = 0
+	for _, at in camSpeed.builds do
+		if at >= os.clock() - CULL.RATE_WINDOW_S then
+			recent += 1
+		end
 	end
 	local p = plan
 	return string.format(
-		"Terrain: %s  %d leaves  %.1fk tris  [%s]  %s  meshes %d (bands <= %d)  cache %d%s",
+		"Terrain: %s  %d leaves  %.1fk tris  [%s]  map  cam %.0f m/s  %d builds/min  %s  meshes %d (bands <= %d)  cache %d%s",
 		tierName,
 		leaves,
 		triangles / 1000,
 		table.concat(parts, " "),
+		camSpeed.value,
+		recent,
 		if p then string.format("building %s (%d/%d)", p.current, p.builds, p.steps) else "idle",
 		liveMeshes,
 		bandCount,

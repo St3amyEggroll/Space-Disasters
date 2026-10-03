@@ -3,6 +3,10 @@
 -- (TerrainMath.depthMap / mapDepth / depthFactor / depthPose / depthChunk): continuous, strictly increasing, bounded,
 -- points on one ray from the build camera keep their direction and their order (so from that camera a nearer ridge
 -- always hides what lies behind it, across bands too), and the pose's error bound holds for a moved camera.
+-- CHANGED (Flight depth fix): the new anchors (a plain factor out to 1.7 km), the uniform zone (a band holding ground
+-- there is posed exactly: its picture of that ground is right from any camera, so its seams there never move),
+-- the widened maps of a plan in flight (depthStart / widenDepthMap: continuous, increasing, the same zone-end depth)
+-- and the depth map's lead (depthCentre).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TestKit = require(script.Parent.TestKit)
@@ -18,8 +22,9 @@ type Vec3d = Vec3d.Vec3d
 --============================================================================
 -- Tunables (the values Render/TerrainMesh uses: DEPTH)
 --============================================================================
-local DIST = { 900, 3000, 40000 }
-local DEPTH = { 520, 940, 1010 }
+local DIST = { 1700, 6000, 40000 } -- CHANGED (Flight depth fix): was { 900, 3000, 40000 } -> { 520, 940, 1010 }
+local DEPTH = { 850, 935, 1010 }
+local STEP = 1.25 -- CULL.DEPTH_STEP
 local PART_LIMIT = 2040
 local SAMPLES = 4000 -- distances checked along the map
 --============================================================================
@@ -67,8 +72,10 @@ return function(t: TestKit.Context)
 				t.expectTrue(f <= d, "never drawn farther than it is")
 			end
 		end
-		-- ground beyond 3 km lies behind the near square's ground (it reaches ~960 m from the camera)
-		t.expectTrue(TerrainMath.mapDepth(m, 3000) >= 940, "far ground behind the near band")
+		-- CHANGED (Flight depth fix): a plain factor out to the first anchor (past the near square's corners)
+		for _, d in { 100, 760, 1400, 1700 } do
+			t.expectNear(TerrainMath.depthFactor(m, d), DEPTH[1] / DIST[1], 1e-9, "uniform zone")
+		end
 	end)
 
 	t.test("depthChunk: every vertex keeps its ray from the build camera and its order along it", function()
@@ -141,7 +148,7 @@ return function(t: TestKit.Context)
 	end)
 
 	t.test("depthPose: a band posed for a moved camera stays within its error bound", function()
-		for _, range in { { 900, 2600 }, { 2400, 9000 }, { 8000, 40000 }, { 500, 60000 } } do
+		for _, range in { { 2000, 5000 }, { 2400, 9000 }, { 8000, 40000 }, { 1800, 60000 } } do
 			local near, far = range[1], range[2]
 			local k, err = TerrainMath.depthPose(m, near, far)
 			t.expectTrue(k > 0 and k <= 1, "a factor")
@@ -182,5 +189,85 @@ return function(t: TestKit.Context)
 				t.expectTrue(cam ~= nil)
 			end
 		end
+	end)
+	-- CHANGED (Flight depth fix)
+	t.test(
+		"depthPose: a band holding uniform-zone ground is exact there from any camera (its seams never move)",
+		function()
+			for _, range in { { 500, 1700 }, { 760, 2600 }, { 900, 40000 } } do
+				local near, far = range[1], range[2]
+				local k, err = TerrainMath.depthPose(m, near, far)
+				t.expectNear(k, DEPTH[1] / DIST[1], 1e-12, "the zone's factor")
+				if far <= DIST[1] then
+					t.expectTrue(err < 1e-12, "wholly in the zone: no drift")
+				end
+				for _ = 1, 300 do
+					local u = Vec3d.normalize(
+						Vec3d.new(math.random() - 0.5, (math.random() - 0.8) * 0.2, math.random() - 0.5)
+					)
+					local d = near * (far / near) ^ math.random()
+					-- a large move (a fast flight between rebuilds): 0 .. 500 m in any direction
+					local move = Vec3d.scale(
+						Vec3d.normalize(Vec3d.new(math.random() - 0.5, math.random() - 0.5, math.random() - 0.5)),
+						500 * math.random()
+					)
+					local truth = Vec3d.sub(Vec3d.scale(u, d), move)
+					local drawn = Vec3d.add(Vec3d.scale(move, -k), Vec3d.scale(u, TerrainMath.mapDepth(m, d)))
+					local off = angle(truth, drawn)
+					if d <= DIST[1] then
+						t.expectTrue(off < 1e-6, `exact in the zone ({off})`)
+					else
+						-- per-band affine placement: within the bound (first order, plus the second order of the move)
+						t.expectTrue(
+							off <= Vec3d.length(move) * err * 1.05 + 1e-3 * (Vec3d.length(move) / d) ^ 2 + 1e-7,
+							"bound"
+						)
+					end
+				end
+			end
+		end
+	)
+
+	t.test("depthStart / widenDepthMap: the zone widens as the protected depth allows; one continuous map", function()
+		t.expectEqual(TerrainMath.depthStart(m, 760, 520, STEP), DIST[1], "on the ground: the base map")
+		local last = DIST[1]
+		for _, nearest in { 600, 900, 1500, 2500, 6000, 20000 } do
+			local start = TerrainMath.depthStart(m, nearest, 160, STEP)
+			t.expectTrue(start >= last, "wider for farther ground")
+			last = start
+			t.expectTrue(DEPTH[1] / start * nearest >= 160 - 1e-6 or start == DIST[1], "the protected depth holds")
+			local steps = math.log(start / DIST[1]) / math.log(STEP)
+			t.expectNear(steps, math.floor(steps + 0.5), 1e-9, "in steps")
+			local w = TerrainMath.widenDepthMap(m, start)
+			t.expectNear(w.dist[1], start, 1e-9, "zone end")
+			t.expectNear(w.depth[1], DEPTH[1], 1e-9, "same depth at the zone's end (the seam between zones)")
+			local prev = -math.huge
+			for i = 1, SAMPLES do
+				local d = 10 ^ (6 * i / SAMPLES)
+				local f = TerrainMath.mapDepth(w, d)
+				t.expectTrue(f > prev, "strictly increasing")
+				prev = f
+				if d <= 40000 then
+					t.expectTrue(2 * f <= PART_LIMIT, "fits the part limit")
+				end
+			end
+			for _, a in w.dist do
+				local below, above = TerrainMath.mapDepth(w, a - 1e-4), TerrainMath.mapDepth(w, a + 1e-4)
+				t.expectTrue(math.abs(above - below) < 1e-3, "continuous at its anchors")
+			end
+		end
+		t.expectTrue(TerrainMath.widenDepthMap(m, DIST[1]) == m, "its own zone: the base map")
+	end)
+
+	t.test("depthCentre: the camera moved ahead along its velocity, at most `limit` m", function()
+		local cam = Vec3d.new(10, 60000, -5)
+		local c = TerrainMath.depthCentre(cam, 0, 0, 0, 1, 100)
+		t.expectNear(Vec3d.distance(c, cam), 0, 1e-12, "still: the camera")
+		c = TerrainMath.depthCentre(cam, 300, 0, 0, 0.5, 1000)
+		t.expectNear(c.x - cam.x, 150, 1e-9, "lead x speed")
+		c = TerrainMath.depthCentre(cam, 0, 700, 0, 2, 120)
+		t.expectNear(c.y - cam.y, 120, 1e-9, "capped")
+		c = TerrainMath.depthCentre(cam, 0, 700, 0, -1, 120)
+		t.expectNear(Vec3d.distance(c, cam), 0, 1e-12, "never behind")
 	end)
 end
