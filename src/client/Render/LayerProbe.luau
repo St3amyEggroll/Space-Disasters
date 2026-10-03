@@ -18,6 +18,7 @@
 		LayerProbe.toggle(): boolean    on / off (true: now on)
 ]]
 
+local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
@@ -93,17 +94,14 @@ local function add(f: Folder, part: BasePart, distance: number, angle: number, h
 end
 
 -- a SurfaceGui panel holding a ViewportFrame (white background, a blue cube), `distance` studs ahead
-local function viewPanel(f: Folder, name: string, size: number, canvas: number, distance: number, yaw: number)
-	local part = newPart(name, size, 1)
-	local gui = newGui(part, Color3.fromRGB(30, 90, 255), name, 0, Vector2.new(canvas, canvas))
-	local view = Instance.new("ViewportFrame")
-	view.Size = UDim2.fromScale(0.8, 0.8)
-	view.Position = UDim2.fromScale(0.1, 0.1)
+-- CHANGED (Far layer probe 4): GUIs parented to the PlayerGui (adorned to their part) instead of the part
+local playerGuis: { Instance } = {}
+
+local function fillView(view: ViewportFrame)
 	view.BackgroundColor3 = Color3.new(1, 1, 1)
 	view.BackgroundTransparency = 0
 	view.Ambient = Color3.new(0.8, 0.8, 0.8)
 	view.LightColor = Color3.new(1, 1, 1)
-	view.Parent = gui
 	local cube = Instance.new("Part")
 	cube.Size = Vector3.new(2, 2, 2)
 	cube.Color = Color3.fromRGB(30, 90, 255)
@@ -114,7 +112,57 @@ local function viewPanel(f: Folder, name: string, size: number, canvas: number, 
 	camera.CFrame = CFrame.lookAt(Vector3.new(0, 1.5, 6), Vector3.zero)
 	camera.Parent = view
 	view.CurrentCamera = camera
+end
+
+local function viewPanel(
+	f: Folder,
+	name: string,
+	size: number,
+	canvas: number,
+	distance: number,
+	yaw: number,
+	inPlayerGui: boolean?
+)
+	local part = newPart(name, size, 1)
+	local gui = newGui(part, Color3.fromRGB(30, 90, 255), name, 0, Vector2.new(canvas, canvas))
+	if inPlayerGui then
+		local player = Players.LocalPlayer
+		local playerGui = if player then player:FindFirstChildOfClass("PlayerGui") else nil
+		if playerGui then
+			gui.ResetOnSpawn = false
+			gui.Parent = playerGui -- Adornee stays the part
+			table.insert(playerGuis, gui)
+		end
+	end
+	local view = Instance.new("ViewportFrame")
+	view.Size = UDim2.fromScale(0.8, 0.8)
+	view.Position = UDim2.fromScale(0.1, 0.1)
+	fillView(view)
+	view.Parent = gui
 	add(f, part, distance, yaw, 0)
+end
+
+-- CHANGED (Far layer probe 4): the control: a ViewportFrame in a ScreenGui (2D, top centre of the screen), like the
+-- navball, which draws
+local function screenView(): ScreenGui
+	local screen = Instance.new("ScreenGui")
+	screen.Name = "LayerProbeScreen"
+	screen.ResetOnSpawn = false
+	local view = Instance.new("ViewportFrame")
+	view.Size = UDim2.fromOffset(120, 120)
+	view.Position = UDim2.new(0.5, -60, 0, 120)
+	fillView(view)
+	view.Parent = screen
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.fromOffset(120, 24)
+	label.Position = UDim2.new(0.5, -60, 0, 96)
+	label.BackgroundColor3 = Color3.new(0, 0, 0)
+	label.TextColor3 = Color3.new(1, 1, 1)
+	label.Font = Enum.Font.GothamBold
+	label.TextScaled = true
+	label.Text = "S"
+	label.Parent = screen
+	return screen
 end
 
 local function build(): Folder
@@ -123,11 +171,19 @@ local function build(): Folder
 	-- CHANGED (Far layer probe 3): the backdrop's panels draw (their labels show) but their ViewportFrames do not,
 	-- while probe E (a ViewportFrame 80 studs ahead, 256 px) did. Each V panel looks the same size on screen,
 	-- left to right: V1 as E; V2 as E with a 1024 px canvas; V3 / V4 / V5 at 300 / 600 / 1000 studs
+	-- CHANGED (Far layer probe 4): no V panel drew its ViewportFrame (only the frame around it). W1 / W2: the same
+	-- with the SurfaceGui in the PlayerGui (Adornee = the part) at 80 / 1000 studs; S: a ScreenGui control
 	viewPanel(f, "V1", 20, 256, 80, -24)
-	viewPanel(f, "V2", 20, 1024, 80, -12)
-	viewPanel(f, "V3", 75, 256, 300, 0)
-	viewPanel(f, "V4", 150, 256, 600, 12)
+	viewPanel(f, "W1", 20, 256, 80, -8, true)
+	viewPanel(f, "W2", 250, 256, 1000, 8, true)
 	viewPanel(f, "V5", 250, 256, 1000, 24)
+	local player = Players.LocalPlayer
+	local playerGui = if player then player:FindFirstChildOfClass("PlayerGui") else nil
+	if playerGui then
+		local screen = screenView()
+		screen.Parent = playerGui
+		table.insert(playerGuis, screen)
+	end
 	return f
 end
 
@@ -154,6 +210,10 @@ function LayerProbe.toggle(): boolean
 	if f then
 		RunService:UnbindFromRenderStep(RENDER_STEP_NAME)
 		f:Destroy()
+		for _, gui in playerGuis do
+			gui:Destroy()
+		end
+		table.clear(playerGuis)
 		folder = nil
 		table.clear(probes)
 		return false
